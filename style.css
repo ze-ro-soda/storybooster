@@ -1,0 +1,683 @@
+#rp-booster-popup {
+    --sb-blue: #78a7e8;
+    --sb-blue-strong: #557fc4;
+    --sb-blue-text: #456b9f;
+    --sb-blue-selected: rgba(120, 167, 232, 0.2);
+    --sb-blue-hover: rgba(120, 167, 232, 0.13);
+    --sb-blue-panel: rgba(120, 167, 232, 0.075);
+    --sb-blue-border: rgba(120, 167, 232, 0.48);
+    --sb-blue-shadow: rgba(58, 103, 175, 0.18);
+    --sb-danger: #c85f7f;
+    --sb-radius-large: 14px;
+    --sb-radius: 10px;
+    --sb-gap: 10px;
+    max-height: 72vh;
+    padding: 2px 9px 12px;
+    overflow-y: auto;
+    text-align: left;
+    line-height: 1.45;
+    scrollbar-color: var(--sb-blue) transparent;
+}
+
+#rp-booster-popup * {
+    box-sizing: border-box;
+}
+
+#rp-booster-popup .rp-booster-header {
+    position: sticky;
+    z-index: 30;
+    top: -2px;
+    margin: 0 -9px 12px;
+    padding: 6px 9px 8px;
+    border-bottom: 1px solid var(--sb-blue-border);
+    background: Canvas;
+    background: color-mix(
+        in srgb,
+        var(--SmartThemeBlurTintColor, Canvas) 94%,
+        var(--sb-blue) 6%
+    );
+    box-shadow: 0 5px 14px rgba(0, 0, 0, 0.08);
+}
+
+#rp-booster-popup h3 {
+    margin: 0 0 7px;
+    color: var(--sb-blue-text);
+    font-size: 1.12em;
+}
+
+#rp-booster-popup h3 small,
+#rp-booster-popup h4 small {
+    opacity: 0.62;
+    color: inherit;
+    font-size: 0.68em;
+    font-weight: normal;
+}
+
+#rp-booster-popup h4 {
+    margin: 4px 0 5px;
+    color: color-mix(in srgb, currentColor 72%, var(--sb-blue-strong) 28%);
+    font-size: 1.04em;
+}
+
+#rp-booster-popup .rp-booster-tabs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    padding: 4px;
+    border: 1px solid var(--sb-blue-border);
+    border-radius: 12px;
+    background: var(--sb-blue-panel);
+}
+
+#rp-booster-popup .rp-booster-tab,
+#rp-booster-popup .rp-plot-mode-button {
+    appearance: none;
+    min-width: 0;
+    min-height: 42px;
+    padding: 7px 9px;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+    writing-mode: horizontal-tb;
+    word-break: keep-all;
+}
+
+#rp-booster-popup .rp-booster-tab {
+    opacity: 0.65;
+}
+
+#rp-booster-popup .rp-booster-tab:hover,
+#rp-booster-popup .rp-plot-mode-button:hover {
+    border-color: var(--sb-blue-border);
+    background: var(--sb-blue-hover);
+    opacity: 1;
+}
+
+#rp-booster-popup .rp-booster-tab.is-active,
+#rp-booster-popup .rp-plot-mode-button.is-active {
+    border-color: var(--sb-blue-strong);
+    background: var(--sb-blue-selected);
+    color: color-mix(in srgb, currentColor 60%, var(--sb-blue-strong) 40%);
+    opacity: 1;
+    box-shadow: 0 2px 7px var(--sb-blue-shadow);
+}
+
+#rp-booster-popup button:focus-visible,
+#rp-booster-popup select:focus-visible,
+#rp-booster-popup input:focus-visible,
+#rp-booster-popup textarea:focus-visible,
+#rp-booster-popup summary:focus-visible {
+    outline: 2px solid var(--sb-blue);
+    outline-offset: 2px;
+}
+
+#rp-booster-popup .rp-booster-tab-panel[hidden],
+#rp-plot-category-section[hidden],
+#rp-booster-popup .rp-plot-history-drawer[hidden] {
+    display: none !important;
+}
+
+#rp-booster-popup .rp-booster-tab-panel {
+    min-height: 260px;
+}
+
+#rp-booster-popup label {
+    display: block;
+    margin-top: 8px;
+    font-weight: 700;
+}
+
+#rp-booster-popup select,
+#rp-booster-popup input[type="text"],
+#rp-booster-popup textarea {
+    width: 100%;
+    margin-top: 3px;
+    border-color: var(--sb-blue-border);
+    border-radius: 8px;
+}
+
+#rp-booster-popup select:focus,
+#rp-booster-popup input[type="text"]:focus,
+#rp-booster-popup textarea:focus {
+    border-color: var(--sb-blue-strong);
+}
+
+.rp-genre-help,
+#rp-booster-popup .rp-event-help {
+    margin: 0 0 9px;
+    opacity: 0.76;
+    font-size: 0.88em;
+}
+
+.rp-genre-select-grid {
+    display: grid;
+    grid-template-columns: 1.08fr 1fr;
+    gap: 8px;
+}
+
+.rp-genre-select-grid label {
+    min-width: 0;
+    margin-top: 0 !important;
+    padding: 8px;
+    border: 1px solid var(--sb-blue-border);
+    border-radius: var(--sb-radius);
+    background: var(--sb-blue-panel);
+}
+
+.rp-genre-select-grid .rp-primary-select {
+    background: var(--sb-blue-selected);
+}
+
+#rp-genre-anchor,
+#rp-genre-recommendation,
+#rp-custom-genre-editor,
+#rp-custom-plot-editor {
+    margin-top: 11px;
+    padding: 10px;
+    border: 1px solid var(--sb-blue-border);
+    border-radius: var(--sb-radius);
+    background: var(--sb-blue-panel);
+}
+
+#rp-genre-anchor .rp-anchor-title,
+#rp-genre-recommendation .rp-recommend-title {
+    color: color-mix(in srgb, currentColor 68%, var(--sb-blue-strong) 32%);
+    font-weight: 800;
+}
+
+#rp-anchor-empty,
+#rp-anchor-status,
+#rp-anchor-count,
+#rp-genre-recommendation > p,
+#rp-recommend-status,
+#rp-recommend-reason,
+.rp-anchor-help,
+.rp-audit-call-notice {
+    display: block;
+    margin: 5px 0 0;
+    opacity: 0.72;
+    font-size: 0.84em;
+    line-height: 1.45;
+}
+
+#rp-anchor-primary {
+    margin-top: 8px;
+    font-weight: 800;
+}
+
+#rp-anchor-support {
+    margin-top: 4px;
+    opacity: 0.82;
+    font-size: 0.9em;
+}
+
+#rp-anchor-focus,
+#rp-recommend-result {
+    margin-top: 7px;
+    padding: 8px 10px;
+    border-left: 3px solid var(--sb-blue-strong);
+    border-radius: 6px;
+    background: var(--sb-blue-selected);
+}
+
+#rp-anchor-focus {
+    font-weight: 700;
+}
+
+.rp-audit-interval-control {
+    margin-top: 9px !important;
+}
+
+.rp-audit-interval-control span {
+    display: block;
+    margin-bottom: 2px;
+    font-size: 0.88em;
+}
+
+#rp-recommend-genre-btn,
+#rp-recommend-apply-btn,
+#rp-manual-audit-btn,
+#rp-custom-genre-add-btn,
+#rp-custom-plot-add-btn {
+    width: 100%;
+    min-height: 40px;
+    margin-top: 8px;
+}
+
+#rp-custom-genre-editor summary,
+#rp-custom-plot-editor summary {
+    color: color-mix(in srgb, currentColor 70%, var(--sb-blue-strong) 30%);
+    font-weight: 750;
+    cursor: pointer;
+}
+
+#rp-custom-genre-editor .rp-custom-help,
+#rp-custom-genre-status,
+#rp-custom-plot-status,
+.rp-custom-empty {
+    margin: 6px 0;
+    opacity: 0.72;
+    font-size: 0.84em;
+}
+
+#rp-custom-genre-list {
+    display: grid;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.rp-custom-genre-item {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 8px;
+    border: 1px solid rgba(120, 167, 232, 0.25);
+    border-radius: 8px;
+    background: rgba(120, 167, 232, 0.06);
+}
+
+.rp-custom-genre-item small {
+    display: block;
+    overflow-wrap: anywhere;
+    opacity: 0.68;
+    font-weight: normal;
+}
+
+.rp-custom-genre-delete {
+    min-width: 54px;
+}
+
+#rp-booster-plot-panel {
+    position: relative;
+}
+
+#rp-booster-popup .rp-plot-panel-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sb-gap);
+}
+
+#rp-booster-popup .rp-plot-panel-heading h4 {
+    margin: 0;
+}
+
+#rp-booster-popup .rp-plot-history-button {
+    position: relative;
+    display: grid;
+    place-items: center;
+    flex: 0 0 auto;
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    border: 1px solid var(--sb-blue-border);
+    border-radius: 50%;
+    background: var(--sb-blue-panel);
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+}
+
+#rp-booster-popup .rp-plot-history-button:hover,
+#rp-booster-popup .rp-plot-history-button[aria-expanded="true"] {
+    border-color: var(--sb-blue-strong);
+    background: var(--sb-blue-selected);
+}
+
+#rp-booster-popup .rp-plot-history-count {
+    position: absolute;
+    top: -5px;
+    right: -5px;
+    display: grid;
+    place-items: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 4px;
+    border-radius: 9px;
+    background: var(--sb-blue-strong);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 800;
+    line-height: 1;
+}
+
+#rp-booster-popup .rp-plot-history-drawer {
+    margin: 8px 0 10px;
+    padding: 10px;
+    border: 1px solid var(--sb-blue-border);
+    border-radius: var(--sb-radius-large);
+    background: var(--sb-blue-panel);
+    box-shadow: 0 5px 14px var(--sb-blue-shadow);
+}
+
+#rp-booster-popup .rp-plot-history-drawer-head,
+#rp-booster-popup .rp-plot-history-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+#rp-booster-popup .rp-plot-history-drawer-head strong {
+    color: color-mix(in srgb, currentColor 65%, var(--sb-blue-strong) 35%);
+}
+
+#rp-booster-popup .rp-plot-history-close,
+#rp-booster-popup .rp-plot-history-delete,
+#rp-booster-popup .rp-plot-category-delete {
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--sb-danger);
+    font: inherit;
+    cursor: pointer;
+    opacity: 0.72;
+}
+
+#rp-booster-popup .rp-plot-history-close:hover,
+#rp-booster-popup .rp-plot-history-delete:hover,
+#rp-booster-popup .rp-plot-category-delete:hover {
+    background: transparent;
+    opacity: 1;
+}
+
+#rp-booster-popup .rp-plot-history-close,
+#rp-booster-popup .rp-plot-history-delete {
+    width: 28px;
+    height: 28px;
+    font-size: 20px;
+}
+
+#rp-booster-popup .rp-plot-history-help,
+#rp-booster-popup .rp-plot-history-empty {
+    margin: 4px 0 7px;
+    opacity: 0.7;
+    font-size: 0.82em;
+}
+
+#rp-booster-popup .rp-plot-history-card {
+    margin-top: 7px;
+    padding: 8px;
+    border: 1px solid rgba(120, 167, 232, 0.28);
+    border-radius: 9px;
+    background: color-mix(in srgb, currentColor 3%, transparent);
+}
+
+#rp-booster-popup .rp-plot-history-card.is-current {
+    border-color: var(--sb-blue-strong);
+    background: var(--sb-blue-selected);
+}
+
+#rp-booster-popup .rp-plot-history-current {
+    display: inline-block;
+    margin-left: 4px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: var(--sb-blue-selected);
+    color: var(--sb-blue-text);
+    font-size: 0.72em;
+}
+
+#rp-booster-popup .rp-plot-history-card p {
+    display: -webkit-box;
+    margin: 5px 0 7px;
+    overflow: hidden;
+    opacity: 0.82;
+    font-size: 0.84em;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+}
+
+#rp-booster-popup .rp-plot-history-load,
+#rp-booster-popup .rp-plot-history-clear {
+    width: 100%;
+    min-height: 36px;
+}
+
+#rp-booster-popup .rp-plot-history-load {
+    border-color: var(--sb-blue-border);
+    font-size: 0.84em;
+}
+
+#rp-booster-popup .rp-plot-history-clear {
+    margin-top: 8px;
+    opacity: 0.72;
+}
+
+#rp-booster-popup .rp-plot-mode-switch {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    margin: 10px 0;
+    padding: 4px;
+    border: 1px solid var(--sb-blue-border);
+    border-radius: 12px;
+    background: var(--sb-blue-panel);
+}
+
+#rp-booster-popup .rp-plot-section-title {
+    margin: 10px 0 5px;
+    font-weight: 800;
+}
+
+#rp-booster-popup .rp-plot-category-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+}
+
+#rp-booster-popup .rp-plot-category-item {
+    position: relative;
+    min-width: 0;
+}
+
+#rp-booster-popup .rp-plot-category-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    width: 100%;
+    min-width: 0;
+    min-height: 58px;
+    padding: 6px 4px;
+    border: 1px solid var(--sb-blue-border);
+    border-radius: 10px;
+    background: rgba(120, 167, 232, 0.045);
+    color: inherit;
+    font: inherit;
+    font-size: 0.84em;
+    line-height: 1.2;
+    cursor: pointer;
+    writing-mode: horizontal-tb;
+    word-break: keep-all;
+}
+
+#rp-booster-popup .rp-plot-category-card:hover {
+    border-color: var(--sb-blue-strong);
+    background: var(--sb-blue-hover);
+}
+
+#rp-booster-popup .rp-plot-category-card.is-selected {
+    border-color: var(--sb-blue-strong);
+    background: var(--sb-blue-selected);
+    color: color-mix(in srgb, currentColor 65%, var(--sb-blue-strong) 35%);
+    font-weight: 800;
+    box-shadow: 0 2px 6px var(--sb-blue-shadow);
+}
+
+#rp-booster-popup .rp-plot-category-emoji {
+    font-size: 1.08em;
+}
+
+#rp-booster-popup .rp-plot-category-delete {
+    position: absolute;
+    z-index: 1;
+    top: 4px;
+    right: 4px;
+    width: 20px;
+    height: 20px;
+    font-size: 17px;
+}
+
+#rp-booster-popup .rp-plot-category-description {
+    min-height: 0;
+    margin: 5px 0 7px;
+    padding: 6px 8px;
+    border-left: 3px solid var(--sb-blue-strong);
+    border-radius: 6px;
+    background: var(--sb-blue-panel);
+    opacity: 0.82;
+    font-size: 0.84em;
+}
+
+#rp-booster-popup .rp-custom-plot-row {
+    display: grid;
+    grid-template-columns: minmax(80px, 0.28fr) minmax(0, 1fr);
+    gap: 8px;
+}
+
+#rp-plot-idea-wrap {
+    margin-top: 10px;
+}
+
+#rp-event-status {
+    min-height: 1.35em;
+    margin: 6px 0 0;
+    opacity: 0.78;
+    font-size: 0.86em;
+}
+
+#rp-event-status.is-loading::before {
+    content: "⏳ ";
+}
+
+#rp-event-generate-btn {
+    width: 100%;
+    min-height: 44px;
+    margin-top: 10px;
+    border-color: var(--sb-blue-strong);
+    background: var(--sb-blue-strong);
+    color: #fff;
+    font-weight: 800;
+}
+
+#rp-event-result-wrap {
+    margin-top: 10px;
+    padding: 10px;
+    border: 1px solid var(--sb-blue-border);
+    border-radius: var(--sb-radius-large);
+    background: var(--sb-blue-panel);
+}
+
+#rp-event-result {
+    min-height: 110px;
+    margin-top: 4px;
+    resize: vertical;
+}
+
+#rp-booster-popup .rp-event-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 7px;
+    margin-top: 9px;
+}
+
+#rp-booster-popup .rp-event-actions .menu_button {
+    width: 100%;
+    min-width: 0;
+    min-height: 42px;
+    border-color: var(--sb-blue-border);
+    background: var(--sb-blue-panel);
+    white-space: normal;
+    writing-mode: horizontal-tb;
+    word-break: keep-all;
+}
+
+#rp-booster-popup #rp-event-inject-btn {
+    border-color: var(--sb-blue-strong);
+    background: var(--sb-blue-strong);
+    color: #fff;
+    font-weight: 800;
+}
+
+#rp-booster-popup .rp-event-actions .rp-event-clear-action {
+    grid-column: 1 / -1;
+    border-color: rgba(200, 95, 127, 0.25);
+    background: transparent;
+    color: var(--sb-danger);
+    opacity: 0.78;
+}
+
+#rp-open-booster {
+    cursor: pointer;
+}
+
+#rp-storybooster-settings .inline-drawer-content {
+    padding-bottom: 10px;
+}
+
+#rp-storybooster-settings label {
+    display: block;
+    margin: 10px 0 5px;
+    color: #557fc4;
+    font-weight: 650;
+}
+
+#rp-storybooster-settings select,
+#rp-storybooster-settings input[type="number"] {
+    width: 100%;
+    border-color: rgba(120, 167, 232, 0.48);
+}
+
+#rp-storybooster-settings .rp-settings-help {
+    display: block;
+    margin-top: 4px;
+    opacity: 0.68;
+    line-height: 1.4;
+}
+
+@media (max-width: 600px) {
+    #rp-booster-popup {
+        max-height: 75vh;
+    }
+
+    .rp-genre-select-grid {
+        grid-template-columns: 1fr;
+    }
+
+    #rp-booster-popup .rp-event-actions {
+        grid-template-columns: 1fr;
+    }
+
+    #rp-booster-popup .rp-event-actions .rp-event-clear-action {
+        grid-column: auto;
+    }
+}
+
+@media (max-width: 430px) {
+    #rp-booster-popup .rp-custom-plot-row {
+        grid-template-columns: 1fr;
+    }
+
+    #rp-booster-popup .rp-plot-category-card {
+        min-height: 54px;
+        font-size: 0.8em;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    #rp-booster-popup * {
+        scroll-behavior: auto !important;
+    }
+}
