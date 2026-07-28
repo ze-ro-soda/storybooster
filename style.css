@@ -228,6 +228,109 @@
     font-weight: 700;
 }
 
+.rp-last-audit {
+    margin-top: 9px;
+    border: 1px solid rgba(120, 167, 232, 0.34);
+    border-radius: 9px;
+    background: rgba(255, 255, 255, 0.32);
+}
+
+.rp-last-audit summary {
+    padding: 9px 10px;
+    color: color-mix(in srgb, currentColor 70%, var(--sb-blue-strong) 30%);
+    font-weight: 800;
+    cursor: pointer;
+}
+
+.rp-last-audit-body {
+    padding: 0 10px 10px;
+    border-top: 1px solid rgba(120, 167, 232, 0.2);
+}
+
+.rp-last-audit-body p {
+    margin: 7px 0 0;
+    font-size: 0.84em;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.rp-last-audit-meta,
+.rp-last-audit-connection {
+    opacity: 0.72;
+}
+
+.rp-audit-status-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 5px;
+    margin-top: 8px;
+}
+
+.rp-audit-status-grid[hidden] {
+    display: none;
+}
+
+.rp-audit-status-item {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 6px 7px;
+    border: 1px solid rgba(120, 167, 232, 0.24);
+    border-radius: 7px;
+    background: var(--sb-blue-panel);
+}
+
+.rp-audit-status-label {
+    min-width: 0;
+    overflow: hidden;
+    font-size: 0.78em;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.rp-audit-status-chip {
+    flex: 0 0 auto;
+    min-width: 38px;
+    padding: 2px 6px;
+    border-radius: 999px;
+    font-size: 0.7em;
+    font-weight: 800;
+    line-height: 1.35;
+    text-align: center;
+}
+
+.rp-audit-status-chip.is-stable {
+    color: color-mix(in srgb, var(--sb-blue-text) 86%, currentColor 14%);
+    background: rgba(120, 167, 232, 0.22);
+}
+
+.rp-audit-status-chip.is-dormant,
+.rp-audit-status-chip.is-off {
+    opacity: 0.7;
+    background: rgba(127, 137, 151, 0.14);
+}
+
+.rp-audit-status-chip.is-weak {
+    color: color-mix(in srgb, var(--sb-danger) 82%, currentColor 18%);
+    background: rgba(200, 95, 127, 0.14);
+}
+
+.rp-last-audit-status {
+    padding: 6px 8px;
+    border-radius: 6px;
+    background: var(--sb-blue-selected);
+    font-weight: 750;
+}
+
+#rp-cancel-audit-correction {
+    width: 100%;
+    min-height: 38px;
+    margin-top: 9px;
+}
+
 .rp-audit-interval-control {
     margin-top: 9px !important;
 }

@@ -6,7 +6,7 @@
   "js": "index.js",
   "css": "style.css",
   "author": "희연",
-  "version": "0.9.0",
+  "version": "0.10.4",
   "homePage": "https://github.com/sagwaringoapple/storybooster",
   "auto_update": true
 }

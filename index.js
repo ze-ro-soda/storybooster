@@ -33,6 +33,13 @@ const PLOT_PROMPT_KEY = "rp_plot_trigger";
 const DEFAULT_AUDIT_INTERVAL = 8;
 const MIN_AUDIT_INTERVAL = 5;
 const MAX_AUDIT_INTERVAL = 15;
+const GENRE_AUDIT_RESPONSE_LIMIT = 8;
+// Three of eight recent replies is enough to show a persistent primary genre
+// without demanding that every quiet or transitional reply advertise it.
+const PRIMARY_GENRE_EVIDENCE_RATIO = 0.375;
+// A supporting lens may be intermittent, so two distinct replies are enough
+// when the genre is also identifiable without seeing its label.
+const SUPPORT_GENRE_EVIDENCE_MINIMUM = 2;
 const DEFAULT_PLOT_MAX_TOKENS = 1200;
 const MIN_PLOT_MAX_TOKENS = 200;
 const MAX_PLOT_HISTORY = 5;
@@ -239,7 +246,7 @@ function ensureModuleSettings() {
             plotOutputLanguage: "ko",
             selectedPlotCategoryId: EVENT_CATEGORIES[0].id,
             backgroundProfileId: "",
-            settingsSchemaVersion: 9,
+            settingsSchemaVersion: 10,
         };
     }
     if (!extension_settings[MODULE_NAME].chats) {
@@ -255,13 +262,13 @@ function ensureModuleSettings() {
         !Number.isSafeInteger(
             extension_settings[MODULE_NAME].settingsSchemaVersion
         ) ||
-        extension_settings[MODULE_NAME].settingsSchemaVersion < 9
+        extension_settings[MODULE_NAME].settingsSchemaVersion < 10
     ) {
         if (extension_settings[MODULE_NAME].plotMaxTokens === 800) {
             extension_settings[MODULE_NAME].plotMaxTokens =
                 DEFAULT_PLOT_MAX_TOKENS;
         }
-        extension_settings[MODULE_NAME].settingsSchemaVersion = 9;
+        extension_settings[MODULE_NAME].settingsSchemaVersion = 10;
         saveSettingsDebounced();
     }
     if (
@@ -461,6 +468,7 @@ function ensureChatState() {
                 auditStatus: "waiting",
                 auditInterval: DEFAULT_AUDIT_INTERVAL,
                 recommendation: null,
+                lastAudit: null,
                 lastCountedMessageId: getLatestAssistantMessageId(),
             },
         };
@@ -513,6 +521,8 @@ const THINKING_OUTPUT_ERROR =
 function getRoleplayTranscript({
     messageLimit = 0,
     assistantRepliesOnly = 0,
+    assistantRepliesWithUserContext = 0,
+    numberAssistantReplies = false,
     maxChars = 180000,
 } = {}) {
     const context = getContext();
@@ -525,7 +535,25 @@ function getRoleplayTranscript({
             message.mes.trim()
     );
 
-    if (assistantRepliesOnly > 0) {
+    if (assistantRepliesWithUserContext > 0) {
+        const assistantIndexes = messages
+            .map((message, index) => (!message.is_user ? index : -1))
+            .filter((index) => index >= 0)
+            .slice(-assistantRepliesWithUserContext);
+        const selectedIndexes = new Set(assistantIndexes);
+        for (const assistantIndex of assistantIndexes) {
+            for (let index = assistantIndex - 1; index >= 0; index -= 1) {
+                if (messages[index].is_user) {
+                    selectedIndexes.add(index);
+                    break;
+                }
+                if (!messages[index].is_user) break;
+            }
+        }
+        messages = [...selectedIndexes]
+            .sort((a, b) => a - b)
+            .map((index) => messages[index]);
+    } else if (assistantRepliesOnly > 0) {
         messages = messages
             .filter((message) => !message.is_user)
             .slice(-assistantRepliesOnly);
@@ -533,8 +561,13 @@ function getRoleplayTranscript({
         messages = messages.slice(-messageLimit);
     }
 
+    let assistantResponseNumber = 0;
     const formatted = messages.map((message) => {
-        const role = message.is_user ? "USER" : "CHAR";
+        const role = message.is_user
+            ? "USER_CONTEXT"
+            : numberAssistantReplies
+              ? `CHAR_RESPONSE_${++assistantResponseNumber}`
+              : "CHAR";
         const name = String(message.name || role).replace(/\s+/g, " ").trim();
         return `[${role}:${name}]\n${message.mes.trim()}`;
     });
@@ -549,10 +582,20 @@ function getRoleplayTranscript({
     }
 
     const wasTrimmed = selected.length < formatted.length;
+    let retainedAssistantResponseNumber = 0;
+    const finalSelected = numberAssistantReplies
+        ? selected.map((item) =>
+              item.replace(
+                  /^\[CHAR_RESPONSE_\d+:/,
+                  (match) =>
+                      `[CHAR_RESPONSE_${++retainedAssistantResponseNumber}:`
+              )
+          )
+        : selected;
     return [
         "<roleplay_transcript>",
         wasTrimmed ? "[Earlier messages omitted to fit the analysis window.]" : "",
-        selected.join("\n\n"),
+        finalSelected.join("\n\n"),
         "</roleplay_transcript>",
     ]
         .filter(Boolean)
@@ -706,13 +749,63 @@ function getConnectionProfileService() {
     return getContext()?.ConnectionManagerRequestService || null;
 }
 
+function createBackgroundConnectionSnapshot(profile = null) {
+    if (!profile) {
+        return Object.freeze({
+            source: "main",
+            profileId: "",
+            profileName: "현재 채팅 연결",
+            model: "",
+        });
+    }
+    return Object.freeze({
+        source: "profile",
+        profileId: String(profile.id),
+        profileName: String(profile.name || "이름 없는 프로필"),
+        model: String(profile.model || ""),
+    });
+}
+
+async function resolveBackgroundConnectionSnapshot() {
+    const selectedProfileId = String(
+        ensureModuleSettings().backgroundProfileId || ""
+    );
+    if (!selectedProfileId) return createBackgroundConnectionSnapshot();
+
+    const service = getConnectionProfileService();
+    if (
+        !service ||
+        typeof service.sendRequest !== "function" ||
+        typeof service.getSupportedProfiles !== "function"
+    ) {
+        const error = new Error(
+            "선택한 보조 AI 연결을 사용할 수 없습니다. SillyTavern의 연결 프로필 기능을 확인하거나 현재 채팅 연결을 선택해 주세요."
+        );
+        error.code = "STORYBOOSTER_PROFILE_SERVICE_UNAVAILABLE";
+        throw error;
+    }
+
+    const profiles = [...(await service.getSupportedProfiles())];
+    const profile = profiles.find(
+        (item) => String(item?.id || "") === selectedProfileId
+    );
+    if (!profile) {
+        const error = new Error(
+            "선택한 보조 AI 연결 프로필을 찾을 수 없습니다. 확장 설정에서 다른 프로필이나 현재 채팅 연결을 선택해 주세요."
+        );
+        error.code = "STORYBOOSTER_PROFILE_NOT_FOUND";
+        throw error;
+    }
+    return createBackgroundConnectionSnapshot(profile);
+}
+
 async function generateWithBackgroundProfile({
     prompt,
     transcript,
     responseLength,
+    connectionSnapshot,
 }) {
-    const profileId = ensureModuleSettings().backgroundProfileId;
-    if (!profileId) return null;
+    if (connectionSnapshot?.source !== "profile") return null;
 
     const service = getConnectionProfileService();
     if (!service || typeof service.sendRequest !== "function") {
@@ -722,7 +815,7 @@ async function generateWithBackgroundProfile({
     }
 
     const result = await service.sendRequest(
-        profileId,
+        connectionSnapshot.profileId,
         [
             {
                 role: "system",
@@ -756,7 +849,10 @@ async function generateStructuredAnalysis({
     jsonSchema,
     responseLength = 1200,
     retryOnLength = true,
+    connectionSnapshot = null,
 }) {
+    const stableConnection =
+        connectionSnapshot || (await resolveBackgroundConnectionSnapshot());
     try {
         const context = getContext();
         const profileResult = await generateWithBackgroundProfile({
@@ -766,6 +862,7 @@ async function generateStructuredAnalysis({
             ].join("\n"),
             transcript,
             responseLength,
+            connectionSnapshot: stableConnection,
         });
         if (profileResult !== null) return profileResult;
 
@@ -832,6 +929,7 @@ async function generateStructuredAnalysis({
                 jsonSchema,
                 responseLength: Math.max(4800, responseLength * 2),
                 retryOnLength: false,
+                connectionSnapshot: stableConnection,
             });
         }
         throw error;
@@ -850,22 +948,40 @@ const GENRE_CORRECTION_LABELS = Object.freeze({
 
 const GENRE_CORRECTION_MODULES = Object.freeze({
     primary_genre:
-        "Restore the primary genre as the governing logic of {{char}}'s motives, priorities, relationship behavior, and the scene's emotional meaning. Do not announce the genre or force a trope.",
+        "Make the primary genre unmistakably perceptible in this response. Use at least one concrete, genre-specific mechanism from the primary genre foundation and let it meaningfully shape {{char}}'s choice, relationship behavior, or the scene's emotional consequence. Continue the existing situation; do not introduce unrelated lore, a forced trope, or an arbitrary event merely to display the genre.",
     char_agency:
-        "Increase {{char}}'s agency within the current situation. Let {{char}} initiate dialogue or action, make a decision, pursue a motive, or change their stance instead of only reacting to {{user}}.",
+        "Give {{char}} meaningful agency in this response. {{char}} must initiate at least one relevant action, decision, proposal, refusal, or change of stance based on an established motive instead of only reacting to {{user}}. Leave {{user}}'s response and the outcome open.",
     relationship:
-        "Strengthen the evolving relationship between {{char}} and {{user}} through subtext, remembered context, boundaries, trust, tension, emotional distance, or a meaningful response from {{char}}.",
+        "Make the evolving relationship clearly matter in this response. Use a concrete relational beat from {{char}}—through subtext, remembered context, boundaries, trust, tension, emotional distance, or a meaningful response—that changes or clarifies the interaction without deciding {{user}}'s reaction.",
     support_texture:
-        "Restore the supporting genre as a secondary lens: let its characteristic pressures, relationship context, social or world logic, atmosphere, and material or sensory texture shape developments already justified by the scene. Keep the primary genre central and do not manufacture an unrelated event merely to display the supporting genre.",
+        "Make the supporting genre clearly perceptible as a secondary lens in this response. Use at least one concrete, genre-specific pressure, relationship context, social or world rule, atmospheric element, or material and sensory detail to shape a development already justified by the scene. Keep the primary genre central; do not introduce unrelated lore or manufacture an event merely to display the supporting genre.",
     description:
-        "Make the scene tangible with selective environmental, sensory, spatial, and behavioral detail. Integrate description with action and emotion instead of pausing for an ornamental paragraph.",
+        "Make the scene concretely tangible in this response through a small number of specific environmental, sensory, spatial, or behavioral details. Each detail must interact with {{char}}'s action, attention, or emotion instead of forming a detached ornamental paragraph.",
     continuity:
-        "Continue the unresolved action, conversation, emotional beat, and immediate causal consequences already present. Avoid an abrupt interruption, location change, time skip, or unrelated development.",
+        "First advance the unresolved action, conversation, emotional beat, or immediate causal consequence already present. Preserve characterization, location, timing, and spatial logic before adding any new development; avoid an abrupt interruption, location change, time skip, or unrelated turn.",
     repetition:
-        "Avoid repeating the recent response's dominant gesture, sensory image, sentence pattern, or relational beat. Express the same genre identity through a different concrete technique.",
+        "Do not reuse the recent responses' dominant gesture, sensory image, sentence pattern, or relational beat. Choose a visibly different concrete technique while preserving characterization, continuity, and the selected genre identity.",
+});
+
+const GENRE_CORRECTION_DESCRIPTIONS = Object.freeze({
+    primary_genre:
+        "캐릭터의 동기·관계·장면 의미에서 주 장르가 다시 중심이 되도록 강화",
+    support_texture:
+        "현재 장면을 유지하며 보조 장르의 압력·분위기·묘사 질감을 보강",
+    char_agency:
+        "캐릭터가 자신의 목적에 따라 먼저 말하거나 행동하고 선택하도록 강화",
+    relationship:
+        "캐릭터와 펠소 사이의 신뢰·긴장·경계·감정 변화를 행동과 대화에 반영",
+    description:
+        "행동과 감정에 연결된 배경·감각·공간·행동 묘사를 보강",
+    continuity:
+        "진행 중인 행동·대화·감정과 즉각적인 결과를 먼저 이어가도록 보정",
+    repetition:
+        "최근 반복된 몸짓·이미지·문장 패턴·관계 흐름을 다른 표현으로 전환",
 });
 
 const genreAuditPendingChats = new Set();
+let mainGenerationInProgress = false;
 
 function showGenreAuditToast(kind, message) {
     const options = {
@@ -899,10 +1015,10 @@ function buildGenrePromptText(selection) {
     );
 
     return [
-        "[STORYBOOSTER — ADAPTIVE GENRE ANCHOR]",
+        "[STORYBOOSTER — GENRE ANCHOR]",
         `PRIMARY GENRE: ${getGenrePromptLabel(primaryGenre)}`,
         `PRIMARY GENRE FOUNDATION: ${getGenreProfile(primaryGenre).core}`,
-        "PRIMARY ROLE: Govern {{char}}'s motives, priorities, relationship behavior, scene emphasis, and emotional logic. Keep this genre clearly perceptible without naming it or forcing a fixed trope.",
+        "PRIMARY ROLE: Govern {{char}}'s motives, choices, relationship behavior, scene emphasis, and emotional logic. Keep the genre perceptible without naming it or forcing a fixed trope.",
         supportGenre
             ? `SUPPORTING GENRE: ${getGenrePromptLabel(supportGenre)}`
             : "SUPPORTING GENRE: None",
@@ -910,18 +1026,21 @@ function buildGenrePromptText(selection) {
             ? `SUPPORTING GENRE FOUNDATION: ${getGenreProfile(supportGenre).core}`
             : "",
         supportGenre
-            ? "SUPPORTING ROLE — SECONDARY GENRE LENS: Let this genre influence the pressures surrounding existing motives, relationship context, social or world logic, atmosphere, prose rhythm, and material or sensory texture. It may deepen developments already justified by the current scene, but the primary genre must remain the emotional and narrative center. Do not seize the scene direction or manufacture an unrelated event merely to display the supporting genre."
+            ? "SUPPORTING ROLE — SECONDARY GENRE LENS: Shape existing pressures, relationship context, social or world logic, atmosphere, prose rhythm, and sensory texture. Deepen only developments justified by the current scene; keep the primary genre central and do not manufacture an unrelated event."
             : "",
         "ALWAYS-ON BOOST:",
-        "- Keep {{char}} proactive and self-directed. {{char}} should pursue their own motives, initiate dialogue or action, make decisions, and meaningfully participate in the current relationship and scene instead of waiting passively for {{user}}.",
-        "- Permit organic development caused by {{char}}'s motives, established relationships, prior choices, promises, conflicts, information, and immediate circumstances. Do not manufacture an unrelated external incident just to create movement.",
-        "- Preserve and deepen the relationship between {{char}} and {{user}} through action, dialogue, subtext, boundaries, trust, tension, memory, and changing emotional distance.",
-        "- Strengthen atmosphere and description through selective sensory, spatial, environmental, social, and behavioral detail. Description must serve the current action and emotional meaning.",
-        "- Continue unresolved actions, conversations, emotions, and immediate causal consequences before introducing anything new. Preserve characterization, world rules, spatial continuity, and the current scene's momentum.",
+        "- Keep {{char}} proactive and self-directed: pursue motives, initiate dialogue or action, make decisions, and participate meaningfully instead of waiting passively for {{user}}.",
+        "- Let development arise from established motives, relationships, choices, conflicts, information, and immediate circumstances; do not invent an unrelated incident merely to create movement.",
+        "- Deepen the relationship through action, dialogue, subtext, boundaries, trust, tension, memory, and changing emotional distance.",
+        "- Use selective sensory, spatial, environmental, social, and behavioral detail that serves the action and emotional meaning.",
+        "- Continue unresolved actions, conversations, emotions, and immediate consequences before introducing anything new. Preserve characterization, world rules, space, and momentum.",
         "DRIFT GUARD:",
         "- Before finalizing the response, silently identify the single most significant drift from the selected genre foundations, established characterization, relationship continuity, or current scene momentum. Correct only that drift within the scene; do not output the check.",
         correctionLines.length
             ? "DIAGNOSIS-BASED DRIFT CORRECTION FOR THIS RESPONSE:"
+            : "",
+        correctionLines.length
+            ? "Treat the following corrections as priority requirements for this response, not optional suggestions. Make each correction clearly perceptible while continuing the current scene organically."
             : "",
         ...correctionLines,
     ]
@@ -934,7 +1053,7 @@ function updateGenrePrompt() {
     const selection = getGenreAnchorSelection(s);
 
     if (!selection) {
-        setExtensionPrompt(GENRE_PROMPT_KEY, "", extension_prompt_types.IN_CHAT, 0);
+        setExtensionPrompt(GENRE_PROMPT_KEY, "", extension_prompt_types.IN_CHAT, 1);
         console.log(`[${MODULE_NAME}] genre prompt cleared (no primary genre)`);
         return;
     }
@@ -944,7 +1063,7 @@ function updateGenrePrompt() {
         GENRE_PROMPT_KEY,
         text,
         extension_prompt_types.IN_CHAT,
-        0, // depth 0 = after the latest chat message for a clearly visible boost
+        1, // persistent genre anchor sits just behind one-shot depth-0 plot injections
         false, // scan
         extension_prompt_roles.SYSTEM
     );
@@ -958,7 +1077,7 @@ function buildGenreAuditPrompt(selection) {
         : "";
 
     return [
-        "Analyze only the two most recent assistant roleplay responses. Do not continue the roleplay and do not propose a plot event.",
+        `Analyze up to the ${GENRE_AUDIT_RESPONSE_LIMIT} most recent numbered {{char}} roleplay responses. The immediately preceding {{user}} messages are context only: evaluate only blocks labelled CHAR_RESPONSE_1 through CHAR_RESPONSE_${GENRE_AUDIT_RESPONSE_LIMIT}. Do not continue the roleplay and do not propose a plot event.`,
         `Primary genre: ${getGenrePromptLabel(selection.primaryGenre)}.`,
         `Primary genre evidence standard: ${primaryFoundation}`,
         selection.supportGenre
@@ -967,16 +1086,24 @@ function buildGenreAuditPrompt(selection) {
         selection.supportGenre
             ? `Supporting genre evidence standard: ${supportFoundation}`
             : "",
+        "This is a strict drift audit, not a genre-compatibility or recommendation task. A genre may suit the roleplay and still be weak when its distinctive traits are not actually visible in the supplied {{char}} responses.",
         "Rate every requested dimension explicitly as present or weak. Judge only what is actually visible in the supplied responses, even if the genre selection was changed after those responses were written.",
-        "For primary_genre, require distinctive evidence from the primary genre foundation shaping motives, relationship behavior, scene emphasis, or emotional logic. Generic emotion, conflict, action, or competent prose is not enough.",
-        "For support_texture, require distinctive evidence from the supporting genre foundation shaping contextual pressure, relationship or world logic, atmosphere, or material and sensory texture. Generic compatibility or future potential is not evidence.",
+        "Begin with primary_genre=weak. Change it to present only when multiple numbered {{char}} responses contain clear, genre-specific evidence from the primary foundation that shapes motives, relationship behavior, scene emphasis, or emotional logic. Generic emotion, conflict, danger, action, atmosphere, or competent prose is not enough.",
+        "Before rating primary_genre as present, apply this counterfactual check: if the same responses could still be described accurately without the selected primary genre, rate it weak.",
+        "The supporting genre is a conditional secondary lens, not a second primary genre. It may shape existing pressure, relationship context, social or world logic, atmosphere, prose rhythm, or sensory texture when the current scene offers a natural opening. It must not seize the scene direction or require a new event merely to prove itself.",
+        "Use support_texture=present only when at least two distinct numbered {{char}} responses contain genre-specific influence that would let a reader identify the supporting genre without seeing its label. Use support_texture=dormant when the supporting lens has no clear evidence and the current scene offers no natural, already-established opening for it. Use support_texture=weak only when an established or naturally relevant supporting-genre element had a clear opening in one or more numbered {{char}} responses but {{char}} flattened, ignored, or contradicted it.",
+        "Before rating support_texture as present, apply this counterfactual check: if the cited texture could belong equally to many unrelated genres, it is not identifiable and cannot be present. A generic mood, an isolated word or object, ordinary contemporary technology, broad danger, secrecy, conflict, compatibility, or future potential is not sufficient evidence.",
+        "For world or setting lenses such as fantasy, supernatural, urban fantasy, science fiction, cyberpunk, or historical fiction, require explicit setting-specific phenomena, rules, entities, institutions, material conditions, or consequences. Metaphor, coincidence, unease, an ordinary city, or commonplace technology does not count.",
+        "Do not infer genre evidence from the selected labels themselves. Do not reward an intentionally changed or unrelated genre unless the supplied responses independently demonstrate it.",
+        "Return primary_genre_evidence and support_texture_evidence as arrays of the numbered CHAR_RESPONSE values that contain distinctive evidence. Use the integer only: for CHAR_RESPONSE_3 return 3. Do not include a response merely because it is compatible with the genre.",
+        "Return support_texture_opportunity as the numbered CHAR_RESPONSE values where an already-established or naturally relevant supporting-genre element had a clear opening but was ignored, flattened, or contradicted. Return support_texture_identifiable=true only when the evidence would identify the supporting genre without its label.",
         "char_agency means {{char}} pursues motives, initiates dialogue or action, makes decisions, and does more than passively react to {{user}}.",
         "relationship means the interaction between {{char}} and {{user}} retains meaningful subtext, boundaries, trust, tension, memory, or emotional movement.",
         "support_texture means the supporting genre's characteristic pressures, relationship context, social or world logic, atmosphere, and material or sensory texture are perceptible without displacing the primary genre or forcing an unrelated event.",
         "Also detect repetition when the latest responses reuse the same dominant gesture, image, sentence pattern, or relational beat.",
-        'Return JSON only with these exact keys, using one allowed literal for each value. Example: {"primary_genre":"weak","support_texture":"present","char_agency":"present","relationship":"present","description":"weak","continuity":"present","repetition":false}.',
-        "Allowed values: primary_genre, char_agency, relationship, description, continuity = present or weak; support_texture = present, weak, or na; repetition = true or false.",
-        "Use support_texture=na when there is no supporting genre. Do not omit any key.",
+        'Return JSON only with these exact keys, using one allowed literal for each value. Example: {"primary_genre":"weak","primary_genre_evidence":[],"support_texture":"dormant","support_texture_evidence":[],"support_texture_opportunity":[],"support_texture_identifiable":false,"char_agency":"present","relationship":"present","description":"weak","continuity":"present","repetition":false}.',
+        "Allowed values: primary_genre, char_agency, relationship, description, continuity = present or weak; support_texture = present, dormant, weak, or na; support_texture_identifiable and repetition = true or false.",
+        "Use support_texture=na, support_texture_evidence=[], support_texture_opportunity=[], and support_texture_identifiable=false when there is no supporting genre. Do not omit any key.",
         "Keep the analysis brief. Do not restate the responses or explain every criterion one by one.",
         "Always reserve enough output space to finish with the required JSON object.",
         "The JSON must be the final answer, not reasoning or thinking.",
@@ -985,7 +1112,11 @@ function buildGenreAuditPrompt(selection) {
         .join("\n");
 }
 
-function parseGenreAuditResult(rawResult, hasSupportGenre) {
+function parseGenreAuditResult(
+    rawResult,
+    hasSupportGenre,
+    assistantResponseCount = GENRE_AUDIT_RESPONSE_LIMIT
+) {
     const parsed = extractJsonObject(rawResult, "Genre audit returned no JSON object.");
     const correctionPriority = [
         "primary_genre",
@@ -1003,39 +1134,210 @@ function parseGenreAuditResult(rawResult, hasSupportGenre) {
         const standardRatingsValid = correctionPriority
             .filter((code) => code !== "support_texture")
             .every((code) => ["present", "weak"].includes(parsed[code]));
-        const supportRatingValid = ["present", "weak", "na"].includes(
+        const supportRatingValid = ["present", "dormant", "weak", "na"].includes(
             parsed.support_texture
         );
+        const evidenceValid =
+            Array.isArray(parsed.primary_genre_evidence) &&
+            Array.isArray(parsed.support_texture_evidence) &&
+            Array.isArray(parsed.support_texture_opportunity) &&
+            typeof parsed.support_texture_identifiable === "boolean";
         if (
             !standardRatingsValid ||
-            !supportRatingValid
+            !supportRatingValid ||
+            !evidenceValid
         ) {
             throw new Error("Genre audit returned incomplete ratings.");
         }
     }
-    const requestedCodes = isLegacyResult
-        ? parsed.weak
-        : correctionPriority.filter((code) => parsed[code] === "weak");
-    const requestedCodeSet = new Set(
-        requestedCodes.filter(
-            (code) =>
-                GENRE_AUDIT_CODES.includes(code) &&
-                code !== "repetition" &&
-                (hasSupportGenre || code !== "support_texture")
+
+    const reviewedResponses = Math.max(
+        0,
+        Math.min(
+            GENRE_AUDIT_RESPONSE_LIMIT,
+            Number.isSafeInteger(assistantResponseCount)
+                ? assistantResponseCount
+                : GENRE_AUDIT_RESPONSE_LIMIT
         )
     );
-    const codes = correctionPriority.filter((code) =>
-        requestedCodeSet.has(code)
+    const normalizeEvidence = (values) =>
+        [
+            ...new Set(
+                (Array.isArray(values) ? values : [])
+                    .map((value) => Number(value))
+                    .filter(
+                        (value) =>
+                            Number.isSafeInteger(value) &&
+                            value >= 1 &&
+                            value <= reviewedResponses
+                    )
+            ),
+        ].sort((a, b) => a - b);
+    const evidence = {
+        primary: isLegacyResult
+            ? []
+            : normalizeEvidence(parsed.primary_genre_evidence),
+        support:
+            isLegacyResult || !hasSupportGenre
+                ? []
+                : normalizeEvidence(parsed.support_texture_evidence),
+        supportOpportunity:
+            isLegacyResult || !hasSupportGenre
+                ? []
+                : normalizeEvidence(parsed.support_texture_opportunity),
+        supportIdentifiable:
+            !isLegacyResult &&
+            hasSupportGenre &&
+            parsed.support_texture_identifiable === true,
+        reviewedResponses,
+    };
+
+    const legacyWeak = new Set(
+        (isLegacyResult ? parsed.weak : []).filter((code) =>
+            GENRE_AUDIT_CODES.includes(code)
+        )
     );
+    const primaryEvidenceMinimum =
+        reviewedResponses > 0
+            ? Math.min(
+                  reviewedResponses,
+                  Math.max(
+                      1,
+                      Math.ceil(
+                          reviewedResponses * PRIMARY_GENRE_EVIDENCE_RATIO
+                      )
+                  )
+              )
+            : 1;
+    const supportEvidenceMinimum =
+        reviewedResponses > 0
+            ? Math.min(reviewedResponses, SUPPORT_GENRE_EVIDENCE_MINIMUM)
+            : 1;
+    const ratings = isLegacyResult
+        ? {
+              primary_genre: legacyWeak.has("primary_genre")
+                  ? "weak"
+                  : "present",
+              support_texture: hasSupportGenre
+                  ? legacyWeak.has("support_texture")
+                      ? "weak"
+                      : "present"
+                  : "na",
+              char_agency: legacyWeak.has("char_agency")
+                  ? "weak"
+                  : "present",
+              relationship: legacyWeak.has("relationship")
+                  ? "weak"
+                  : "present",
+              description: legacyWeak.has("description")
+                  ? "weak"
+                  : "present",
+              continuity: legacyWeak.has("continuity")
+                  ? "weak"
+                  : "present",
+              repetition: parsed.repetition,
+          }
+        : {
+              primary_genre:
+                  parsed.primary_genre === "present" &&
+                  evidence.primary.length >= primaryEvidenceMinimum
+                      ? "present"
+                      : "weak",
+              support_texture: hasSupportGenre
+                  ? parsed.support_texture === "present" &&
+                    evidence.supportIdentifiable &&
+                    evidence.support.length >= supportEvidenceMinimum
+                      ? "present"
+                      : parsed.support_texture === "weak" &&
+                          evidence.supportOpportunity.length > 0
+                        ? "weak"
+                        : "dormant"
+                  : "na",
+              char_agency: parsed.char_agency,
+              relationship: parsed.relationship,
+              description: parsed.description,
+              continuity: parsed.continuity,
+              repetition: parsed.repetition,
+          };
 
-    if (parsed.repetition === true) codes.push("repetition");
+    const codes = correctionPriority.filter(
+        (code) =>
+            ratings[code] === "weak" &&
+            (hasSupportGenre || code !== "support_texture")
+    );
+    if (ratings.repetition === true) codes.push("repetition");
 
-    return [...new Set(codes)].slice(0, 2);
+    const correctionCodes = [...new Set(codes)].slice(0, 2);
+    return { ratings, correctionCodes, evidence };
+}
+
+function createGenreAuditRecord({
+    selection,
+    manual,
+    ratings = null,
+    correctionCodes = [],
+    evidence = null,
+    status,
+    connectionSnapshot = null,
+    errorMessage = "",
+}) {
+    return {
+        id: `audit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        createdAt: Date.now(),
+        mode: manual ? "manual" : "auto",
+        primaryId: String(selection?.primaryGenre?.id || ""),
+        primaryLabel: String(selection?.primaryGenre?.label || ""),
+        supportId: String(selection?.supportGenre?.id || ""),
+        supportLabel: String(selection?.supportGenre?.label || ""),
+        ratings,
+        evidence: evidence
+            ? {
+                  primary: Array.isArray(evidence.primary)
+                      ? evidence.primary.slice(0, GENRE_AUDIT_RESPONSE_LIMIT)
+                      : [],
+                  support: Array.isArray(evidence.support)
+                      ? evidence.support.slice(0, GENRE_AUDIT_RESPONSE_LIMIT)
+                      : [],
+                  supportOpportunity: Array.isArray(evidence.supportOpportunity)
+                      ? evidence.supportOpportunity.slice(
+                            0,
+                            GENRE_AUDIT_RESPONSE_LIMIT
+                        )
+                      : [],
+                  supportIdentifiable:
+                      evidence.supportIdentifiable === true,
+                  reviewedResponses: Number(evidence.reviewedResponses) || 0,
+              }
+            : null,
+        correctionCodes: correctionCodes
+            .filter((code) => GENRE_AUDIT_CODES.includes(code))
+            .slice(0, 2),
+        status,
+        appliedMessageId: null,
+        connection: {
+            source: connectionSnapshot?.source === "profile" ? "profile" : "main",
+            profileId: String(connectionSnapshot?.profileId || ""),
+            profileName: String(
+                connectionSnapshot?.profileName || "현재 채팅 연결"
+            ),
+            model: String(connectionSnapshot?.model || ""),
+        },
+        errorMessage: String(errorMessage || "").slice(0, 300),
+    };
 }
 
 async function runGenreDriftAudit(chatId, selection, { manual = false } = {}) {
     if (genreAuditPendingChats.has(chatId)) return;
     genreAuditPendingChats.add(chatId);
+    const selectedProfileId = String(
+        ensureModuleSettings().backgroundProfileId || ""
+    );
+    let connectionSnapshot = selectedProfileId
+        ? createBackgroundConnectionSnapshot({
+              id: selectedProfileId,
+              name: "선택한 프로필(확인 불가)",
+          })
+        : createBackgroundConnectionSnapshot();
     updateGenreAnchorPanel();
     if (getCurrentChatId() === chatId) {
         showGenreAuditToast(
@@ -1047,12 +1349,18 @@ async function runGenreDriftAudit(chatId, selection, { manual = false } = {}) {
     }
 
     try {
+        connectionSnapshot = await resolveBackgroundConnectionSnapshot();
+        const auditTranscript = getRoleplayTranscript({
+            assistantRepliesWithUserContext: GENRE_AUDIT_RESPONSE_LIMIT,
+            numberAssistantReplies: true,
+            maxChars: 60000,
+        });
+        const reviewedResponses = (
+            auditTranscript.match(/\[CHAR_RESPONSE_\d+:/g) || []
+        ).length;
         const result = await generateStructuredAnalysis({
             prompt: buildGenreAuditPrompt(selection),
-            transcript: getRoleplayTranscript({
-                assistantRepliesOnly: 5,
-                maxChars: 60000,
-            }),
+            transcript: auditTranscript,
             jsonSchema: {
                 name: "storybooster_genre_audit",
                 strict: true,
@@ -1063,10 +1371,23 @@ async function runGenreDriftAudit(chatId, selection, { manual = false } = {}) {
                             type: "string",
                             enum: ["present", "weak"],
                         },
+                        primary_genre_evidence: {
+                            type: "array",
+                            items: { type: "integer" },
+                        },
                         support_texture: {
                             type: "string",
-                            enum: ["present", "weak", "na"],
+                            enum: ["present", "dormant", "weak", "na"],
                         },
+                        support_texture_evidence: {
+                            type: "array",
+                            items: { type: "integer" },
+                        },
+                        support_texture_opportunity: {
+                            type: "array",
+                            items: { type: "integer" },
+                        },
+                        support_texture_identifiable: { type: "boolean" },
                         char_agency: {
                             type: "string",
                             enum: ["present", "weak"],
@@ -1087,7 +1408,11 @@ async function runGenreDriftAudit(chatId, selection, { manual = false } = {}) {
                     },
                     required: [
                         "primary_genre",
+                        "primary_genre_evidence",
                         "support_texture",
+                        "support_texture_evidence",
+                        "support_texture_opportunity",
+                        "support_texture_identifiable",
                         "char_agency",
                         "relationship",
                         "description",
@@ -1098,15 +1423,27 @@ async function runGenreDriftAudit(chatId, selection, { manual = false } = {}) {
                 },
             },
             responseLength: 2400,
+            connectionSnapshot,
         });
-        const correctionCodes = parseGenreAuditResult(
+        const auditResult = parseGenreAuditResult(
             result,
-            Boolean(selection.supportGenre)
+            Boolean(selection.supportGenre),
+            reviewedResponses
         );
+        const { ratings, correctionCodes, evidence } = auditResult;
         const chatState = ensureModuleSettings().chats[chatId];
         if (!chatState) return;
         ensureGenreAnchorState(chatState);
         if (!manual && chatState.genreAnchor.auditInterval === 0) {
+            chatState.genreAnchor.lastAudit = createGenreAuditRecord({
+                selection,
+                manual,
+                ratings,
+                correctionCodes,
+                evidence,
+                status: "cancelled",
+                connectionSnapshot,
+            });
             chatState.genreAnchor.auditStatus = "waiting";
             saveSettingsDebounced();
             return;
@@ -1117,6 +1454,15 @@ async function runGenreDriftAudit(chatId, selection, { manual = false } = {}) {
         chatState.genreAnchor.auditStatus = correctionCodes.length
             ? "reinforcing"
             : "stable";
+        chatState.genreAnchor.lastAudit = createGenreAuditRecord({
+            selection,
+            manual,
+            ratings,
+            correctionCodes,
+            evidence,
+            status: correctionCodes.length ? "pending" : "stable",
+            connectionSnapshot,
+        });
         if (manual) {
             chatState.genreAnchor.responseCount = 0;
             chatState.genreAnchor.lastCountedMessageId =
@@ -1140,6 +1486,13 @@ async function runGenreDriftAudit(chatId, selection, { manual = false } = {}) {
         if (chatState) {
             ensureGenreAnchorState(chatState);
             chatState.genreAnchor.auditStatus = "error";
+            chatState.genreAnchor.lastAudit = createGenreAuditRecord({
+                selection,
+                manual,
+                status: "error",
+                connectionSnapshot,
+                errorMessage: err?.message || "진단 요청에 실패했습니다.",
+            });
             saveSettingsDebounced();
         }
         if (getCurrentChatId() === chatId) {
@@ -1150,6 +1503,10 @@ async function runGenreDriftAudit(chatId, selection, { manual = false } = {}) {
         }
     } finally {
         genreAuditPendingChats.delete(chatId);
+        // Some background generation routes emit GENERATION_STARTED without a
+        // matching main-chat completion event. The audit is finished here, so
+        // do not leave the pending-correction cancel button falsely disabled.
+        mainGenerationInProgress = false;
         if (getCurrentChatId() === chatId) updateGenreAnchorPanel();
     }
 }
@@ -1164,6 +1521,130 @@ function runManualGenreAudit() {
     runGenreDriftAudit(getCurrentChatId(), selection, { manual: true });
 }
 
+function normalizeGenreAuditRecord(record) {
+    if (!record || typeof record !== "object") return null;
+    const allowedStatuses = ["pending", "applied", "cancelled", "stable", "error"];
+    const ratings =
+        record.ratings && typeof record.ratings === "object"
+            ? {
+                  primary_genre: ["present", "weak"].includes(
+                      record.ratings.primary_genre
+                  )
+                      ? record.ratings.primary_genre
+                      : "present",
+                  support_texture: ["present", "dormant", "weak", "na"].includes(
+                      record.ratings.support_texture
+                  )
+                      ? record.ratings.support_texture
+                      : "na",
+                  char_agency: ["present", "weak"].includes(
+                      record.ratings.char_agency
+                  )
+                      ? record.ratings.char_agency
+                      : "present",
+                  relationship: ["present", "weak"].includes(
+                      record.ratings.relationship
+                  )
+                      ? record.ratings.relationship
+                      : "present",
+                  description: ["present", "weak"].includes(
+                      record.ratings.description
+                  )
+                      ? record.ratings.description
+                      : "present",
+                  continuity: ["present", "weak"].includes(
+                      record.ratings.continuity
+                  )
+                      ? record.ratings.continuity
+                      : "present",
+                  repetition: Boolean(record.ratings.repetition),
+              }
+            : null;
+
+    return {
+        id: String(record.id || `audit-${Date.now()}`),
+        createdAt: Number.isFinite(Number(record.createdAt))
+            ? Number(record.createdAt)
+            : Date.now(),
+        mode: record.mode === "manual" ? "manual" : "auto",
+        primaryId: String(record.primaryId || ""),
+        primaryLabel: String(record.primaryLabel || "").slice(0, 100),
+        supportId: String(record.supportId || ""),
+        supportLabel: String(record.supportLabel || "").slice(0, 100),
+        ratings,
+        evidence:
+            record.evidence && typeof record.evidence === "object"
+                ? {
+                      primary: Array.isArray(record.evidence.primary)
+                          ? record.evidence.primary
+                                .map((value) => Number(value))
+                                .filter(
+                                    (value) =>
+                                        Number.isSafeInteger(value) &&
+                                        value >= 1 &&
+                                        value <= GENRE_AUDIT_RESPONSE_LIMIT
+                                )
+                                .slice(0, GENRE_AUDIT_RESPONSE_LIMIT)
+                          : [],
+                      support: Array.isArray(record.evidence.support)
+                          ? record.evidence.support
+                                .map((value) => Number(value))
+                                .filter(
+                                    (value) =>
+                                        Number.isSafeInteger(value) &&
+                                        value >= 1 &&
+                                        value <= GENRE_AUDIT_RESPONSE_LIMIT
+                                )
+                                .slice(0, GENRE_AUDIT_RESPONSE_LIMIT)
+                          : [],
+                      supportOpportunity: Array.isArray(
+                          record.evidence.supportOpportunity
+                      )
+                          ? record.evidence.supportOpportunity
+                                .map((value) => Number(value))
+                                .filter(
+                                    (value) =>
+                                        Number.isSafeInteger(value) &&
+                                        value >= 1 &&
+                                        value <= GENRE_AUDIT_RESPONSE_LIMIT
+                                )
+                                .slice(0, GENRE_AUDIT_RESPONSE_LIMIT)
+                          : [],
+                      supportIdentifiable:
+                          record.evidence.supportIdentifiable === true,
+                      reviewedResponses: Math.max(
+                          0,
+                          Math.min(
+                              GENRE_AUDIT_RESPONSE_LIMIT,
+                              Number(record.evidence.reviewedResponses) || 0
+                          )
+                      ),
+                  }
+                : null,
+        correctionCodes: Array.isArray(record.correctionCodes)
+            ? record.correctionCodes
+                  .filter((code) => GENRE_AUDIT_CODES.includes(code))
+                  .slice(0, 2)
+            : [],
+        status: allowedStatuses.includes(record.status)
+            ? record.status
+            : "stable",
+        appliedMessageId: Number.isSafeInteger(record.appliedMessageId)
+            ? record.appliedMessageId
+            : null,
+        connection: {
+            source:
+                record.connection?.source === "profile" ? "profile" : "main",
+            profileId: String(record.connection?.profileId || ""),
+            profileName: String(
+                record.connection?.profileName || "현재 채팅 연결"
+            ).slice(0, 100),
+            model: String(record.connection?.model || "").slice(0, 150),
+        },
+        errorMessage: String(record.errorMessage || "").slice(0, 300),
+    };
+}
+
 function ensureGenreAnchorState(state) {
     if (!state.genreAnchor || typeof state.genreAnchor !== "object") {
         state.genreAnchor = {
@@ -1174,6 +1655,7 @@ function ensureGenreAnchorState(state) {
             auditStatus: "waiting",
             auditInterval: DEFAULT_AUDIT_INTERVAL,
             recommendation: null,
+            lastAudit: null,
             lastCountedMessageId: null,
         };
     }
@@ -1230,6 +1712,9 @@ function ensureGenreAnchorState(state) {
     ) {
         state.genreAnchor.recommendation = null;
     }
+    state.genreAnchor.lastAudit = normalizeGenreAuditRecord(
+        state.genreAnchor.lastAudit
+    );
 
     return state.genreAnchor;
 }
@@ -1255,6 +1740,11 @@ function handleGenreResponseReceived(messageId) {
             state.genreAnchor.correctionAppliedMessageId === null
         ) {
             state.genreAnchor.correctionAppliedMessageId = resolvedMessageId;
+            if (state.genreAnchor.lastAudit?.status === "pending") {
+                state.genreAnchor.lastAudit.status = "applied";
+                state.genreAnchor.lastAudit.appliedMessageId =
+                    resolvedMessageId;
+            }
             saveSettingsDebounced();
         }
         updateGenreAnchorPanel();
@@ -1267,6 +1757,10 @@ function handleGenreResponseReceived(messageId) {
         state.genreAnchor.correctionAppliedMessageId === null
     ) {
         state.genreAnchor.correctionAppliedMessageId = resolvedMessageId;
+        if (state.genreAnchor.lastAudit?.status === "pending") {
+            state.genreAnchor.lastAudit.status = "applied";
+            state.genreAnchor.lastAudit.appliedMessageId = resolvedMessageId;
+        }
     }
 
     if (state.genreAnchor.auditInterval === 0) {
@@ -1308,6 +1802,40 @@ function clearAppliedGenreCorrectionOnUserTurn() {
     saveSettingsDebounced();
     updateGenrePrompt();
     updateGenreAnchorPanel();
+}
+
+function markPendingGenreAuditCancelled(state) {
+    if (state?.genreAnchor?.lastAudit?.status === "pending") {
+        state.genreAnchor.lastAudit.status = "cancelled";
+        state.genreAnchor.lastAudit.appliedMessageId = null;
+    }
+}
+
+function cancelPendingGenreCorrection() {
+    const state = ensureChatState();
+    const audit = state.genreAnchor.lastAudit;
+    const hasPendingCorrection =
+        state.genreAnchor.correctionRemaining > 0 &&
+        state.genreAnchor.correctionAppliedMessageId === null &&
+        audit?.status === "pending";
+
+    if (!hasPendingCorrection) {
+        toastr?.info?.("취소할 진단 보정이 없습니다.");
+        return;
+    }
+    state.genreAnchor.correctionCodes = [];
+    state.genreAnchor.correctionRemaining = 0;
+    state.genreAnchor.correctionAppliedMessageId = null;
+    state.genreAnchor.auditStatus =
+        state.genreAnchor.auditInterval === 0 ? "waiting" : "monitoring";
+    markPendingGenreAuditCancelled(state);
+    saveSettingsDebounced();
+    updateGenrePrompt();
+    updateGenreAnchorPanel();
+    showGenreAuditToast(
+        "info",
+        "이번 진단 보정을 취소했어요. 상시 장르 부스팅은 계속 유지돼요."
+    );
 }
 
 function resyncLastCountedMessageId() {
@@ -2148,6 +2676,7 @@ function syncGenreSelectionFromControls() {
     const state = ensureChatState();
     state.genreSelection = { primaryId, supportIds: supportId ? [supportId] : [] };
     state.genreAnchor.responseCount = 0;
+    markPendingGenreAuditCancelled(state);
     state.genreAnchor.correctionCodes = [];
     state.genreAnchor.correctionRemaining = 0;
     state.genreAnchor.correctionAppliedMessageId = null;
@@ -2218,6 +2747,7 @@ function deleteCustomGenre(genreId) {
         );
         ensureGenreAnchorState(state);
         state.genreAnchor.responseCount = 0;
+        markPendingGenreAuditCancelled(state);
         state.genreAnchor.correctionCodes = [];
         state.genreAnchor.correctionRemaining = 0;
         state.genreAnchor.correctionAppliedMessageId = null;
@@ -2236,6 +2766,154 @@ function deleteCustomGenre(genreId) {
 
 const genreRecommendationPendingChats = new Set();
 
+const GENRE_AUDIT_DISPLAY_ITEMS = Object.freeze([
+    { code: "primary_genre", label: "주 장르", title: "주 장르 정체성" },
+    { code: "support_texture", label: "보조 렌즈", title: "보조 장르 렌즈" },
+    { code: "char_agency", label: "능동성", title: "캐릭터 능동성" },
+    { code: "relationship", label: "관계", title: "캐릭터-펠소 관계" },
+    { code: "description", label: "장면 묘사", title: "배경·감각·행동 묘사" },
+    { code: "continuity", label: "연속성", title: "현재 장면 연속성" },
+    { code: "repetition", label: "표현 다양성", title: "표현 반복 방지" },
+]);
+
+function getGenreAuditDisplayStatus(audit, code) {
+    if (code === "repetition") {
+        return audit.ratings.repetition
+            ? { text: "반복 감지", className: "is-weak" }
+            : { text: "안정", className: "is-stable" };
+    }
+    const rating = audit.ratings[code];
+    if (code === "support_texture") {
+        switch (rating) {
+            case "present":
+                return { text: "활성", className: "is-stable" };
+            case "dormant":
+                return { text: "대기", className: "is-dormant" };
+            case "weak":
+                return { text: "약화", className: "is-weak" };
+            default:
+                return { text: "미사용", className: "is-off" };
+        }
+    }
+    return rating === "weak"
+        ? { text: "약화", className: "is-weak" }
+        : { text: "안정", className: "is-stable" };
+}
+
+function getGenreAuditResultStatusText(audit) {
+    switch (audit?.status) {
+        case "pending":
+            return "다음 응답에 보정 적용 대기";
+        case "applied":
+            return Number.isSafeInteger(audit.appliedMessageId)
+                ? `메시지 #${audit.appliedMessageId}에 보정 적용 완료`
+                : "보정 적용 완료";
+        case "cancelled":
+            return "이번 진단 보정은 적용하지 않음";
+        case "stable":
+            return "추가 보정이 필요하지 않음";
+        case "error":
+            return "진단 실패 · 상시 장르 부스팅은 유지";
+        default:
+            return "";
+    }
+}
+
+function renderLastGenreAudit(state) {
+    const details = document.getElementById("rp-last-audit");
+    if (!details) return;
+    const audit = state.genreAnchor.lastAudit;
+    if (!audit) {
+        details.hidden = true;
+        return;
+    }
+
+    details.hidden = false;
+    const meta = document.getElementById("rp-last-audit-meta");
+    const genres = document.getElementById("rp-last-audit-genres");
+    const statusGrid = document.getElementById("rp-last-audit-grid");
+    const correction = document.getElementById("rp-last-audit-correction");
+    const connection = document.getElementById("rp-last-audit-connection");
+    const resultStatus = document.getElementById("rp-last-audit-status");
+    const cancelButton = document.getElementById("rp-cancel-audit-correction");
+
+    if (meta) {
+        const date = new Date(audit.createdAt);
+        const timeText = Number.isNaN(date.getTime())
+            ? ""
+            : date.toLocaleString("ko-KR", {
+                  month: "numeric",
+                  day: "numeric",
+                  hour: "2-digit",
+                  minute: "2-digit",
+              });
+        meta.textContent = `${audit.mode === "manual" ? "수동" : "자동"} 진단${
+            timeText ? ` · ${timeText}` : ""
+        }`;
+    }
+    if (genres) {
+        genres.textContent = audit.supportLabel
+            ? `진단 장르: ${audit.primaryLabel} + ${audit.supportLabel}`
+            : `진단 장르: ${audit.primaryLabel || "기록 없음"}`;
+    }
+    if (statusGrid) {
+        statusGrid.replaceChildren();
+        if (audit.ratings) {
+            GENRE_AUDIT_DISPLAY_ITEMS.forEach((item) => {
+                const status = getGenreAuditDisplayStatus(audit, item.code);
+                const row = document.createElement("div");
+                row.className = "rp-audit-status-item";
+                row.title = item.title;
+
+                const label = document.createElement("span");
+                label.className = "rp-audit-status-label";
+                label.textContent = item.label;
+
+                const chip = document.createElement("span");
+                chip.className = `rp-audit-status-chip ${status.className}`;
+                chip.textContent = status.text;
+
+                row.append(label, chip);
+                statusGrid.append(row);
+            });
+        }
+        statusGrid.hidden = !audit.ratings;
+    }
+    if (correction) {
+        const descriptions = audit.correctionCodes.map(
+            (code) => GENRE_CORRECTION_DESCRIPTIONS[code]
+        );
+        correction.textContent = descriptions.length
+            ? `적용 보정: ${descriptions.join(" · ")}`
+            : "적용 보정: 없음";
+        correction.hidden = audit.status === "error";
+    }
+    if (connection) {
+        const modelText = audit.connection?.model
+            ? ` · ${audit.connection.model}`
+            : "";
+        connection.textContent = `진단 연결: ${
+            audit.connection?.profileName || "현재 채팅 연결"
+        }${modelText}`;
+    }
+    if (resultStatus) {
+        resultStatus.textContent = `상태: ${getGenreAuditResultStatusText(audit)}${
+            audit.status === "error" && audit.errorMessage
+                ? ` · ${audit.errorMessage}`
+                : ""
+        }`;
+    }
+    if (cancelButton) {
+        const canCancel =
+            audit.status === "pending" &&
+            state.genreAnchor.correctionRemaining > 0 &&
+            state.genreAnchor.correctionAppliedMessageId === null;
+        cancelButton.hidden = !canCancel;
+        cancelButton.disabled = !canCancel;
+        cancelButton.title = "";
+    }
+}
+
 function getGenreAuditStatusText(state) {
     const chatId = getCurrentChatId();
     if (genreAuditPendingChats.has(chatId)) return "최근 응답을 진단하는 중입니다…";
@@ -2245,7 +2923,10 @@ function getGenreAuditStatusText(state) {
 
     switch (state.genreAnchor.auditStatus) {
         case "stable":
-            return "최근 진단: 안정적으로 유지되고 있어요.";
+            return state.genreAnchor.lastAudit?.ratings?.support_texture ===
+                "dormant"
+                ? "최근 진단: 주 장르는 안정 · 보조 렌즈는 대기 중이에요."
+                : "최근 진단: 안정적으로 유지되고 있어요.";
         case "reinforcing":
             return "최근 진단: 다음 응답에 보정을 적용해요.";
         case "error":
@@ -2344,6 +3025,7 @@ function updateGenreAnchorPanel() {
             }회 · 진단 주기 ${state.genreAnchor.auditInterval}회`;
     }
     renderGenreRecommendation();
+    renderLastGenreAudit(state);
 }
 
 function changeGenreAuditInterval(value) {
@@ -2522,6 +3204,7 @@ function applyGenreRecommendation() {
         supportIds: recommendation.supportId ? [recommendation.supportId] : [],
     };
     state.genreAnchor.responseCount = 0;
+    markPendingGenreAuditCancelled(state);
     state.genreAnchor.correctionCodes = [];
     state.genreAnchor.correctionRemaining = 0;
     state.genreAnchor.correctionAppliedMessageId = null;
@@ -2631,7 +3314,7 @@ function renderBoosterPopupHtml() {
         </div>
 
         <section id="rp-genre-anchor">
-            <div class="rp-anchor-title">🧭 적응형 장르 앵커</div>
+            <div class="rp-anchor-title">🧭 장르 앵커</div>
             <p id="rp-anchor-empty">주 장르를 선택하면 상시 부스팅을 시작합니다.</p>
 
             <div id="rp-anchor-content" hidden>
@@ -2640,6 +3323,20 @@ function renderBoosterPopupHtml() {
                 <p id="rp-anchor-status" aria-live="polite"></p>
                 <div id="rp-anchor-focus" hidden></div>
                 <p id="rp-anchor-count"></p>
+                <details id="rp-last-audit" class="rp-last-audit" hidden>
+                    <summary>최근 진단 결과</summary>
+                    <div class="rp-last-audit-body">
+                        <p id="rp-last-audit-meta" class="rp-last-audit-meta"></p>
+                        <p id="rp-last-audit-genres"></p>
+                        <div id="rp-last-audit-grid" class="rp-audit-status-grid" hidden></div>
+                        <p id="rp-last-audit-correction"></p>
+                        <p id="rp-last-audit-connection" class="rp-last-audit-connection"></p>
+                        <p id="rp-last-audit-status" class="rp-last-audit-status" aria-live="polite"></p>
+                        <button id="rp-cancel-audit-correction" type="button" class="menu_button" hidden>
+                            이번 보정 적용 안 하기
+                        </button>
+                    </div>
+                </details>
             </div>
 
             <label class="rp-audit-interval-control" for="rp-audit-interval">
@@ -2842,6 +3539,9 @@ function openBoosterPopup() {
             .querySelector("#rp-manual-audit-btn")
             ?.addEventListener("click", runManualGenreAudit);
         popupRoot
+            .querySelector("#rp-cancel-audit-correction")
+            ?.addEventListener("click", cancelPendingGenreCorrection);
+        popupRoot
             .querySelector("#rp-recommend-genre-btn")
             ?.addEventListener("click", generateGenreRecommendation);
         popupRoot
@@ -3009,27 +3709,38 @@ async function refreshBackgroundProfileSelect() {
 
         const selectedExists =
             !settings.backgroundProfileId ||
-            profiles.some((profile) => profile.id === settings.backgroundProfileId);
+            profiles.some(
+                (profile) =>
+                    String(profile.id) === String(settings.backgroundProfileId)
+            );
         if (!selectedExists) {
-            settings.backgroundProfileId = "";
-            saveSettingsDebounced();
+            const missingOption = document.createElement("option");
+            missingOption.value = settings.backgroundProfileId;
+            missingOption.textContent = "선택한 프로필을 찾을 수 없음";
+            select.appendChild(missingOption);
         }
         select.value = settings.backgroundProfileId;
         select.disabled = false;
         if (status) {
-            status.textContent = profiles.length
-                ? "플롯 후보·장르 추천·자동 진단에 사용합니다. 실제 롤플 답변 연결은 바뀌지 않습니다."
-                : "저장된 호환 연결 프로필이 없어 현재 채팅 연결을 사용합니다.";
+            status.textContent = !selectedExists
+                ? "선택한 프로필이 없습니다. 요청 전에 다른 프로필이나 현재 채팅 연결을 선택해 주세요."
+                : profiles.length
+                  ? "플롯 후보·장르 추천·자동 진단에 사용합니다. 실제 롤플 답변 연결은 바뀌지 않습니다."
+                  : "저장된 호환 연결 프로필이 없어 현재 채팅 연결을 사용합니다.";
         }
     } catch (err) {
         console.info(`[${MODULE_NAME}] connection profiles unavailable:`, err);
-        settings.backgroundProfileId = "";
-        select.value = "";
-        select.disabled = true;
-        saveSettingsDebounced();
+        if (settings.backgroundProfileId) {
+            const unavailableOption = document.createElement("option");
+            unavailableOption.value = settings.backgroundProfileId;
+            unavailableOption.textContent = "선택한 프로필을 확인할 수 없음";
+            select.appendChild(unavailableOption);
+            select.value = settings.backgroundProfileId;
+        }
+        select.disabled = false;
         if (status) {
             status.textContent =
-                "연결 프로필 기능을 사용할 수 없어 현재 채팅 연결을 사용합니다.";
+                "연결 프로필 기능을 확인할 수 없습니다. 현재 채팅 연결을 쓰려면 기본 항목을 직접 선택해 주세요.";
         }
     }
 }
@@ -3168,6 +3879,7 @@ jQuery(async () => {
         // at the per-chat interval selected by the user (default: eight replies).
         eventSource.on(event_types.MESSAGE_RECEIVED, (messageId) => {
             try {
+                mainGenerationInProgress = false;
                 clearPlotPromptIfPending();
                 handleGenreResponseReceived(messageId);
             } catch (err) {
@@ -3181,6 +3893,20 @@ jQuery(async () => {
                 clearAppliedGenreCorrectionOnUserTurn
             );
         }
+        if (event_types.GENERATION_STARTED) {
+            eventSource.on(event_types.GENERATION_STARTED, () => {
+                mainGenerationInProgress = true;
+                updateGenreAnchorPanel();
+            });
+        }
+        [event_types.GENERATION_ENDED, event_types.GENERATION_STOPPED]
+            .filter(Boolean)
+            .forEach((eventType) => {
+                eventSource.on(eventType, () => {
+                    mainGenerationInProgress = false;
+                    updateGenreAnchorPanel();
+                });
+            });
         if (event_types.MESSAGE_DELETED) {
             eventSource.on(event_types.MESSAGE_DELETED, () => {
                 setTimeout(resyncLastCountedMessageId, 0);
