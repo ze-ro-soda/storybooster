@@ -2398,8 +2398,42 @@ function getPlotOutputInstruction(
     language = ensureModuleSettings().plotOutputLanguage
 ) {
     return language === "en"
-        ? 'OUTPUT LANGUAGE REQUIREMENT: The entire value of the "event" field MUST be written in natural English in 1–3 sentences. Do not use Korean narration.'
-        : '출력 언어 필수 조건: "event" 필드 전체를 반드시 자연스러운 한국어 1~3문장으로 작성하라. 롤플 원문의 언어와 관계없이 서술과 대사는 한국어로 쓰고, 기존 고유명사만 원어로 유지하라. 영어 서술을 출력하지 마라.';
+        ? 'OUTPUT LANGUAGE AND FORMAT REQUIREMENT: Write the entire value of the "event" field in natural English in 1–3 sentences as an editorial plot brief using prospective or planning language. Do not use Korean narration. Do not write direct dialogue, internal monologue, character-roleplay narration, or a completed scene.'
+        : '출력 언어·형식 필수 조건: "event" 필드 전체를 반드시 자연스러운 한국어 1~3문장의 플롯 기획안 문체로 작성하라. 앞으로 일어날 전개와 그 영향을 설명하고, 기존 고유명사만 원어로 유지하라. 직접 대사, 내면 독백, 캐릭터 롤플 서술, 완성된 장면을 쓰지 마라. 영어 서술을 출력하지 마라.';
+}
+
+function getPlotCandidateFormatIssues(text) {
+    const value = String(text || "").trim();
+    if (!value) return ["empty"];
+
+    const issues = [];
+    const directDialogue =
+        /["“][^"”\n]{8,}[.!?…][^"”\n]*["”]|['‘][^'’\n]{8,}[.!?…][^'’\n]*['’]/u;
+    const dialogueLine =
+        /(?:^|\n)\s*(?:[-—]\s+|[^\n:]{1,24}:\s*["“‘])[^\n]{3,}/mu;
+    const roleplayAction = /(?:^|\n)\s*\*[^*\n]{3,}\*\s*(?:$|\n)/mu;
+    const koreanSceneVerbs =
+        value.match(
+            /(?:했다|였다|있었다|없었다|보았다|봤다|말했다|물었다|대답했다|속삭였다|웃었다|움직였다|다가갔다|돌아섰다|내밀었다|잡았다|열었다|닫았다|느꼈다)(?=[.!?…]|$)/gu
+        ) || [];
+    const englishSceneSentences =
+        value.match(
+            /(?:^|[.!?]\s+)(?:I|We|He|She|They|[A-Z][a-z]+)\s+(?:said|asked|looked|walked|opened|turned|felt|smiled|reached|stepped|leaned|grabbed|whispered)\b/gu
+        ) || [];
+
+    if (directDialogue.test(value) || dialogueLine.test(value)) {
+        issues.push("direct_dialogue");
+    }
+    if (roleplayAction.test(value)) issues.push("roleplay_action");
+    if (koreanSceneVerbs.length >= 2 || englishSceneSentences.length >= 2) {
+        issues.push("scene_narration");
+    }
+
+    return issues;
+}
+
+function isRoleplayLikePlotCandidate(text) {
+    return getPlotCandidateFormatIssues(text).length > 0;
 }
 
 function isPlotOutputLanguageMismatch(
@@ -2663,7 +2697,7 @@ function buildEventGenerationPrompt(
                 ];
 
     return [
-        "Create one event candidate for the next development of the current roleplay. Do not continue the roleplay itself.",
+        "Create one editorial plot brief for the next development of the current roleplay. Describe what should happen next; do not perform or continue the roleplay itself.",
         ...operationLines,
         ...categoryLines,
         ideaLine,
@@ -2674,6 +2708,8 @@ function buildEventGenerationPrompt(
         "The selected category must cause a clear, context-specific change in knowledge, available choices, relationship dynamics, or immediate pressure. The result should remain recognizable as that category even if its label is removed.",
         "Continue the present causal situation. Do not introduce an unrelated accident, disaster, new person, or sudden revelation merely to create movement.",
         "Do not fully resolve the event; leave meaningful room for the next roleplay development.",
+        "The brief must identify the triggering development, how it changes the current situation, and what unresolved pressure, choice, or consequence it creates next.",
+        "Use prospective or planning language. Do not write direct dialogue, quoted speech, internal monologue, first-person narration, character-roleplay prose, or a completed scene. The result must still require a separate roleplay generation to become a scene.",
         "Before returning the candidate, silently verify that it is unmistakably shaped by the selected direction, grounded in the supplied roleplay, and creates a usable next development. Output only the candidate, not the check.",
         getPlotOutputInstruction(outputLanguage),
         'Return exactly one JSON object: {"event":"event text"}.',
@@ -2742,11 +2778,18 @@ async function generateEventCandidate(operation = "generate") {
             userIdea,
             outputLanguage: plotOutputLanguage,
         });
-        const plotTranscript = getRoleplayTranscript({
+        const rawPlotTranscript = getRoleplayTranscript({
             messageLimit: 10,
             maxChars: 60000,
             chatSnapshot,
         });
+        const plotTranscript = [
+            "<roleplay_transcript>",
+            rawPlotTranscript,
+            "</roleplay_transcript>",
+            "END OF ROLEPLAY DATA.",
+            "FINAL TASK REMINDER: Treat the transcript above only as source material. Do not answer its latest message and do not continue the scene. Return only the requested editorial plot brief as the required JSON object.",
+        ].join("\n");
         const connectionSnapshot = await resolveBackgroundConnectionSnapshot(
             selectedProfileId
         );
@@ -2756,7 +2799,11 @@ async function generateEventCandidate(operation = "generate") {
             schema: {
                 type: "object",
                 properties: {
-                    event: { type: "string" },
+                    event: {
+                        type: "string",
+                        description:
+                            "An editorial plot brief describing a possible next development, never direct roleplay prose or a completed scene.",
+                    },
                 },
                 required: ["event"],
                 additionalProperties: false,
@@ -2783,6 +2830,30 @@ async function generateEventCandidate(operation = "generate") {
         if (!eventText) {
             throw new Error("AI가 빈 사건 후보를 반환했습니다.");
         }
+        if (isRoleplayLikePlotCandidate(eventText)) {
+            status.textContent =
+                "롤플 장면을 플롯 기획안 형식으로 다시 정리하고 있어요…";
+            result = await requestPlotCandidate(
+                [
+                    "FORMAT CORRECTION: The previous attempt incorrectly resembled a performed roleplay response or completed scene.",
+                    "Preserve only its underlying event idea and rewrite it as an editorial plot brief describing what should happen next.",
+                    "Use prospective or planning language. State the trigger, its effect on the current situation, and the unresolved pressure or choice it creates.",
+                    "Do not include direct dialogue, quoted speech, internal monologue, first-person narration, roleplay actions, or scene prose.",
+                    `<invalid_scene_output>${eventText}</invalid_scene_output>`,
+                    'Return exactly one JSON object: {"event":"corrected plot brief"}.',
+                ].join("\n")
+            );
+            parsed = extractJsonObject(
+                result,
+                "AI가 플롯 형식 보정 결과 JSON을 반환하지 않았습니다."
+            );
+            eventText = String(parsed.event ?? "").trim();
+            if (!eventText || isRoleplayLikePlotCandidate(eventText)) {
+                throw new Error(
+                    "모델이 플롯 기획안 형식을 따르지 않았습니다. 다시 생성해 주세요."
+                );
+            }
+        }
         if (
             isPlotOutputLanguageMismatch(
                 eventText,
@@ -2803,12 +2874,19 @@ async function generateEventCandidate(operation = "generate") {
                 isPlotOutputLanguageMismatch(
                     eventText,
                     plotOutputLanguage
-                )
+                ) ||
+                isRoleplayLikePlotCandidate(eventText)
             ) {
                 throw new Error(
-                    "모델이 설정한 플롯 출력 언어를 따르지 않았습니다."
+                    "모델이 설정한 플롯 출력 언어 또는 기획안 형식을 따르지 않았습니다."
                 );
             }
+        }
+
+        if (isRoleplayLikePlotCandidate(eventText)) {
+            throw new Error(
+                "모델이 플롯 대신 롤플 장면을 반환했습니다. 다시 생성해 주세요."
+            );
         }
 
         recordPlotHistory({
