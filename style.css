@@ -172,6 +172,18 @@
     background: var(--sb-blue-selected);
 }
 
+.rp-genre-selection-summary {
+    margin: 8px 1px 0;
+    padding: 7px 9px;
+    border-left: 3px solid var(--sb-blue);
+    border-radius: 0 8px 8px 0;
+    background: color-mix(in srgb, var(--sb-blue-soft) 58%, transparent);
+    font-size: 0.82em;
+    line-height: 1.48;
+    opacity: 0.86;
+    white-space: pre-line;
+}
+
 #rp-genre-anchor,
 #rp-genre-recommendation,
 #rp-custom-genre-editor,
