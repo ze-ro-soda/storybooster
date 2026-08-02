@@ -1,5 +1,5 @@
 // 스토리부스터 (StoryBooster)
-// SillyTavern extension: persistent (per-chat) genre boosting + AI-generated plot events.
+// SillyTavern extension: per-chat genre/character boosting + AI-generated plot events.
 //
 // State lives inside extension_settings[MODULE_NAME].chats[chatId] — a per-chat-id bucket
 // inside the extension's own global settings object (extension_settings is guaranteed to
@@ -30,19 +30,87 @@ import {
 const MODULE_NAME = "rp-genre-plot-booster";
 const GENRE_PROMPT_KEY = "rp_genre_boost";
 const PLOT_PROMPT_KEY = "rp_plot_trigger";
-const DEFAULT_AUDIT_INTERVAL = 8;
+const DEFAULT_AUDIT_INTERVAL = 10;
 const MIN_AUDIT_INTERVAL = 5;
 const MAX_AUDIT_INTERVAL = 15;
-const GENRE_AUDIT_RESPONSE_LIMIT = 8;
-// Three of eight recent replies is enough to show a persistent primary genre
+const GENRE_AUDIT_RESPONSE_LIMIT = 10;
+const AUDIT_EVIDENCE_MAX_ITEMS = 4;
+// Four of ten recent replies is enough to show a persistent primary genre
 // without demanding that every quiet or transitional reply advertise it.
 const PRIMARY_GENRE_EVIDENCE_RATIO = 0.375;
+const GENRE_EXPRESSION_EVIDENCE_MINIMUM = 2;
 // A supporting lens may be intermittent, so two distinct replies are enough
 // when the genre is also identifiable without seeing its label.
 const SUPPORT_GENRE_EVIDENCE_MINIMUM = 2;
+const CHARACTER_INTERPRETATION_EVIDENCE_MINIMUM = 3;
+const CHARACTER_BASELINE_FIELD_MAX_CHARS = 1000;
+const CHARACTER_BOOST_ANCHOR_MAX_CHARS = 700;
+const CHARACTER_BASELINE_AUTOSAVE_DELAY = 700;
+const CHARACTER_CARD_INPUT_MAX_CHARS = 24000;
 const DEFAULT_PLOT_MAX_TOKENS = 1200;
 const MIN_PLOT_MAX_TOKENS = 200;
 const MAX_PLOT_HISTORY = 5;
+// Keep the user-facing message windows while preventing unusually long
+// individual replies from dominating input-token cost.
+const AUDIT_MESSAGE_MAX_CHARS = 5000;
+const PLOT_CONTEXT_MESSAGE_LIMIT = 10;
+const PLOT_MESSAGE_MAX_CHARS = 4500;
+const GENRE_RECOMMENDATION_MESSAGE_LIMIT = 15;
+const GENRE_RECOMMENDATION_MESSAGE_MAX_CHARS = 3500;
+
+const CHARACTER_BASELINE_FIELDS = Object.freeze([
+    {
+        id: "core_identity",
+        label: "핵심 정체성",
+        prompt: "The character's defining identity, central disposition, and the most important tension or contrast that makes them recognizable.",
+    },
+    {
+        id: "personality_traits",
+        label: "성격·특성",
+        prompt: "Major personality traits, coexisting or contradictory tendencies, and meaningful context-dependent differences.",
+    },
+    {
+        id: "values_boundaries",
+        label: "가치관·경계",
+        prompt: "Values, priorities, taboos, personal boundaries, and lines the character rarely crosses.",
+    },
+    {
+        id: "goals_motives",
+        label: "목표·동기",
+        prompt: "What the character pursues or avoids, their durable motives, and what can move them to act.",
+    },
+    {
+        id: "behavior_decisions",
+        label: "행동·의사결정",
+        prompt: "Decision style, problem-solving and action patterns, initiative, practical abilities or limits, and behavior they often or rarely choose.",
+    },
+    {
+        id: "speech_emotion",
+        label: "대사·감정 표현",
+        prompt: "Speech rhythm, vocabulary, dialogue habits, and how the character reveals, hides, redirects, or defends emotion.",
+    },
+    {
+        id: "relationship_response",
+        label: "관계 반응",
+        prompt: "How trust, distance, attachment, conflict, power, and boundaries change the character's responses to the persona and other people.",
+    },
+]);
+const CHARACTER_BASELINE_FIELD_IDS = Object.freeze(
+    CHARACTER_BASELINE_FIELDS.map((field) => field.id)
+);
+const CHARACTER_BASELINE_FIELD_ID_SET = new Set(CHARACTER_BASELINE_FIELD_IDS);
+const CHARACTER_BASELINE_CORRECTION_CODES = new Set([
+    "character_consistency",
+    "character_interpretation",
+    "char_agency",
+    "relationship",
+]);
+const CHARACTER_CORRECTION_FIELD_FALLBACKS = Object.freeze({
+    character_consistency: ["core_identity", "personality_traits"],
+    character_interpretation: ["core_identity", "personality_traits"],
+    char_agency: ["goals_motives", "behavior_decisions"],
+    relationship: ["relationship_response", "values_boundaries"],
+});
 
 console.log(`[${MODULE_NAME}] script loaded`);
 
@@ -53,6 +121,7 @@ console.log(`[${MODULE_NAME}] script loaded`);
 const DEFAULT_GENRES = [
     { id: "slice_of_life", label: "일상", promptLabel: "Slice of Life", emoji: "🏡", group: "story", enabled: false },
     { id: "romance", label: "로맨스", promptLabel: "Romance", emoji: "❤️", group: "story", enabled: false },
+    { id: "romcom", label: "롬콤", promptLabel: "Romantic Comedy", emoji: "💞", group: "story", enabled: false },
     { id: "drama", label: "드라마", promptLabel: "Drama", emoji: "🎭", group: "story", enabled: false },
     { id: "mystery", label: "미스터리", promptLabel: "Mystery", emoji: "🕵️", group: "story", enabled: false },
     { id: "action", label: "액션", promptLabel: "Action", emoji: "⚡", group: "story", enabled: false },
@@ -66,7 +135,9 @@ const DEFAULT_GENRES = [
     { id: "coming_of_age", label: "성장", promptLabel: "Coming-of-Age", emoji: "🌱", group: "story", enabled: false },
     { id: "tragedy", label: "비극", promptLabel: "Tragedy", emoji: "🥀", group: "story", enabled: false },
     { id: "comedy", label: "코미디", promptLabel: "Comedy", emoji: "😂", group: "tone", enabled: false },
+    { id: "angst", label: "앵스트", promptLabel: "Angst", emoji: "💔", group: "tone", enabled: false },
     { id: "dark", label: "다크", promptLabel: "Dark", emoji: "🌑", group: "tone", enabled: false },
+    { id: "dead_dove", label: "데드 도브", promptLabel: "Dead Dove: Do Not Eat", emoji: "⚠️", group: "tone", enabled: false },
     { id: "healing", label: "힐링", promptLabel: "Healing", emoji: "🌿", group: "tone", enabled: false },
     { id: "suspense", label: "서스펜스", promptLabel: "Suspense", emoji: "⏳", group: "tone", enabled: false },
     { id: "gothic", label: "고딕", promptLabel: "Gothic", emoji: "🕯️", group: "tone", enabled: false },
@@ -75,7 +146,7 @@ const DEFAULT_GENRES = [
     { id: "melancholic", label: "멜랑콜리", promptLabel: "Melancholic", emoji: "🌧️", group: "tone", enabled: false },
     { id: "sexual_tension", label: "섹텐", promptLabel: "Sexual Tension", emoji: "🔥", group: "tone", enabled: false },
     { id: "desire", label: "욕망", promptLabel: "Desire", emoji: "❤️‍🔥", group: "tone", enabled: false },
-    { id: "adult", label: "19금", promptLabel: "Adult", emoji: "🔞", group: "tone", enabled: false },
+    { id: "adult", label: "NSFW", promptLabel: "NSFW / Explicit Adult", emoji: "🔞", group: "tone", enabled: false },
     { id: "fantasy", label: "판타지", promptLabel: "Fantasy", emoji: "🧙", group: "world", enabled: false },
     { id: "scifi", label: "SF", promptLabel: "Science Fiction", emoji: "🚀", group: "world", enabled: false },
     { id: "historical", label: "시대극", promptLabel: "Historical", emoji: "📜", group: "world", enabled: false },
@@ -110,6 +181,14 @@ const GENRE_PROFILES = Object.freeze({
         texture: "Give gestures, pauses, proximity, and remembered details relational weight.",
         guard: "Do not reduce romance to generic affection, instant intimacy, or a fixed trope detached from characterization.",
     },
+    romcom: {
+        identity: "Make romantic attraction and relationship progression the central throughline, while character-driven comic friction repeatedly changes how the pair approach, misread, and understand each other.",
+        ui: "로맨스의 관계 진전을 중심에 두고, 캐릭터다운 엇갈림과 타이밍이 웃음과 친밀감의 변화를 함께 만듭니다.",
+        signals: "Use sharp banter, awkward proximity, mismatched intentions, social embarrassment, comic reversals, callbacks, and complications that expose genuine attraction or vulnerability.",
+        effects: "Let {{char}} actively pursue a relational want, commit to a flawed or overconfident choice, and turn the comic consequence into a real change in trust, intimacy, or emotional distance.",
+        texture: "Keep the rhythm buoyant and responsive, balancing economical comic timing with sincere pauses, charged gestures, and emotionally specific aftereffects.",
+        guard: "Do not become generic comedy with a decorative romance, generic romance with occasional jokes, random slapstick, humiliation without relational meaning, or constant quipping that erases sincere stakes.",
+    },
     drama: {
         identity: "Drive the scene through incompatible desires and the emotional or practical cost of choosing.",
         ui: "서로 충돌하는 욕망과 선택의 감정적·현실적 대가를 강화합니다.",
@@ -125,6 +204,14 @@ const GENRE_PROFILES = Object.freeze({
         effects: "Let {{char}} actively commit to choices whose consequences sharpen the comic situation.",
         texture: "Favor clear setup, economical timing, contrast, and concrete reactions.",
         guard: "Do not break characterization, acknowledge the audience, or turn every line into a joke.",
+    },
+    angst: {
+        identity: "Make sustained emotional pain, longing, guilt, fear, grief, or an unresolved wound exert concrete pressure on choices and relationships without predetermining a tragic ending.",
+        ui: "상실·죄책감·두려움·그리움 같은 지속적인 정서적 고통이 선택과 관계에 구체적인 압력을 줍니다.",
+        signals: "Use painful restraint, avoidance, failed attempts to connect, defensive choices, charged silence, remembered hurt, difficult admissions, and consequences that reopen or deepen an established wound.",
+        effects: "Let {{char}} protect, reject, reach for, conceal from, or withdraw from someone in character-specific ways, so pain changes trust, distance, boundaries, or the cost of the next choice.",
+        texture: "Favor emotionally precise subtext, restrained heaviness, negative space, bodily tension, and concrete reminders of what is feared, lost, or still wanted.",
+        guard: "Do not confuse angst with tragedy, melancholy, generic sadness, repetitive crying, arbitrary suffering, forced miscommunication, or passive misery without character choice and causal pressure.",
     },
     mystery: {
         identity: "Organize attention around an unresolved question that can be investigated through information and inference.",
@@ -149,6 +236,14 @@ const GENRE_PROFILES = Object.freeze({
         effects: "Make {{char}} confront what they will sacrifice, tolerate, or become.",
         texture: "Favor restrained heaviness, unsettling detail, and aftermath over constant intensity.",
         guard: "Do not equate darkness with contextless cruelty, gore, or universal hopelessness.",
+    },
+    dead_dove: {
+        identity: "Treat the disturbing, transgressive, morally compromised, or harmful premise already established in the character card, scenario, tags, or roleplay exactly as consequentially as presented, without sanitizing it into safer sentiment or supplying automatic moral absolution.",
+        ui: "이미 설정된 불편하거나 금기적인 소재를 순화·미화·자동 면죄하지 않고, 명시된 그대로의 무게와 결과를 유지합니다.",
+        signals: "When already present and relevant, render power imbalance, coercion, obsession, cruelty, complicity, taboo, bodily or psychological harm, and compromised choices with concrete behavioral, relational, material, and emotional consequences.",
+        effects: "Let {{char}}'s established motives and boundaries expose control, vulnerability, complicity, fixation, damage, or irreversible cost without flattening the character into a generic monster or victim.",
+        texture: "Use unflinching specificity, sustained discomfort, charged silence, claustrophobic or visceral detail, and credible aftermath at the intensity supported by the existing context.",
+        guard: "This is an accuracy lens for already-established tagged material, not permission to invent a new taboo, add unrelated gore or abuse, escalate severity, erase consequences, romanticize harm by default, or force disturbing content merely to prove the label is active.",
     },
     fantasy: {
         identity: "Make magic, wondrous places, and setting-specific cultures tangible forces in everyday life.",
@@ -319,12 +414,12 @@ const GENRE_PROFILES = Object.freeze({
         guard: "Do not reduce desire to instant gratification, generic lust, or ownership without character logic.",
     },
     adult: {
-        identity: "Allow explicit adult intimacy between adult characters when it follows the established relationship and scene progression.",
-        ui: "성인 캐릭터의 관계와 장면 흐름에 맞는 직접적인 친밀감과 성적 전개를 허용합니다.",
-        signals: "Use direct physical intimacy, mature sexual communication, escalating contact, and character-specific preferences or boundaries when context supports them.",
-        effects: "Keep intimacy connected to motives, trust, vulnerability, power, and the relationship's ongoing consequences.",
-        texture: "Maintain spatial, physical, emotional, and sensory coherence rather than isolated explicit detail.",
-        guard: "Do not force intimacy into an unsuitable scene or detach it from characterization and surrounding story.",
+        identity: "Treat explicit sexual desire and physical intimacy between adult characters as fully on-page NSFW narrative content, not as a fade-to-black implication, when the established relationship and current scene reach that point.",
+        ui: "성인 캐릭터 사이의 성적 욕망과 신체적 친밀감을 생략·암전·완곡한 요약 없이 이어지는 NSFW 장면으로 강화합니다.",
+        signals: "Once an NSFW encounter is established and underway, sustain it through successive actions, reactions, dialogue, changing positions, embodied arousal, and character-specific preferences or limits instead of rushing to resolution or abandoning it after a brief mention.",
+        effects: "Keep the explicit interaction responsive to {{char}}'s motives, personality, trust, vulnerability, power dynamics, and the relationship's emotional and practical consequences before, during, and after the encounter.",
+        texture: "Use direct, unambiguous physical language with clear spatial continuity and specific sensory and emotional detail. Let pacing, intensity, and escalation develop across multiple connected beats while the scene remains active.",
+        guard: "Do not censor, sanitize, euphemize, summarize, fade out, skip ahead, or prematurely end an established NSFW scene merely from default restraint. Continue an active NSFW scene explicitly until the scene itself reaches a credible transition or conclusion, while preserving established characterization and roleplay context.",
     },
     urban_fantasy: {
         identity: "Interweave hidden supernatural systems with recognizable modern city life, technology, and institutions.",
@@ -408,10 +503,18 @@ function ensureModuleSettings() {
             customGenres: [],
             customPlotCategories: [],
             plotMaxTokens: DEFAULT_PLOT_MAX_TOKENS,
-            plotOutputLanguage: "ko",
+            outputLanguage: "ko",
             selectedPlotCategoryId: EVENT_CATEGORIES[0].id,
-            backgroundProfileId: "",
-            settingsSchemaVersion: 11,
+            analysisProfileId: "",
+            plotProfileId: "",
+            auditInterval: DEFAULT_AUDIT_INTERVAL,
+            enabledFeatures: {
+                genre: true,
+                character: true,
+                plot: true,
+            },
+            characterBaselines: {},
+            settingsSchemaVersion: 16,
         };
     }
     if (!extension_settings[MODULE_NAME].chats) {
@@ -422,6 +525,13 @@ function ensureModuleSettings() {
     }
     if (!Array.isArray(extension_settings[MODULE_NAME].customPlotCategories)) {
         extension_settings[MODULE_NAME].customPlotCategories = [];
+    }
+    if (
+        !extension_settings[MODULE_NAME].characterBaselines ||
+        typeof extension_settings[MODULE_NAME].characterBaselines !== "object" ||
+        Array.isArray(extension_settings[MODULE_NAME].characterBaselines)
+    ) {
+        extension_settings[MODULE_NAME].characterBaselines = {};
     }
     const previousSchemaVersion = Number.isSafeInteger(
         extension_settings[MODULE_NAME].settingsSchemaVersion
@@ -434,8 +544,83 @@ function ensureModuleSettings() {
                 DEFAULT_PLOT_MAX_TOKENS;
         }
     }
-    if (previousSchemaVersion < 11) {
-        extension_settings[MODULE_NAME].settingsSchemaVersion = 11;
+    if (previousSchemaVersion < 12) {
+        for (const state of Object.values(
+            extension_settings[MODULE_NAME].chats
+        )) {
+            if (!state || typeof state !== "object") continue;
+            const hadGenre = Boolean(state.genreSelection?.primaryId) ||
+                (Array.isArray(state.genres) &&
+                    state.genres.some((genre) => genre?.enabled));
+            if (!state.characterBoost || typeof state.characterBoost !== "object") {
+                // Older versions bundled agency and relationship guidance into
+                // the genre prompt. Preserve that behavior for existing chats.
+                state.characterBoost = { enabled: hadGenre };
+            }
+        }
+        extension_settings[MODULE_NAME].settingsSchemaVersion = 12;
+        saveSettingsDebounced();
+    }
+    if (previousSchemaVersion < 13) {
+        for (const [key, entry] of Object.entries(
+            extension_settings[MODULE_NAME].characterBaselines
+        )) {
+            const normalized = normalizeCharacterBaseline(entry);
+            if (normalized) extension_settings[MODULE_NAME].characterBaselines[key] = normalized;
+            else delete extension_settings[MODULE_NAME].characterBaselines[key];
+        }
+        extension_settings[MODULE_NAME].settingsSchemaVersion = 13;
+        saveSettingsDebounced();
+    }
+    if (previousSchemaVersion < 14) {
+        const legacyOutputLanguage =
+            extension_settings[MODULE_NAME].plotOutputLanguage;
+        if (!["ko", "en"].includes(extension_settings[MODULE_NAME].outputLanguage)) {
+            extension_settings[MODULE_NAME].outputLanguage = ["ko", "en"].includes(
+                legacyOutputLanguage
+            )
+                ? legacyOutputLanguage
+                : "ko";
+        }
+        extension_settings[MODULE_NAME].settingsSchemaVersion = 14;
+        saveSettingsDebounced();
+    }
+    if (previousSchemaVersion < 15) {
+        if (
+            !extension_settings[MODULE_NAME].enabledFeatures ||
+            typeof extension_settings[MODULE_NAME].enabledFeatures !== "object"
+        ) {
+            extension_settings[MODULE_NAME].enabledFeatures = {};
+        }
+        for (const feature of ["genre", "character", "plot"]) {
+            if (
+                typeof extension_settings[MODULE_NAME].enabledFeatures[feature] !==
+                "boolean"
+            ) {
+                extension_settings[MODULE_NAME].enabledFeatures[feature] = true;
+            }
+        }
+        extension_settings[MODULE_NAME].settingsSchemaVersion = 15;
+        saveSettingsDebounced();
+    }
+    if (previousSchemaVersion < 16) {
+        const legacyProfileId =
+            typeof extension_settings[MODULE_NAME].backgroundProfileId ===
+            "string"
+                ? extension_settings[MODULE_NAME].backgroundProfileId
+                : "";
+        if (
+            typeof extension_settings[MODULE_NAME].analysisProfileId !==
+            "string"
+        ) {
+            extension_settings[MODULE_NAME].analysisProfileId = legacyProfileId;
+        }
+        if (
+            typeof extension_settings[MODULE_NAME].plotProfileId !== "string"
+        ) {
+            extension_settings[MODULE_NAME].plotProfileId = legacyProfileId;
+        }
+        extension_settings[MODULE_NAME].settingsSchemaVersion = 16;
         saveSettingsDebounced();
     }
     if (
@@ -444,11 +629,40 @@ function ensureModuleSettings() {
     ) {
         extension_settings[MODULE_NAME].plotMaxTokens = DEFAULT_PLOT_MAX_TOKENS;
     }
-    if (typeof extension_settings[MODULE_NAME].backgroundProfileId !== "string") {
-        extension_settings[MODULE_NAME].backgroundProfileId = "";
+    if (typeof extension_settings[MODULE_NAME].analysisProfileId !== "string") {
+        extension_settings[MODULE_NAME].analysisProfileId = "";
     }
-    if (!["ko", "en"].includes(extension_settings[MODULE_NAME].plotOutputLanguage)) {
-        extension_settings[MODULE_NAME].plotOutputLanguage = "ko";
+    if (typeof extension_settings[MODULE_NAME].plotProfileId !== "string") {
+        extension_settings[MODULE_NAME].plotProfileId = "";
+    }
+    if (!["ko", "en"].includes(extension_settings[MODULE_NAME].outputLanguage)) {
+        extension_settings[MODULE_NAME].outputLanguage = "ko";
+    }
+    if (
+        !extension_settings[MODULE_NAME].enabledFeatures ||
+        typeof extension_settings[MODULE_NAME].enabledFeatures !== "object"
+    ) {
+        extension_settings[MODULE_NAME].enabledFeatures = {};
+    }
+    for (const feature of ["genre", "character", "plot"]) {
+        if (typeof extension_settings[MODULE_NAME].enabledFeatures[feature] !== "boolean") {
+            extension_settings[MODULE_NAME].enabledFeatures[feature] = true;
+        }
+    }
+    const currentChatAuditInterval =
+        extension_settings[MODULE_NAME].chats[getCurrentChatId()]?.genreAnchor
+            ?.auditInterval;
+    const configuredAuditInterval = extension_settings[MODULE_NAME].auditInterval;
+    const isValidAuditInterval = (value) =>
+        Number.isSafeInteger(value) &&
+        (value === 0 ||
+            (value >= MIN_AUDIT_INTERVAL && value <= MAX_AUDIT_INTERVAL));
+    if (!isValidAuditInterval(configuredAuditInterval)) {
+        extension_settings[MODULE_NAME].auditInterval = isValidAuditInterval(
+            currentChatAuditInterval
+        )
+            ? currentChatAuditInterval
+            : DEFAULT_AUDIT_INTERVAL;
     }
 
     extension_settings[MODULE_NAME].customGenres =
@@ -497,6 +711,14 @@ function ensureModuleSettings() {
     }
 
     return extension_settings[MODULE_NAME];
+}
+
+function isBoosterFeatureEnabled(feature) {
+    return ensureModuleSettings().enabledFeatures?.[feature] !== false;
+}
+
+function getGlobalAuditInterval() {
+    return ensureModuleSettings().auditInterval;
 }
 
 function getLatestAssistantMessageId(chat = getContext()?.chat) {
@@ -624,15 +846,21 @@ function ensureChatState(chatId = getCurrentChatId()) {
                 supportIds: [],
             },
             plotHistory: [],
+            characterBoost: {
+                enabled: false,
+            },
             genreAnchor: {
                 responseCount: 0,
                 correctionCodes: [],
+                correctionText: "",
+                correctionFieldIds: [],
                 correctionRemaining: 0,
                 correctionAppliedMessageId: null,
                 auditStatus: "waiting",
-                auditInterval: DEFAULT_AUDIT_INTERVAL,
                 recommendation: null,
                 lastAudit: null,
+                lastGenreAudit: null,
+                lastCharacterAudit: null,
                 lastCountedMessageId:
                     chatId === getCurrentChatId()
                         ? getLatestAssistantMessageId()
@@ -647,17 +875,199 @@ function ensureChatState(chatId = getCurrentChatId()) {
     }
     normalizeGenreSelection(state);
     normalizePlotHistory(state);
+    ensureCharacterBoostState(state);
     ensureGenreAnchorState(state);
 
     return state;
 }
 
+function ensureCharacterBoostState(state) {
+    if (!state.characterBoost || typeof state.characterBoost !== "object") {
+        state.characterBoost = { enabled: false };
+    }
+    state.characterBoost.enabled = state.characterBoost.enabled === true;
+    return state.characterBoost;
+}
+
+function getCurrentCharacterRecord() {
+    const context = getContext();
+    if (!context || context.groupId != null) return null;
+    const characterId = Number(context.characterId);
+    if (!Number.isSafeInteger(characterId) || !Array.isArray(context.characters)) {
+        return null;
+    }
+    return context.characters[characterId] || null;
+}
+
+function getCharacterField(character, field) {
+    return String(character?.[field] ?? character?.data?.[field] ?? "").trim();
+}
+
+function buildCharacterCardSource(character = getCurrentCharacterRecord()) {
+    if (!character) return "";
+    const sections = [
+        ["Name", getCharacterField(character, "name")],
+        ["Description", getCharacterField(character, "description")],
+        ["Personality", getCharacterField(character, "personality")],
+        ["Scenario", getCharacterField(character, "scenario")],
+        ["First message", getCharacterField(character, "first_mes")],
+        ["Example dialogue", getCharacterField(character, "mes_example")],
+    ]
+        .filter(([, value]) => value)
+        .map(([label, value]) => `[${label}]\n${value}`)
+        .join("\n\n");
+    return sections;
+}
+
+function hashStableText(value) {
+    let hash = 2166136261;
+    for (const char of String(value || "")) {
+        hash ^= char.codePointAt(0);
+        hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(36);
+}
+
+function getCurrentCharacterIdentity() {
+    const character = getCurrentCharacterRecord();
+    if (!character) return null;
+    const name = getCharacterField(character, "name") || "이름 없는 캐릭터";
+    const avatar = getCharacterField(character, "avatar");
+    const source = buildCharacterCardSource(character);
+    return {
+        character,
+        name,
+        key: avatar ? `avatar:${avatar}` : `name:${name}`,
+        source,
+        sourceHash: hashStableText(source),
+    };
+}
+
+function normalizeCharacterBaseline(entry) {
+    if (!entry || typeof entry !== "object") return null;
+    const rawFields =
+        entry.fields && typeof entry.fields === "object" ? entry.fields : {};
+    const legacySummary = String(entry.summary || "").trim();
+    const fields = {};
+    CHARACTER_BASELINE_FIELDS.forEach((definition, index) => {
+        const raw = rawFields[definition.id];
+        const rawObject = raw && typeof raw === "object" ? raw : null;
+        const fallbackText = index === 0 ? legacySummary : "";
+        fields[definition.id] = {
+            text: String(rawObject?.text ?? raw ?? fallbackText)
+                .trim()
+                .slice(0, CHARACTER_BASELINE_FIELD_MAX_CHARS),
+            pinned: rawObject?.pinned === true,
+            source:
+                rawObject?.source === "user" ||
+                (!rawObject && index === 0 && entry.manuallyEdited === true)
+                    ? "user"
+                    : "ai",
+            updatedAt: Number(rawObject?.updatedAt) || Number(entry.updatedAt) || Date.now(),
+        };
+    });
+    if (!Object.values(fields).some((field) => field.text)) return null;
+    return {
+        characterName: String(entry.characterName || "").slice(0, 100),
+        fields,
+        boostAnchor: String(entry.boostAnchor || "")
+            .trim()
+            .slice(0, CHARACTER_BOOST_ANCHOR_MAX_CHARS),
+        boostAnchorNeedsRefresh: entry.boostAnchorNeedsRefresh === true,
+        sourceHash: String(entry.sourceHash || "").slice(0, 100),
+        updatedAt: Number(entry.updatedAt) || Date.now(),
+    };
+}
+
+function createEmptyCharacterBaseline(identity) {
+    const fields = Object.fromEntries(
+        CHARACTER_BASELINE_FIELDS.map((definition) => [
+            definition.id,
+            {
+                text: "",
+                pinned: false,
+                source: "ai",
+                updatedAt: Date.now(),
+            },
+        ])
+    );
+    return {
+        characterName: String(identity?.name || "").slice(0, 100),
+        fields,
+        boostAnchor: "",
+        boostAnchorNeedsRefresh: false,
+        sourceHash: String(identity?.sourceHash || ""),
+        updatedAt: Date.now(),
+    };
+}
+
+function serializeCharacterBaseline(baseline, fieldIds = null) {
+    if (!baseline?.fields) return "";
+    const allowedIds = Array.isArray(fieldIds)
+        ? new Set(fieldIds.filter((id) => CHARACTER_BASELINE_FIELD_ID_SET.has(id)))
+        : null;
+    return CHARACTER_BASELINE_FIELDS.filter(
+        (definition) => !allowedIds || allowedIds.has(definition.id)
+    ).map((definition) => {
+        const text = String(baseline.fields[definition.id]?.text || "").trim();
+        return text ? `[${definition.label}]\n${text}` : "";
+    })
+        .filter(Boolean)
+        .join("\n\n");
+}
+
+function resolveCharacterCorrectionFieldIds(
+    baseline,
+    requestedFieldIds,
+    correctionCodes
+) {
+    if (!baseline?.fields) return [];
+    const hasCharacterCorrection = (
+        Array.isArray(correctionCodes) ? correctionCodes : []
+    ).some((code) => CHARACTER_BASELINE_CORRECTION_CODES.has(code));
+    if (!hasCharacterCorrection) return [];
+    const hasText = (fieldId) =>
+        Boolean(String(baseline.fields[fieldId]?.text || "").trim());
+    const resolved = [];
+    const add = (fieldId) => {
+        if (
+            resolved.length < 2 &&
+            CHARACTER_BASELINE_FIELD_ID_SET.has(fieldId) &&
+            hasText(fieldId) &&
+            !resolved.includes(fieldId)
+        ) {
+            resolved.push(fieldId);
+        }
+    };
+    (Array.isArray(requestedFieldIds) ? requestedFieldIds : []).forEach(add);
+    (Array.isArray(correctionCodes) ? correctionCodes : []).forEach((code) => {
+        (CHARACTER_CORRECTION_FIELD_FALLBACKS[code] || []).forEach(add);
+    });
+    return resolved.slice(0, 2);
+}
+
+function getCurrentCharacterBaseline() {
+    const identity = getCurrentCharacterIdentity();
+    if (!identity) return { status: "unavailable", identity: null, baseline: null };
+    const settings = ensureModuleSettings();
+    const baseline = normalizeCharacterBaseline(
+        settings.characterBaselines[identity.key]
+    );
+    return {
+        identity,
+        baseline,
+        status: !baseline
+            ? "missing"
+            : baseline.sourceHash === identity.sourceHash
+              ? "current"
+              : "stale",
+    };
+}
+
 // ----------------------------------------------------------------------
-// 3. ADAPTIVE GENRE ANCHOR — the primary genre shapes {{char}}, the central
-//    relationship, and scene priorities. One supporting genre acts as a
-//    secondary lens for context, pressure, atmosphere, and texture. At a configurable interval
-//    (5–15 unique {{char}} messages, default 8), a quiet audit selects up to two safe
-//    correction modules for the next reply.
+// 3. STORY ANCHOR — independently composes genre and character guidance.
+//    A shared 5–15 response counter (default 10) runs one combined audit and
+//    selects at most two one-response correction modules.
 // ----------------------------------------------------------------------
 
 function getGenreProfile(genre) {
@@ -716,6 +1126,10 @@ function getGenreSelectionSignature(selection) {
     return [
         String(selection?.primaryGenre?.id || ""),
         String(selection?.supportGenre?.id || ""),
+        selection?.characterEnabled ? "character:on" : "character:off",
+        String(selection?.characterBaselineStatus || ""),
+        hashStableText(selection?.characterBaseline || ""),
+        hashStableText(selection?.characterBoostAnchor || ""),
         primaryProfile,
         supportProfile,
     ].join("::");
@@ -723,10 +1137,27 @@ function getGenreSelectionSignature(selection) {
 
 const GENRE_AUDIT_CODES = Object.freeze([
     "primary_genre",
+    "genre_expression",
+    "character_consistency",
     "char_agency",
     "relationship",
     "support_texture",
-    "description",
+    "scene_density",
+    "continuity",
+    "character_interpretation",
+    "repetition",
+]);
+const GENRE_BOOST_CORRECTION_CODES = new Set([
+    "primary_genre",
+    "support_texture",
+    "genre_expression",
+    "scene_density",
+]);
+const CHARACTER_BOOST_CORRECTION_CODES = new Set([
+    "character_consistency",
+    "character_interpretation",
+    "char_agency",
+    "relationship",
     "continuity",
     "repetition",
 ]);
@@ -734,11 +1165,23 @@ const GENRE_AUDIT_CODES = Object.freeze([
 const THINKING_OUTPUT_ERROR =
     "선택한 thinking 모델이 결과를 일반 응답이 아닌 추론 영역에만 반환했습니다. SillyTavern을 업데이트하거나 추론 강도를 최소/끔으로 바꾼 뒤 다시 시도해 주세요.";
 
+function clipTranscriptMessage(value, maxChars = 0) {
+    const text = String(value || "").trim();
+    if (!maxChars || text.length <= maxChars) return text;
+    const marker = "\n[...middle omitted to limit analysis tokens...]\n";
+    const available = Math.max(0, maxChars - marker.length);
+    const headLength = Math.ceil(available * 0.65);
+    const tailLength = Math.max(0, available - headLength);
+    return `${text.slice(0, headLength)}${marker}${text.slice(-tailLength)}`;
+}
+
 function getRoleplayTranscript({
     messageLimit = 0,
     assistantRepliesOnly = 0,
     assistantRepliesWithUserContext = 0,
+    latestUserContextOnly = false,
     numberAssistantReplies = false,
+    perMessageMaxChars = 0,
     maxChars = 180000,
     chatSnapshot = null,
 } = {}) {
@@ -761,7 +1204,10 @@ function getRoleplayTranscript({
             .filter((index) => index >= 0)
             .slice(-assistantRepliesWithUserContext);
         const selectedIndexes = new Set(assistantIndexes);
-        for (const assistantIndex of assistantIndexes) {
+        const contextIndexes = latestUserContextOnly
+            ? assistantIndexes.slice(-1)
+            : assistantIndexes;
+        for (const assistantIndex of contextIndexes) {
             for (let index = assistantIndex - 1; index >= 0; index -= 1) {
                 if (messages[index].is_user) {
                     selectedIndexes.add(index);
@@ -789,14 +1235,25 @@ function getRoleplayTranscript({
               ? `CHAR_RESPONSE_${++assistantResponseNumber}`
               : "CHAR";
         const name = String(message.name || role).replace(/\s+/g, " ").trim();
-        return `[${role}:${name}]\n${message.mes.trim()}`;
+        return `[${role}:${name}]\n${clipTranscriptMessage(
+            message.mes,
+            perMessageMaxChars
+        )}`;
     });
 
     const selected = [];
     let usedChars = 0;
     for (let index = formatted.length - 1; index >= 0; index -= 1) {
         const item = formatted[index];
-        if (selected.length && usedChars + item.length > maxChars) break;
+        const remaining = maxChars - usedChars;
+        if (remaining <= 0) break;
+        if (item.length > remaining) {
+            if (!selected.length) {
+                selected.unshift(clipTranscriptMessage(item, remaining));
+                usedChars = maxChars;
+            }
+            break;
+        }
         selected.unshift(item);
         usedChars += item.length;
     }
@@ -998,7 +1455,7 @@ function createBackgroundConnectionSnapshot(profile = null) {
 }
 
 async function resolveBackgroundConnectionSnapshot(
-    profileId = ensureModuleSettings().backgroundProfileId
+    profileId = ensureModuleSettings().analysisProfileId
 ) {
     const selectedProfileId = String(profileId || "");
     if (!selectedProfileId) return createBackgroundConnectionSnapshot();
@@ -1194,46 +1651,61 @@ async function generateStructuredAnalysis({
 
 const GENRE_CORRECTION_LABELS = Object.freeze({
     primary_genre: "주 장르 정체성",
+    genre_expression: "장르 표현",
+    character_consistency: "캐릭터성",
     char_agency: "캐릭터 능동성",
     relationship: "캐릭터·펠소 관계성",
     support_texture: "보조 장르 렌즈",
-    description: "배경·감각·행동 묘사",
+    scene_density: "장면 밀도",
     continuity: "현재 장면 연속성",
+    character_interpretation: "캐릭터 해석",
     repetition: "표현 반복 방지",
 });
 
 const GENRE_CORRECTION_MODULES = Object.freeze({
     primary_genre:
         "Make the primary genre unmistakably perceptible in this response. Use at least one concrete, genre-specific mechanism from the primary genre foundation and let it meaningfully shape {{char}}'s choice, relationship behavior, or the scene's emotional consequence. Continue the existing situation; do not introduce unrelated lore, a forced trope, or an arbitrary event merely to display the genre.",
+    genre_expression:
+        "Express the selected primary genre clearly through the response's descriptive focus, dialogue and action beats, event development, pacing, and consequences. Use concrete genre-specific techniques rather than labels, decorative keywords, or generic mood, while continuing the current scene organically.",
+    character_consistency:
+        "Restore {{char}}'s established personality, values, boundaries, speech habits, and relationship-specific behavior. Correct the diagnosed contradiction through a plausible choice, line, or reaction in the current scene; do not explain the correction or mechanically quote a character profile.",
     char_agency:
         "Give {{char}} meaningful agency in this response. {{char}} must initiate at least one relevant action, decision, proposal, refusal, or change of stance based on an established motive instead of only reacting.",
     relationship:
         "Make the evolving relationship clearly matter in this response. Use a concrete relational beat from {{char}}—through subtext, remembered context, boundaries, trust, tension, emotional distance, or a meaningful response—that changes or clarifies the interaction.",
     support_texture:
         "Make the supporting genre clearly perceptible as a secondary lens in this response. Use at least one concrete, genre-specific pressure, relationship context, social or world rule, atmospheric element, or material and sensory detail to shape a development already justified by the scene. Keep the primary genre central; do not introduce unrelated lore or manufacture an event merely to display the supporting genre.",
-    description:
-        "Make the scene concretely tangible in this response through a small number of specific environmental, sensory, spatial, or behavioral details. Each detail must interact with {{char}}'s action, attention, or emotion instead of forming a detached ornamental paragraph.",
+    scene_density:
+        "Restore genre-specific scene density through a few concrete spatial, sensory, social, material, or behavioral details. Let each detail affect action, attention, pressure, or emotional meaning rather than becoming detached decoration.",
     continuity:
         "First advance the unresolved action, conversation, emotional beat, or immediate causal consequence already present. Preserve characterization, location, timing, and spatial logic before adding any new development; avoid an abrupt interruption, location change, time skip, or unrelated turn.",
     repetition:
         "Do not reuse the recent responses' dominant gesture, sensory image, sentence pattern, or relational beat. Choose a visibly different concrete technique while preserving characterization, continuity, and the selected genre identity.",
+    character_interpretation:
+        "Restore the underused established facets of {{char}} that were flattened by the recent one-sided or generic interpretation. Keep the character-specific tension between traits, motives, boundaries, and relationship behavior without inventing a new virtue, flaw, trauma, or hidden side.",
 });
 
 const GENRE_CORRECTION_DESCRIPTIONS = Object.freeze({
     primary_genre:
         "캐릭터의 동기·관계·장면 의미에서 주 장르가 다시 중심이 되도록 강화",
+    genre_expression:
+        "묘사·행동·대화·사건 진행과 결과가 선택한 장르답게 드러나도록 보강",
+    character_consistency:
+        "기준 요약과 어긋난 성격·대사·행동을 캐릭터답게 되돌리도록 보정",
     support_texture:
         "현재 장면을 유지하며 보조 장르의 압력·분위기·묘사 질감을 보강",
     char_agency:
         "캐릭터가 자신의 목적에 따라 먼저 말하거나 행동하고 선택하도록 강화",
     relationship:
         "캐릭터와 펠소 사이의 신뢰·긴장·경계·감정 변화를 행동과 대화에 반영",
-    description:
-        "행동과 감정에 연결된 배경·감각·공간·행동 묘사를 보강",
+    scene_density:
+        "장르 고유의 배경·감각·공간·행동 디테일로 평면적인 장면을 보강",
     continuity:
         "진행 중인 행동·대화·감정과 즉각적인 결과를 먼저 이어가도록 보정",
     repetition:
         "최근 반복된 몸짓·이미지·문장 패턴·관계 흐름을 다른 표현으로 전환",
+    character_interpretation:
+        "한쪽 성향이나 흔한 전형으로 치우친 캐릭터 해석을 기존 결에 맞게 복원",
 });
 
 const genreAuditPendingChats = new Set();
@@ -1248,6 +1720,7 @@ function showGenreAuditToast(kind, message) {
 }
 
 function getGenreAnchorSelection(state = ensureChatState()) {
+    if (!isBoosterFeatureEnabled("genre")) return null;
     const genresById = new Map(getAvailableGenres().map((genre) => [genre.id, genre]));
     const genreSelection = normalizeGenreSelection(state);
     const primaryGenre = genresById.get(genreSelection.primaryId);
@@ -1263,9 +1736,70 @@ function getGenreAnchorSelection(state = ensureChatState()) {
     };
 }
 
+function getBoosterSelection(state = ensureChatState()) {
+    const genreSelection = getGenreAnchorSelection(state);
+    const baselineState = getCurrentCharacterBaseline();
+    const characterEnabled =
+        isBoosterFeatureEnabled("character") && Boolean(baselineState.baseline);
+    if (!genreSelection && !characterEnabled) return null;
+    const correctionCodes = (state.genreAnchor.correctionCodes || []).filter(
+        (code) =>
+            (genreSelection && GENRE_BOOST_CORRECTION_CODES.has(code)) ||
+            (characterEnabled && CHARACTER_BOOST_CORRECTION_CODES.has(code))
+    );
+    const correctionFieldIds =
+        characterEnabled && baselineState.baseline
+            ? resolveCharacterCorrectionFieldIds(
+                  baselineState.baseline,
+                  state.genreAnchor.correctionFieldIds,
+                  correctionCodes
+              )
+            : [];
+    return {
+        primaryGenre: genreSelection?.primaryGenre || null,
+        supportGenre: genreSelection?.supportGenre || null,
+        characterEnabled,
+        characterBaseline:
+            characterEnabled && baselineState.baseline
+                ? serializeCharacterBaseline(baselineState.baseline)
+                : "",
+        correctionCharacterBaseline:
+            characterEnabled &&
+            baselineState.baseline &&
+            correctionFieldIds.length
+                ? serializeCharacterBaseline(
+                      baselineState.baseline,
+                      correctionFieldIds
+                  )
+                : "",
+        characterBaselineStatus: baselineState.status,
+        characterBoostAnchor: characterEnabled
+            ? baselineState.baseline?.boostAnchorNeedsRefresh
+                ? ""
+                : String(baselineState.baseline?.boostAnchor || "").trim()
+            : "",
+        correctionCodes,
+        correctionText: correctionCodes.some((code) =>
+            ["character_consistency", "character_interpretation"].includes(code)
+        )
+            ? String(state.genreAnchor.correctionText || "")
+            : "",
+        auditStatus: state.genreAnchor.auditStatus,
+        responseCount: state.genreAnchor.responseCount,
+    };
+}
+
 function buildGenrePromptText(selection) {
-    const { primaryGenre, supportGenre, correctionCodes } = selection;
-    const primaryProfile = getGenreProfile(primaryGenre);
+    const {
+        primaryGenre,
+        supportGenre,
+        characterEnabled,
+        characterBoostAnchor,
+        correctionCodes,
+        correctionText,
+        correctionCharacterBaseline,
+    } = selection;
+    const primaryProfile = primaryGenre ? getGenreProfile(primaryGenre) : null;
     const supportProfile = supportGenre
         ? getGenreProfile(supportGenre)
         : null;
@@ -1274,26 +1808,54 @@ function buildGenrePromptText(selection) {
     );
 
     return [
-        "[STORYBOOSTER — GENRE ANCHOR]",
-        `PRIMARY GENRE: ${getGenrePromptLabel(primaryGenre)}`,
-        `PRIMARY FOUNDATION: ${primaryProfile.identity}`,
-        `PRIMARY EXPRESSION: ${primaryProfile.signals} ${primaryProfile.effects} ${primaryProfile.guard}`,
-        supportGenre
+        "[STORYBOOSTER — STORY ANCHOR]",
+        primaryGenre ? "GENRE BOOSTER:" : "",
+        primaryGenre
+            ? `PRIMARY GENRE: ${getGenrePromptLabel(primaryGenre)}`
+            : "",
+        primaryGenre ? `PRIMARY FOUNDATION: ${primaryProfile.identity}` : "",
+        primaryGenre
+            ? `PRIMARY EXPRESSION: ${primaryProfile.signals} ${primaryProfile.effects}`
+            : "",
+        primaryGenre ? `PRIMARY GUARD: ${primaryProfile.guard}` : "",
+        primaryGenre && supportGenre
             ? `SUPPORTING GENRE: ${getGenrePromptLabel(supportGenre)}`
-            : "SUPPORTING GENRE: None",
-        supportGenre
+            : primaryGenre
+              ? "SUPPORTING GENRE: None"
+              : "",
+        primaryGenre && supportGenre
             ? `SUPPORTING LENS: ${supportProfile.identity} ${supportProfile.texture} ${supportProfile.guard}`
             : "",
-        supportGenre
+        primaryGenre && supportGenre
             ? "SUPPORTING ROLE: Use only an established or natural opening in the current scene. Keep the primary genre central; let this lens remain subtle or dormant rather than seize direction or start a separate plot."
             : "",
-        "CORE BOOST:",
-        "- Keep {{char}} proactive through established motives, choices, dialogue, and action.",
-        "- Let movement follow existing relationships, information, conflicts, choices, and immediate circumstances; do not invent an unrelated incident.",
-        "- Deepen relationship and atmosphere through action, subtext, and selective sensory, spatial, social, or behavioral detail.",
-        "- Continue unresolved beats and immediate consequences before adding something new; preserve characterization, world rules, space, and momentum.",
+        primaryGenre
+            ? "GENRE EVENT PRINCIPLE: Events may emerge at any time when they follow naturally from character motives, genre logic, ongoing tensions, established circumstances, or the current scene. However, do not manufacture or require an event solely to create genre atmosphere or prove that the selected genre is present."
+            : "",
+        characterEnabled ? "CHARACTER BOOSTER FOR {{char}}:" : "",
+        characterEnabled && characterBoostAnchor
+            ? `CHARACTER-SPECIFIC ANCHOR:\n<character_boost_anchor>\n${characterBoostAnchor}\n</character_boost_anchor>`
+            : "",
+        characterEnabled && characterBoostAnchor
+            ? "Use this compact anchor as a priority reminder of {{char}}'s distinctive characterization. Keep it subordinate to the full character card and established roleplay context; do not quote or explain it."
+            : "",
+        characterEnabled
+            ? "- Keep {{char}} self-directed: pursue established motives, initiate relevant dialogue or action, make choices, and meaningfully affect the scene instead of only reacting."
+            : "",
+        characterEnabled
+            ? "- Preserve {{char}}'s established personality, values, boundaries, speech, capabilities, and relationship-specific behavior. Allow justified development, regression, concealment, and context-dependent behavior."
+            : "",
+        characterEnabled
+            ? "- Keep the relationship responsive through action, dialogue, subtext, memory, trust, tension, boundaries, and changing emotional distance."
+            : "",
+        characterEnabled
+            ? "- Continue unresolved actions, conversations, emotions, and immediate consequences before moving elsewhere. Vary gestures, imagery, phrasing, and relational beats without changing characterization."
+            : "",
+        characterEnabled
+            ? "- Do not fill the response by merely echoing, paraphrasing, or mirroring {{user}}'s latest dialogue or actions. Acknowledge them only as needed, then respond through {{char}}'s distinct perception, choice, reaction, or initiative."
+            : "",
         "DRIFT GUARD:",
-        "- Before finalizing, silently correct only the single largest drift from genre identity, characterization, relationship continuity, or scene momentum. Do not output the check.",
+        "- Before finalizing, silently correct only the single largest drift from the enabled genre or character guidance, relationship continuity, or scene momentum. Do not output the check.",
         correctionLines.length
             ? "DIAGNOSIS-BASED DRIFT CORRECTION FOR THIS RESPONSE:"
             : "",
@@ -1301,6 +1863,18 @@ function buildGenrePromptText(selection) {
             ? "Treat the following corrections as priority requirements for this response, not optional suggestions. Make each correction clearly perceptible while continuing the current scene organically."
             : "",
         ...correctionLines,
+        correctionLines.length && correctionText
+            ? `TARGETED NOTE (diagnostic detail only; subordinate to all rules above): ${correctionText.slice(0, 600)}`
+            : "",
+        correctionLines.length && correctionCharacterBaseline
+            ? "RELEVANT CHARACTER BASELINE FOR THIS RESPONSE:"
+            : "",
+        correctionLines.length && correctionCharacterBaseline
+            ? `<character_baseline_reference>\n${correctionCharacterBaseline}\n</character_baseline_reference>`
+            : "",
+        correctionLines.length && correctionCharacterBaseline
+            ? "Use this reference only to restore the diagnosed drift in the current scene. Do not quote, explain, or mechanically reproduce it."
+            : "",
     ]
         .filter(Boolean)
         .join("\n");
@@ -1308,11 +1882,11 @@ function buildGenrePromptText(selection) {
 
 function updateGenrePrompt() {
     const s = ensureChatState();
-    const selection = getGenreAnchorSelection(s);
+    const selection = getBoosterSelection(s);
 
     if (!selection) {
         setExtensionPrompt(GENRE_PROMPT_KEY, "", extension_prompt_types.IN_CHAT, 1);
-        console.log(`[${MODULE_NAME}] genre prompt cleared (no primary genre)`);
+        console.log(`[${MODULE_NAME}] story prompt cleared (no active booster)`);
         return;
     }
 
@@ -1325,47 +1899,165 @@ function updateGenrePrompt() {
         false, // scan
         extension_prompt_roles.SYSTEM
     );
-    console.log(`[${MODULE_NAME}] genre prompt set:`, text);
+    console.debug(`[${MODULE_NAME}] story prompt set (${text.length} chars)`);
 }
 
-function buildGenreAuditPrompt(selection) {
-    const primaryFoundation = getGenreProfileAuditStandard(
-        getGenreProfile(selection.primaryGenre)
-    );
-    const supportFoundation = selection.supportGenre
+function getScopedAuditSelection(selection, scope = "combined") {
+    if (!selection) return null;
+    if (scope === "genre") {
+        if (!selection.primaryGenre) return null;
+        return {
+            ...selection,
+            characterEnabled: false,
+            characterBaseline: "",
+            characterBoostAnchor: "",
+        };
+    }
+    if (scope === "character") {
+        if (!selection.characterEnabled) return null;
+        return {
+            ...selection,
+            primaryGenre: null,
+            supportGenre: null,
+        };
+    }
+    return selection;
+}
+
+function getAuditOutputInstructions(selection) {
+    const genreEnabled = Boolean(selection.primaryGenre);
+    const characterEnabled = Boolean(selection.characterEnabled);
+    if (genreEnabled && !characterEnabled) {
+        return [
+            'Return JSON only with these exact keys: {"primary_genre":"weak","primary_genre_evidence":[],"genre_expression":"weak","genre_expression_evidence":[],"support_texture":"dormant","support_texture_evidence":[],"support_texture_opportunity":[],"support_texture_identifiable":false,"scene_density":"weak"}.',
+            "Allowed values: primary_genre, genre_expression, and scene_density = present, weak, or na; support_texture = present, dormant, weak, or na; support_texture_identifiable must be true or false.",
+            "Do not omit any key. Use support_texture=na and empty support arrays when there is no supporting genre.",
+        ];
+    }
+    if (!genreEnabled && characterEnabled) {
+        return [
+            'Return JSON only with these exact keys: {"character_consistency":"unavailable","character_consistency_evidence":[],"character_consistency_severe":false,"character_interpretation":"unavailable","character_interpretation_evidence":[],"character_correction":"","character_focus_fields":[],"char_agency":"present","relationship":"present","continuity":"present","repetition":false}.',
+            "Allowed values: character_consistency = stable, drifted, or unavailable; character_interpretation = stable, biased, or unavailable; char_agency, relationship, and continuity = present or weak; boolean fields must be true or false.",
+            "Do not omit any key.",
+        ];
+    }
+    return [
+        'Return JSON only with these exact keys: {"primary_genre":"weak","primary_genre_evidence":[],"genre_expression":"weak","genre_expression_evidence":[],"support_texture":"dormant","support_texture_evidence":[],"support_texture_opportunity":[],"support_texture_identifiable":false,"scene_density":"weak","character_consistency":"unavailable","character_consistency_evidence":[],"character_consistency_severe":false,"character_interpretation":"unavailable","character_interpretation_evidence":[],"character_correction":"","character_focus_fields":[],"char_agency":"present","relationship":"present","continuity":"present","repetition":false}.',
+        "Allowed values: primary_genre, genre_expression, and scene_density = present, weak, or na; support_texture = present, dormant, weak, or na; character_consistency = stable, drifted, unavailable, or na; character_interpretation = stable, biased, unavailable, or na; char_agency, relationship, and continuity = present, weak, or na; boolean fields must be true or false.",
+        "Do not omit any key. Return na for a disabled module. Use support_texture=na and empty support arrays when there is no supporting genre.",
+    ];
+}
+
+function buildGenreAuditPrompt(selection, scope = "combined") {
+    const primaryFoundation = selection.primaryGenre
+        ? getGenreProfileAuditStandard(getGenreProfile(selection.primaryGenre))
+        : "";
+    const supportFoundation = selection.primaryGenre && selection.supportGenre
         ? getGenreProfileAuditStandard(
               getGenreProfile(selection.supportGenre)
           )
         : "";
+    const characterBaseline = String(selection.characterBaseline || "").trim();
 
     return [
-        `Analyze up to the ${GENRE_AUDIT_RESPONSE_LIMIT} most recent numbered {{char}} roleplay responses. The immediately preceding {{user}} messages are context only: evaluate only blocks labelled CHAR_RESPONSE_1 through CHAR_RESPONSE_${GENRE_AUDIT_RESPONSE_LIMIT}. Do not continue the roleplay and do not propose a plot event.`,
-        `Primary genre: ${getGenrePromptLabel(selection.primaryGenre)}.`,
-        `Primary genre evidence standard: ${primaryFoundation}`,
-        selection.supportGenre
+        `Analyze up to the ${GENRE_AUDIT_RESPONSE_LIMIT} most recent numbered {{char}} roleplay responses. One latest USER_CONTEXT block may be supplied only to clarify the most recent exchange: evaluate and cite only blocks labelled CHAR_RESPONSE_1 through CHAR_RESPONSE_${GENRE_AUDIT_RESPONSE_LIMIT}. Do not continue the roleplay and do not propose a plot event.`,
+        selection.primaryGenre
+            ? "GENRE AUDIT IS ENABLED."
+            : scope === "character"
+              ? "GENRE AUDIT IS NOT PART OF THIS REQUEST. Do not return genre fields."
+              : "GENRE AUDIT IS DISABLED. Return na for all genre-only fields.",
+        selection.primaryGenre
+            ? `Primary genre: ${getGenrePromptLabel(selection.primaryGenre)}.`
+            : "",
+        selection.primaryGenre
+            ? `Primary genre evidence standard: ${primaryFoundation}`
+            : "",
+        selection.primaryGenre && selection.supportGenre
             ? `Supporting genre used as a secondary lens for contextual pressure, relationship or world logic, atmosphere, and texture: ${getGenrePromptLabel(selection.supportGenre)}.`
-            : "There is no supporting genre.",
-        selection.supportGenre
+            : selection.primaryGenre
+              ? "There is no supporting genre."
+              : "",
+        selection.primaryGenre && selection.supportGenre
             ? `Supporting genre evidence standard: ${supportFoundation}`
             : "",
-        "This is a strict drift audit, not a genre-compatibility or recommendation task. A genre may suit the roleplay and still be weak when its distinctive traits are not actually visible in the supplied {{char}} responses.",
-        "Rate every requested dimension explicitly as present or weak. Judge only what is actually visible in the supplied responses, even if the genre selection was changed after those responses were written.",
-        "Begin with primary_genre=weak. Change it to present only when multiple numbered {{char}} responses contain clear, genre-specific evidence from the primary foundation that shapes motives, relationship behavior, scene emphasis, or emotional logic. Generic emotion, conflict, danger, action, atmosphere, or competent prose is not enough.",
-        "Before rating primary_genre as present, apply this counterfactual check: if the same responses could still be described accurately without the selected primary genre, rate it weak.",
-        "The supporting genre is a conditional secondary lens, not a second primary genre. It may shape existing pressure, relationship context, social or world logic, atmosphere, prose rhythm, or sensory texture when the current scene offers a natural opening. It must not seize the scene direction or require a new event merely to prove itself.",
-        "Use support_texture=present only when at least two distinct numbered {{char}} responses contain genre-specific influence that would let a reader identify the supporting genre without seeing its label. Use support_texture=dormant when the supporting lens has no clear evidence and the current scene offers no natural, already-established opening for it. Use support_texture=weak only when an established or naturally relevant supporting-genre element had a clear opening in one or more numbered {{char}} responses but {{char}} flattened, ignored, or contradicted it.",
-        "Before rating support_texture as present, apply this counterfactual check: if the cited texture could belong equally to many unrelated genres, it is not identifiable and cannot be present. A generic mood, an isolated word or object, ordinary contemporary technology, broad danger, secrecy, conflict, compatibility, or future potential is not sufficient evidence.",
-        "For world or setting lenses such as fantasy, supernatural, urban fantasy, science fiction, cyberpunk, or historical fiction, require explicit setting-specific phenomena, rules, entities, institutions, material conditions, or consequences. Metaphor, coincidence, unease, an ordinary city, or commonplace technology does not count.",
-        "Do not infer genre evidence from the selected labels themselves. Do not reward an intentionally changed or unrelated genre unless the supplied responses independently demonstrate it.",
-        "Return primary_genre_evidence and support_texture_evidence as arrays of the numbered CHAR_RESPONSE values that contain distinctive evidence. Use the integer only: for CHAR_RESPONSE_3 return 3. Do not include a response merely because it is compatible with the genre.",
-        "Return support_texture_opportunity as the numbered CHAR_RESPONSE values where an already-established or naturally relevant supporting-genre element had a clear opening but was ignored, flattened, or contradicted. Return support_texture_identifiable=true only when the evidence would identify the supporting genre without its label.",
-        "char_agency means {{char}} pursues motives, initiates dialogue or action, makes decisions, and does more than passively react to {{user}}.",
-        "relationship means the interaction between {{char}} and {{user}} retains meaningful subtext, boundaries, trust, tension, memory, or emotional movement.",
-        "support_texture means the supporting genre's characteristic pressures, relationship context, social or world logic, atmosphere, and material or sensory texture are perceptible without displacing the primary genre or forcing an unrelated event.",
-        "Also detect repetition when the latest responses reuse the same dominant gesture, image, sentence pattern, or relational beat.",
-        'Return JSON only with these exact keys, using one allowed literal for each value. Example: {"primary_genre":"weak","primary_genre_evidence":[],"support_texture":"dormant","support_texture_evidence":[],"support_texture_opportunity":[],"support_texture_identifiable":false,"char_agency":"present","relationship":"present","description":"weak","continuity":"present","repetition":false}.',
-        "Allowed values: primary_genre, char_agency, relationship, description, continuity = present or weak; support_texture = present, dormant, weak, or na; support_texture_identifiable and repetition = true or false.",
-        "Use support_texture=na, support_texture_evidence=[], support_texture_opportunity=[], and support_texture_identifiable=false when there is no supporting genre. Do not omit any key.",
+        selection.primaryGenre
+            ? "This is a strict drift audit, not a genre-compatibility or recommendation task. A genre may suit the roleplay and still be weak when its distinctive traits are not actually visible in the supplied {{char}} responses."
+            : "",
+        "Rate every requested dimension with one of its allowed states. Judge only what is actually visible in the supplied responses, even if settings changed after those responses were written.",
+        selection.primaryGenre
+            ? "primary_genre evaluates narrative identity: whether the selected primary genre governs motives, relationship stakes, choices, causal development, scene emphasis, or emotional logic. Begin with primary_genre=weak. Change it to present only when multiple numbered {{char}} responses contain clear genre-specific evidence. Generic emotion, conflict, danger, action, atmosphere, or competent prose is not enough."
+            : "",
+        selection.primaryGenre
+            ? "Before rating primary_genre as present, apply this counterfactual check: if the same responses could still be described accurately without the selected primary genre, rate it weak."
+            : "",
+        selection.primaryGenre
+            ? "The supporting genre is a conditional secondary lens, not a second primary genre. It may shape existing pressure, relationship context, social or world logic, atmosphere, prose rhythm, or sensory texture when the current scene offers a natural opening. It must not seize the scene direction or require a new event merely to prove itself."
+            : "",
+        selection.primaryGenre
+            ? "Use support_texture=present only when at least two distinct numbered {{char}} responses contain genre-specific influence that would let a reader identify the supporting genre without seeing its label. Use support_texture=dormant when the supporting lens has no clear evidence and the current scene offers no natural, already-established opening for it. Use support_texture=weak only when an established or naturally relevant supporting-genre element had a clear opening in one or more numbered {{char}} responses but {{char}} flattened, ignored, or contradicted it."
+            : "",
+        selection.primaryGenre
+            ? "Before rating support_texture as present, apply this counterfactual check: if the cited texture could belong equally to many unrelated genres, it is not identifiable and cannot be present. A generic mood, an isolated word or object, ordinary contemporary technology, broad danger, secrecy, conflict, compatibility, or future potential is not sufficient evidence."
+            : "",
+        selection.primaryGenre
+            ? "For world or setting lenses such as fantasy, supernatural, urban fantasy, science fiction, cyberpunk, or historical fiction, require explicit setting-specific phenomena, rules, entities, institutions, material conditions, or consequences. Metaphor, coincidence, unease, an ordinary city, or commonplace technology does not count."
+            : "",
+        selection.primaryGenre
+            ? "Do not infer genre evidence from the selected labels themselves. Do not reward an intentionally changed or unrelated genre unless the supplied responses independently demonstrate it."
+            : "",
+        selection.primaryGenre
+            ? `Return at most ${AUDIT_EVIDENCE_MAX_ITEMS} strongest primary_genre_evidence, genre_expression_evidence, and support_texture_evidence items as numbered CHAR_RESPONSE values that contain distinctive evidence. Use the integer only: for CHAR_RESPONSE_3 return 3. Do not include a response merely because it is compatible with the genre.`
+            : "",
+        selection.primaryGenre
+            ? `Return at most ${AUDIT_EVIDENCE_MAX_ITEMS} support_texture_opportunity items as the numbered CHAR_RESPONSE values where an already-established or naturally relevant supporting-genre element had a clear opening but was ignored, flattened, or contradicted. Return support_texture_identifiable=true only when the evidence would identify the supporting genre without its label.`
+            : "",
+        selection.primaryGenre
+            ? "genre_expression evaluates execution rather than narrative identity: whether description, dialogue and action emphasis, event progression, pacing, and consequences visibly express the selected primary genre. Use genre_expression=present only when at least two numbered responses use distinctive genre-specific techniques; labels, keywords, generic mood, or mere plot compatibility do not count."
+            : "",
+        selection.primaryGenre
+            ? "scene_density evaluates whether the scene is embodied rather than flat or summary-like: concrete spatial, sensory, social, material, or behavioral detail must affect action, attention, pressure, or emotional meaning. It is not a prose-length score and does not require decorative detail. Judge it separately from whether the details are genre-specific."
+            : "",
+        selection.characterEnabled
+            ? "CHARACTER AUDIT IS ENABLED."
+            : scope === "genre"
+              ? "CHARACTER AUDIT IS NOT PART OF THIS REQUEST. Do not return character fields."
+              : "CHARACTER AUDIT IS DISABLED. Return na for character-only fields and false for repetition.",
+        selection.characterEnabled && characterBaseline
+            ? `COMPACT CHARACTER BASELINE (user-reviewable cached extraction):\n${characterBaseline}`
+            : selection.characterEnabled
+              ? "No compact character baseline is available. Return unavailable for character_consistency and character_interpretation; still evaluate agency, relationship, continuity, and repetition from the transcript."
+              : "",
+        selection.characterEnabled && characterBaseline
+            ? "Use the compact baseline as the character-specific reference across the entire character audit, not only for consistency. Judge how the visible roleplay realizes this particular character's traits, motives, decision style, speech, emotional expression, values, boundaries, and relationship responses. The baseline describes possible patterns, not a checklist that must appear in every response."
+            : "",
+        selection.characterEnabled
+            ? "character_consistency compares {{char}}'s visible speech, choices, values, boundaries, competence, and relationship-specific attitude with the compact baseline. Flag contradiction only when the supplied responses depart from the stored character logic, not merely because a trait is quiet or absent. Do not flag plausible development, regression, deception, disguise, context-dependent conduct, or a temporary reaction to extreme circumstances. Require two distinct response examples unless one contradiction is unmistakably severe."
+            : "",
+        selection.characterEnabled
+            ? "character_interpretation detects whether the baseline is being flattened into a repeated one-sided or generic reading: overusing one trait, ignoring relevant coexisting or context-dependent tendencies, forcing an unjustified positive or negative moral direction, replacing character-specific behavior with a stock trope, or making responses nearly identical across contexts. Strong, simple, or archetypal traits are not errors by themselves. Do not invent cruelty, softness, trauma, redemption, virtues, flaws, or contradictions for the sake of complexity. Require a multi-response pattern."
+            : "",
+        selection.characterEnabled
+            ? "char_agency evaluates whether {{char}} pursues the baseline's goals or motives through their established decision and behavior style, initiates relevant dialogue or action, makes choices, and meaningfully affects the scene. Do not demand loud, reckless, or physically active behavior from a cautious, restrained, dependent, or indirect character; agency may be subtle but must still involve character-specific intent or choice."
+            : "",
+        selection.characterEnabled
+            ? "relationship evaluates whether {{char}} responds to each supplied {{user}} context and the established relationship in a way consistent with the baseline's relationship responses, values, and boundaries, while carrying forward relevant memory, trust, tension, power, attachment, distance, or emotional movement. Do not require constant relationship progression when the scene does not support it."
+            : "",
+        selection.characterEnabled
+            ? "continuity primarily evaluates the transcript itself: whether unresolved actions, dialogue, emotional beats, location, timing, knowledge, and immediate consequences are preserved and advanced. Use the baseline only when a continuity choice also depends on established character behavior; do not override visible scene facts with a generalized baseline statement."
+            : "",
+        selection.characterEnabled
+            ? "Set repetition=true only when multiple recent responses mechanically reuse the same dominant gesture, image, sentence pattern, emotional display, or relational beat. Do not flag intentional signature speech or behavior from the baseline merely for recurring; flag it only when repetition substitutes for context-specific characterization or movement."
+            : "",
+        selection.characterEnabled
+            ? `Return at most ${AUDIT_EVIDENCE_MAX_ITEMS} strongest character_consistency_evidence and character_interpretation_evidence items as numbered CHAR_RESPONSE integers only.`
+            : "",
+        selection.characterEnabled
+            ? "character_correction must be an English instruction of at most two short sentences, grounded only in the compact baseline and supplied responses. Return an empty string unless character_consistency=drifted or character_interpretation=biased."
+            : "",
+        selection.characterEnabled
+            ? `character_focus_fields must contain zero to two IDs from this list: ${CHARACTER_BASELINE_FIELD_IDS.join(", ")}. Select only the stored baseline fields most directly useful for correcting character_consistency, character_interpretation, char_agency, or relationship. Return an empty array when no compact baseline is available or none of those character dimensions needs correction.`
+            : "",
+        ...getAuditOutputInstructions(selection),
         "Keep the analysis brief. Do not restate the responses or explain every criterion one by one.",
         "Always reserve enough output space to finish with the required JSON object.",
         "The JSON must be the final answer, not reasoning or thinking.",
@@ -1374,43 +2066,186 @@ function buildGenreAuditPrompt(selection) {
         .join("\n");
 }
 
+function buildGenreAuditJsonSchema(scope = "combined") {
+    const properties = {
+        primary_genre: { type: "string", enum: ["present", "weak", "na"] },
+        primary_genre_evidence: {
+            type: "array",
+            maxItems: AUDIT_EVIDENCE_MAX_ITEMS,
+            items: { type: "integer" },
+        },
+        genre_expression: { type: "string", enum: ["present", "weak", "na"] },
+        genre_expression_evidence: {
+            type: "array",
+            maxItems: AUDIT_EVIDENCE_MAX_ITEMS,
+            items: { type: "integer" },
+        },
+        support_texture: {
+            type: "string",
+            enum: ["present", "dormant", "weak", "na"],
+        },
+        support_texture_evidence: {
+            type: "array",
+            maxItems: AUDIT_EVIDENCE_MAX_ITEMS,
+            items: { type: "integer" },
+        },
+        support_texture_opportunity: {
+            type: "array",
+            maxItems: AUDIT_EVIDENCE_MAX_ITEMS,
+            items: { type: "integer" },
+        },
+        support_texture_identifiable: { type: "boolean" },
+        scene_density: { type: "string", enum: ["present", "weak", "na"] },
+        character_consistency: {
+            type: "string",
+            enum: ["stable", "drifted", "unavailable", "na"],
+        },
+        character_consistency_evidence: {
+            type: "array",
+            maxItems: AUDIT_EVIDENCE_MAX_ITEMS,
+            items: { type: "integer" },
+        },
+        character_consistency_severe: { type: "boolean" },
+        character_interpretation: {
+            type: "string",
+            enum: ["stable", "biased", "unavailable", "na"],
+        },
+        character_interpretation_evidence: {
+            type: "array",
+            maxItems: AUDIT_EVIDENCE_MAX_ITEMS,
+            items: { type: "integer" },
+        },
+        character_correction: { type: "string" },
+        character_focus_fields: {
+            type: "array",
+            maxItems: 2,
+            items: { type: "string", enum: CHARACTER_BASELINE_FIELD_IDS },
+        },
+        char_agency: { type: "string", enum: ["present", "weak", "na"] },
+        relationship: { type: "string", enum: ["present", "weak", "na"] },
+        continuity: { type: "string", enum: ["present", "weak", "na"] },
+        repetition: { type: "boolean" },
+    };
+    const genreKeys = [
+        "primary_genre",
+        "primary_genre_evidence",
+        "genre_expression",
+        "genre_expression_evidence",
+        "support_texture",
+        "support_texture_evidence",
+        "support_texture_opportunity",
+        "support_texture_identifiable",
+        "scene_density",
+    ];
+    const characterKeys = [
+        "character_consistency",
+        "character_consistency_evidence",
+        "character_consistency_severe",
+        "character_interpretation",
+        "character_interpretation_evidence",
+        "character_correction",
+        "character_focus_fields",
+        "char_agency",
+        "relationship",
+        "continuity",
+        "repetition",
+    ];
+    const required =
+        scope === "genre"
+            ? genreKeys
+            : scope === "character"
+              ? characterKeys
+              : [...genreKeys, ...characterKeys];
+    return {
+        name: `storybooster_${scope}_audit`,
+        strict: true,
+        schema: {
+            type: "object",
+            properties: Object.fromEntries(
+                required.map((key) => [key, properties[key]])
+            ),
+            required,
+            additionalProperties: false,
+        },
+    };
+}
+
 function parseGenreAuditResult(
     rawResult,
     hasSupportGenre,
-    assistantResponseCount = GENRE_AUDIT_RESPONSE_LIMIT
+    assistantResponseCount = GENRE_AUDIT_RESPONSE_LIMIT,
+    scope = "combined"
 ) {
-    const parsed = extractJsonObject(rawResult, "Genre audit returned no JSON object.");
+    const extracted = extractJsonObject(
+        rawResult,
+        "Genre audit returned no JSON object."
+    );
+    const genreDefaults = {
+        primary_genre: "na",
+        primary_genre_evidence: [],
+        genre_expression: "na",
+        genre_expression_evidence: [],
+        support_texture: "na",
+        support_texture_evidence: [],
+        support_texture_opportunity: [],
+        support_texture_identifiable: false,
+        scene_density: "na",
+    };
+    const characterDefaults = {
+        character_consistency: "na",
+        character_consistency_evidence: [],
+        character_consistency_severe: false,
+        character_interpretation: "na",
+        character_interpretation_evidence: [],
+        character_correction: "",
+        character_focus_fields: [],
+        char_agency: "na",
+        relationship: "na",
+        continuity: "na",
+        repetition: false,
+    };
+    const parsed =
+        scope === "genre"
+            ? { ...characterDefaults, ...extracted }
+            : scope === "character"
+              ? { ...genreDefaults, ...extracted }
+              : extracted;
     const correctionPriority = [
+        "character_consistency",
         "primary_genre",
-        "support_texture",
+        "genre_expression",
         "char_agency",
         "relationship",
-        "description",
         "continuity",
+        "support_texture",
+        "scene_density",
+        "character_interpretation",
     ];
-    const isLegacyResult = Array.isArray(parsed.weak);
-    if (typeof parsed.repetition !== "boolean") {
-        throw new Error("Genre audit returned incomplete ratings.");
-    }
-    if (!isLegacyResult) {
-        const standardRatingsValid = correctionPriority
-            .filter((code) => code !== "support_texture")
-            .every((code) => ["present", "weak"].includes(parsed[code]));
-        const supportRatingValid = ["present", "dormant", "weak", "na"].includes(
-            parsed.support_texture
-        );
-        const evidenceValid =
-            Array.isArray(parsed.primary_genre_evidence) &&
-            Array.isArray(parsed.support_texture_evidence) &&
-            Array.isArray(parsed.support_texture_opportunity) &&
-            typeof parsed.support_texture_identifiable === "boolean";
-        if (
-            !standardRatingsValid ||
-            !supportRatingValid ||
-            !evidenceValid
-        ) {
-            throw new Error("Genre audit returned incomplete ratings.");
-        }
+    const valid =
+        ["present", "weak", "na"].includes(parsed.primary_genre) &&
+        ["present", "weak", "na"].includes(parsed.genre_expression) &&
+        ["present", "dormant", "weak", "na"].includes(parsed.support_texture) &&
+        ["present", "weak", "na"].includes(parsed.scene_density) &&
+        ["stable", "drifted", "unavailable", "na"].includes(parsed.character_consistency) &&
+        ["stable", "biased", "unavailable", "na"].includes(parsed.character_interpretation) &&
+        ["present", "weak", "na"].includes(parsed.char_agency) &&
+        ["present", "weak", "na"].includes(parsed.relationship) &&
+        ["present", "weak", "na"].includes(parsed.continuity) &&
+        typeof parsed.repetition === "boolean" &&
+        typeof parsed.support_texture_identifiable === "boolean" &&
+        typeof parsed.character_consistency_severe === "boolean" &&
+        typeof parsed.character_correction === "string" &&
+        Array.isArray(parsed.character_focus_fields) &&
+        [
+            "primary_genre_evidence",
+            "genre_expression_evidence",
+            "support_texture_evidence",
+            "support_texture_opportunity",
+            "character_consistency_evidence",
+            "character_interpretation_evidence",
+        ].every((key) => Array.isArray(parsed[key]));
+    if (!valid) {
+        throw new Error("Story audit returned incomplete ratings.");
     }
 
     const reviewedResponses = Math.max(
@@ -1434,31 +2269,28 @@ function parseGenreAuditResult(
                             value <= reviewedResponses
                     )
             ),
-        ].sort((a, b) => a - b);
+        ]
+            .sort((a, b) => a - b)
+            .slice(0, AUDIT_EVIDENCE_MAX_ITEMS);
     const evidence = {
-        primary: isLegacyResult
-            ? []
-            : normalizeEvidence(parsed.primary_genre_evidence),
-        support:
-            isLegacyResult || !hasSupportGenre
-                ? []
-                : normalizeEvidence(parsed.support_texture_evidence),
-        supportOpportunity:
-            isLegacyResult || !hasSupportGenre
-                ? []
-                : normalizeEvidence(parsed.support_texture_opportunity),
+        primary: normalizeEvidence(parsed.primary_genre_evidence),
+        genreExpression: normalizeEvidence(parsed.genre_expression_evidence),
+        support: hasSupportGenre
+            ? normalizeEvidence(parsed.support_texture_evidence)
+            : [],
+        supportOpportunity: hasSupportGenre
+            ? normalizeEvidence(parsed.support_texture_opportunity)
+            : [],
         supportIdentifiable:
-            !isLegacyResult &&
-            hasSupportGenre &&
-            parsed.support_texture_identifiable === true,
+            hasSupportGenre && parsed.support_texture_identifiable === true,
+        characterConsistency: normalizeEvidence(
+            parsed.character_consistency_evidence
+        ),
+        characterInterpretation: normalizeEvidence(
+            parsed.character_interpretation_evidence
+        ),
         reviewedResponses,
     };
-
-    const legacyWeak = new Set(
-        (isLegacyResult ? parsed.weak : []).filter((code) =>
-            GENRE_AUDIT_CODES.includes(code)
-        )
-    );
     const primaryEvidenceMinimum =
         reviewedResponses > 0
             ? Math.min(
@@ -1475,69 +2307,113 @@ function parseGenreAuditResult(
         reviewedResponses > 0
             ? Math.min(reviewedResponses, SUPPORT_GENRE_EVIDENCE_MINIMUM)
             : 1;
-    const ratings = isLegacyResult
-        ? {
-              primary_genre: legacyWeak.has("primary_genre")
-                  ? "weak"
-                  : "present",
-              support_texture: hasSupportGenre
-                  ? legacyWeak.has("support_texture")
-                      ? "weak"
-                      : "present"
-                  : "na",
-              char_agency: legacyWeak.has("char_agency")
-                  ? "weak"
-                  : "present",
-              relationship: legacyWeak.has("relationship")
-                  ? "weak"
-                  : "present",
-              description: legacyWeak.has("description")
-                  ? "weak"
-                  : "present",
-              continuity: legacyWeak.has("continuity")
-                  ? "weak"
-                  : "present",
-              repetition: parsed.repetition,
-          }
-        : {
-              primary_genre:
-                  parsed.primary_genre === "present" &&
-                  evidence.primary.length >= primaryEvidenceMinimum
-                      ? "present"
-                      : "weak",
-              support_texture: hasSupportGenre
-                  ? parsed.support_texture === "present" &&
-                    evidence.supportIdentifiable &&
-                    evidence.support.length >= supportEvidenceMinimum
-                      ? "present"
-                      : parsed.support_texture === "weak" &&
-                          evidence.supportOpportunity.length > 0
-                        ? "weak"
-                        : "dormant"
-                  : "na",
-              char_agency: parsed.char_agency,
-              relationship: parsed.relationship,
-              description: parsed.description,
-              continuity: parsed.continuity,
-              repetition: parsed.repetition,
-          };
+    const genreExpressionEvidenceMinimum =
+        reviewedResponses > 0
+            ? Math.min(reviewedResponses, GENRE_EXPRESSION_EVIDENCE_MINIMUM)
+            : 1;
+    const interpretationEvidenceMinimum = Math.min(
+        Math.max(1, reviewedResponses),
+        CHARACTER_INTERPRETATION_EVIDENCE_MINIMUM
+    );
+    const consistencyDrifted =
+        parsed.character_consistency === "drifted" &&
+        (evidence.characterConsistency.length >= 2 ||
+            (parsed.character_consistency_severe &&
+                evidence.characterConsistency.length >= 1));
+    const interpretationBiased =
+        parsed.character_interpretation === "biased" &&
+        evidence.characterInterpretation.length >= interpretationEvidenceMinimum;
+    const ratings = {
+        primary_genre:
+            parsed.primary_genre === "na"
+                ? "na"
+                : parsed.primary_genre === "present" &&
+                    evidence.primary.length >= primaryEvidenceMinimum
+                  ? "present"
+                  : "weak",
+        genre_expression:
+            parsed.genre_expression === "na"
+                ? "na"
+                : parsed.genre_expression === "present" &&
+                    evidence.genreExpression.length >=
+                        genreExpressionEvidenceMinimum
+                  ? "present"
+                  : "weak",
+        support_texture: hasSupportGenre
+            ? parsed.support_texture === "present" &&
+                evidence.supportIdentifiable &&
+                evidence.support.length >= supportEvidenceMinimum
+              ? "present"
+              : parsed.support_texture === "weak" &&
+                  evidence.supportOpportunity.length > 0
+                ? "weak"
+                : "dormant"
+            : "na",
+        scene_density: parsed.scene_density,
+        character_consistency:
+            parsed.character_consistency === "unavailable" ||
+            parsed.character_consistency === "na"
+                ? parsed.character_consistency
+                : consistencyDrifted
+                  ? "drifted"
+                  : "stable",
+        character_interpretation:
+            parsed.character_interpretation === "unavailable" ||
+            parsed.character_interpretation === "na"
+                ? parsed.character_interpretation
+                : interpretationBiased
+                  ? "biased"
+                  : "stable",
+        char_agency: parsed.char_agency,
+        relationship: parsed.relationship,
+        continuity: parsed.continuity,
+        repetition: parsed.repetition,
+    };
 
     const codes = correctionPriority.filter(
         (code) =>
-            ratings[code] === "weak" &&
+            (["weak", "drifted", "biased"].includes(ratings[code])) &&
             (hasSupportGenre || code !== "support_texture")
     );
     if (ratings.repetition === true) codes.push("repetition");
 
     const correctionCodes = [...new Set(codes)].slice(0, 2);
-    return { ratings, correctionCodes, evidence };
+    const hasCharacterCorrection = correctionCodes.some((code) =>
+        CHARACTER_BASELINE_CORRECTION_CODES.has(code)
+    );
+    const characterFocusFields = hasCharacterCorrection
+        ? [
+              ...new Set(
+                  parsed.character_focus_fields
+                      .map((value) => String(value || "").trim())
+                      .filter((value) =>
+                          CHARACTER_BASELINE_FIELD_ID_SET.has(value)
+                      )
+              ),
+          ].slice(0, 2)
+        : [];
+    const correctionText = correctionCodes.some((code) =>
+        ["character_consistency", "character_interpretation"].includes(code)
+    )
+        ? String(parsed.character_correction || "").replace(/\s+/g, " ").trim().slice(0, 600)
+        : "";
+    return {
+        ratings,
+        correctionCodes,
+        correctionText,
+        characterFocusFields,
+        evidence,
+    };
 }
 
 function createGenreAuditRecord({
     selection,
     manual,
+    scope = "combined",
     ratings = null,
     correctionCodes = [],
+    correctionText = "",
+    characterFocusFields = [],
     evidence = null,
     status,
     connectionSnapshot = null,
@@ -1547,15 +2423,23 @@ function createGenreAuditRecord({
         id: `audit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         createdAt: Date.now(),
         mode: manual ? "manual" : "auto",
+        scope: ["genre", "character"].includes(scope) ? scope : "combined",
         primaryId: String(selection?.primaryGenre?.id || ""),
         primaryLabel: String(selection?.primaryGenre?.label || ""),
         supportId: String(selection?.supportGenre?.id || ""),
         supportLabel: String(selection?.supportGenre?.label || ""),
+        characterIncluded: Boolean(selection?.characterEnabled),
         ratings,
         evidence: evidence
             ? {
                   primary: Array.isArray(evidence.primary)
                       ? evidence.primary.slice(0, GENRE_AUDIT_RESPONSE_LIMIT)
+                      : [],
+                  genreExpression: Array.isArray(evidence.genreExpression)
+                      ? evidence.genreExpression.slice(
+                            0,
+                            GENRE_AUDIT_RESPONSE_LIMIT
+                        )
                       : [],
                   support: Array.isArray(evidence.support)
                       ? evidence.support.slice(0, GENRE_AUDIT_RESPONSE_LIMIT)
@@ -1568,11 +2452,31 @@ function createGenreAuditRecord({
                       : [],
                   supportIdentifiable:
                       evidence.supportIdentifiable === true,
+                  characterConsistency: Array.isArray(
+                      evidence.characterConsistency
+                  )
+                      ? evidence.characterConsistency.slice(
+                            0,
+                            GENRE_AUDIT_RESPONSE_LIMIT
+                        )
+                      : [],
+                  characterInterpretation: Array.isArray(
+                      evidence.characterInterpretation
+                  )
+                      ? evidence.characterInterpretation.slice(
+                            0,
+                            GENRE_AUDIT_RESPONSE_LIMIT
+                        )
+                      : [],
                   reviewedResponses: Number(evidence.reviewedResponses) || 0,
               }
             : null,
         correctionCodes: correctionCodes
             .filter((code) => GENRE_AUDIT_CODES.includes(code))
+            .slice(0, 2),
+        correctionText: String(correctionText || "").slice(0, 600),
+        characterFocusFields: characterFocusFields
+            .filter((fieldId) => CHARACTER_BASELINE_FIELD_ID_SET.has(fieldId))
             .slice(0, 2),
         status,
         appliedMessageId: null,
@@ -1588,15 +2492,27 @@ function createGenreAuditRecord({
     };
 }
 
-async function runGenreDriftAudit(chatId, selection, { manual = false } = {}) {
+async function runGenreDriftAudit(
+    chatId,
+    selection,
+    { manual = false, scope = "combined" } = {}
+) {
     if (genreAuditPendingChats.has(chatId)) return;
     genreAuditPendingChats.add(chatId);
+    const auditLabel =
+        scope === "genre"
+            ? "장르"
+            : scope === "character"
+              ? "캐릭터"
+              : "통합";
     const selectionSignature = getGenreSelectionSignature(selection);
     const chatSnapshot = snapshotCurrentChatMessages();
     const latestAssistantMessageId = getLatestAssistantMessageId(chatSnapshot);
     const auditTranscript = getRoleplayTranscript({
         assistantRepliesWithUserContext: GENRE_AUDIT_RESPONSE_LIMIT,
+        latestUserContextOnly: true,
         numberAssistantReplies: true,
+        perMessageMaxChars: AUDIT_MESSAGE_MAX_CHARS,
         maxChars: 60000,
         chatSnapshot,
     });
@@ -1604,7 +2520,7 @@ async function runGenreDriftAudit(chatId, selection, { manual = false } = {}) {
         auditTranscript.match(/\[CHAR_RESPONSE_\d+:/g) || []
     ).length;
     const selectedProfileId = String(
-        ensureModuleSettings().backgroundProfileId || ""
+        ensureModuleSettings().analysisProfileId || ""
     );
     let connectionSnapshot = selectedProfileId
         ? createBackgroundConnectionSnapshot({
@@ -1617,8 +2533,8 @@ async function runGenreDriftAudit(chatId, selection, { manual = false } = {}) {
         showGenreAuditToast(
             "info",
             manual
-                ? "🔍 최근 롤플을 수동 진단 중이에요…"
-                : "🔍 최근 롤플을 자동 진단 중이에요…"
+                ? `🔍 최근 롤플을 ${auditLabel} 수동 진단 중이에요…`
+                : "🔍 최근 롤플을 자동 통합 진단 중이에요…"
         );
     }
 
@@ -1627,137 +2543,98 @@ async function runGenreDriftAudit(chatId, selection, { manual = false } = {}) {
             selectedProfileId
         );
         const result = await generateStructuredAnalysis({
-            prompt: buildGenreAuditPrompt(selection),
+            prompt: buildGenreAuditPrompt(selection, scope),
             transcript: auditTranscript,
-            jsonSchema: {
-                name: "storybooster_genre_audit",
-                strict: true,
-                schema: {
-                    type: "object",
-                    properties: {
-                        primary_genre: {
-                            type: "string",
-                            enum: ["present", "weak"],
-                        },
-                        primary_genre_evidence: {
-                            type: "array",
-                            items: { type: "integer" },
-                        },
-                        support_texture: {
-                            type: "string",
-                            enum: ["present", "dormant", "weak", "na"],
-                        },
-                        support_texture_evidence: {
-                            type: "array",
-                            items: { type: "integer" },
-                        },
-                        support_texture_opportunity: {
-                            type: "array",
-                            items: { type: "integer" },
-                        },
-                        support_texture_identifiable: { type: "boolean" },
-                        char_agency: {
-                            type: "string",
-                            enum: ["present", "weak"],
-                        },
-                        relationship: {
-                            type: "string",
-                            enum: ["present", "weak"],
-                        },
-                        description: {
-                            type: "string",
-                            enum: ["present", "weak"],
-                        },
-                        continuity: {
-                            type: "string",
-                            enum: ["present", "weak"],
-                        },
-                        repetition: { type: "boolean" },
-                    },
-                    required: [
-                        "primary_genre",
-                        "primary_genre_evidence",
-                        "support_texture",
-                        "support_texture_evidence",
-                        "support_texture_opportunity",
-                        "support_texture_identifiable",
-                        "char_agency",
-                        "relationship",
-                        "description",
-                        "continuity",
-                        "repetition",
-                    ],
-                    additionalProperties: false,
-                },
-            },
-            responseLength: 2400,
+            jsonSchema: buildGenreAuditJsonSchema(scope),
+            responseLength: scope === "combined" ? 2400 : 1600,
             connectionSnapshot,
         });
         const auditResult = parseGenreAuditResult(
             result,
             Boolean(selection.supportGenre),
-            reviewedResponses
+            reviewedResponses,
+            scope
         );
-        const { ratings, correctionCodes, evidence } = auditResult;
+        const {
+            ratings,
+            correctionCodes,
+            correctionText,
+            characterFocusFields,
+            evidence,
+        } = auditResult;
         const chatState = ensureModuleSettings().chats[chatId];
         if (!chatState) return;
         ensureGenreAnchorState(chatState);
-        const currentSelection = getGenreAnchorSelection(chatState);
+        const currentSelection = getScopedAuditSelection(
+            getBoosterSelection(chatState),
+            scope
+        );
         if (
             getGenreSelectionSignature(currentSelection) !==
             selectionSignature
         ) {
-            chatState.genreAnchor.lastAudit = createGenreAuditRecord({
+            const cancelledRecord = createGenreAuditRecord({
                 selection,
                 manual,
+                scope,
                 ratings,
                 correctionCodes: [],
                 evidence,
                 status: "cancelled",
                 connectionSnapshot,
                 errorMessage:
-                    "진단 중 장르 설정이 변경되어 이전 결과를 적용하지 않았습니다.",
+                    "진단 중 부스터 설정이나 캐릭터 기준이 변경되어 이전 결과를 적용하지 않았습니다.",
             });
+            storeLastAuditRecord(chatState.genreAnchor, cancelledRecord, scope);
             chatState.genreAnchor.auditStatus = "waiting";
             saveSettingsDebounced();
             if (getCurrentChatId() === chatId) {
                 showGenreAuditToast(
                     "info",
-                    "장르 설정이 변경되어 이전 진단 결과를 적용하지 않았어요."
+                    "부스터 설정이나 캐릭터 기준이 변경되어 이전 진단 결과를 적용하지 않았어요."
                 );
             }
             return;
         }
-        if (!manual && chatState.genreAnchor.auditInterval === 0) {
-            chatState.genreAnchor.lastAudit = createGenreAuditRecord({
+        if (!manual && getGlobalAuditInterval() === 0) {
+            const cancelledRecord = createGenreAuditRecord({
                 selection,
                 manual,
+                scope,
                 ratings,
                 correctionCodes,
+                characterFocusFields,
                 evidence,
                 status: "cancelled",
                 connectionSnapshot,
             });
+            storeLastAuditRecord(chatState.genreAnchor, cancelledRecord, scope);
             chatState.genreAnchor.auditStatus = "waiting";
             saveSettingsDebounced();
             return;
         }
         chatState.genreAnchor.correctionCodes = correctionCodes;
+        chatState.genreAnchor.correctionText = correctionText;
+        chatState.genreAnchor.correctionFieldIds = characterFocusFields;
         chatState.genreAnchor.correctionRemaining = correctionCodes.length ? 1 : 0;
         chatState.genreAnchor.correctionAppliedMessageId = null;
         chatState.genreAnchor.auditStatus = correctionCodes.length
             ? "reinforcing"
             : "stable";
-        chatState.genreAnchor.lastAudit = createGenreAuditRecord({
+        const completedRecord = createGenreAuditRecord({
             selection,
             manual,
+            scope,
             ratings,
             correctionCodes,
+            correctionText,
+            characterFocusFields,
             evidence,
             status: correctionCodes.length ? "pending" : "stable",
             connectionSnapshot,
         });
-        if (manual) {
+        storeLastAuditRecord(chatState.genreAnchor, completedRecord, scope);
+        if (manual && scope === "combined") {
             chatState.genreAnchor.responseCount = 0;
             chatState.genreAnchor.lastCountedMessageId =
                 latestAssistantMessageId;
@@ -1770,8 +2647,8 @@ async function runGenreDriftAudit(chatId, selection, { manual = false } = {}) {
             showGenreAuditToast(
                 correctionCodes.length ? "info" : "success",
                 correctionCodes.length
-                    ? `🧭 ${manual ? "수동" : "자동"} 진단 완료 · 다음 응답에 보정을 적용해요`
-                    : `✅ ${manual ? "수동" : "자동"} 진단 완료 · 장르 흐름이 안정적이에요`
+                    ? `🧭 ${manual ? `${auditLabel} 수동` : "자동 통합"} 진단 완료 · 다음 응답에 보정을 적용해요`
+                    : `✅ ${manual ? `${auditLabel} 수동` : "자동 통합"} 진단 완료 · 활성 부스터가 안정적이에요`
             );
         }
     } catch (err) {
@@ -1782,28 +2659,33 @@ async function runGenreDriftAudit(chatId, selection, { manual = false } = {}) {
             ensureGenreAnchorState(chatState);
             staleSelection =
                 getGenreSelectionSignature(
-                    getGenreAnchorSelection(chatState)
+                    getScopedAuditSelection(
+                        getBoosterSelection(chatState),
+                        scope
+                    )
                 ) !== selectionSignature;
             chatState.genreAnchor.auditStatus = staleSelection
                 ? "waiting"
                 : "error";
-            chatState.genreAnchor.lastAudit = createGenreAuditRecord({
+            const errorRecord = createGenreAuditRecord({
                 selection,
                 manual,
+                scope,
                 status: staleSelection ? "cancelled" : "error",
                 connectionSnapshot,
                 errorMessage: staleSelection
-                    ? "진단 중 장르 설정이 변경되어 이전 요청을 적용하지 않았습니다."
+                    ? "진단 중 부스터 설정이나 캐릭터 기준이 변경되어 이전 요청을 적용하지 않았습니다."
                     : err?.message || "진단 요청에 실패했습니다.",
             });
+            storeLastAuditRecord(chatState.genreAnchor, errorRecord, scope);
             saveSettingsDebounced();
         }
         if (getCurrentChatId() === chatId) {
             showGenreAuditToast(
                 staleSelection ? "info" : "warning",
                 staleSelection
-                    ? "장르 설정이 변경되어 이전 진단 요청을 적용하지 않았어요."
-                    : `⚠️ ${manual ? "수동" : "자동"} 진단 실패 · 기본 장르 부스터는 계속 유지돼요`
+                    ? "부스터 설정이나 캐릭터 기준이 변경되어 이전 진단 요청을 적용하지 않았어요."
+                    : `⚠️ ${manual ? `${auditLabel} 수동` : "자동 통합"} 진단 실패 · 상시 부스팅은 계속 유지돼요`
             );
         }
     } finally {
@@ -1812,14 +2694,556 @@ async function runGenreDriftAudit(chatId, selection, { manual = false } = {}) {
     }
 }
 
-function runManualGenreAudit() {
+function runManualGenreAudit(scope = "genre") {
     const state = ensureChatState();
-    const selection = getGenreAnchorSelection(state);
-    if (!selection) {
-        toastr?.warning?.("수동 진단을 사용하려면 먼저 주 장르를 선택하세요.");
+    if (
+        state.genreAnchor.correctionRemaining > 0 &&
+        state.genreAnchor.correctionAppliedMessageId === null
+    ) {
+        toastr?.info?.(
+            "대기 중인 보정을 먼저 적용하거나 ‘이번 보정 적용 안 하기’로 취소해 주세요."
+        );
         return;
     }
-    runGenreDriftAudit(getCurrentChatId(), selection, { manual: true });
+    const selection = getScopedAuditSelection(getBoosterSelection(state), scope);
+    if (!selection) {
+        toastr?.warning?.(
+            scope === "character"
+                ? "캐릭터 수동 진단을 사용하려면 캐릭터 기준을 먼저 만들어 주세요."
+                : "장르 수동 진단을 사용하려면 주 장르를 먼저 선택해 주세요."
+        );
+        return;
+    }
+    runGenreDriftAudit(getCurrentChatId(), selection, { manual: true, scope });
+}
+
+const characterBaselinePendingTasks = new Map();
+const characterBaselineAutosaveTimers = new Map();
+
+function resetAuditAfterCharacterBaselineChange(
+    chatId = getCurrentChatId(),
+    latestAssistantMessageId = null
+) {
+    const state = ensureChatState(chatId);
+    const characterAuditId = state.genreAnchor.lastCharacterAudit?.id || "";
+    markPendingGenreAuditCancelled(state);
+    state.genreAnchor.responseCount = 0;
+    state.genreAnchor.correctionCodes = [];
+    state.genreAnchor.correctionText = "";
+    state.genreAnchor.correctionFieldIds = [];
+    state.genreAnchor.correctionRemaining = 0;
+    state.genreAnchor.correctionAppliedMessageId = null;
+    state.genreAnchor.auditStatus = "waiting";
+    state.genreAnchor.lastCharacterAudit = null;
+    if (state.genreAnchor.lastAudit?.id === characterAuditId) {
+        state.genreAnchor.lastAudit = null;
+    }
+    if (chatId === getCurrentChatId()) {
+        state.genreAnchor.lastCountedMessageId = getLatestAssistantMessageId();
+    } else if (latestAssistantMessageId !== null) {
+        state.genreAnchor.lastCountedMessageId = latestAssistantMessageId;
+    }
+}
+
+function getCharacterBaselineFieldDefinition(fieldId) {
+    return CHARACTER_BASELINE_FIELDS.find((field) => field.id === fieldId) || null;
+}
+
+function buildCharacterBaselinePrompt(
+    characterName,
+    targetFields,
+    contextFields = [],
+    outputLanguage = ensureModuleSettings().outputLanguage
+) {
+    const targetList = targetFields
+        .map((field) => `- ${field.id} (${field.label}): ${field.prompt}`)
+        .join("\n");
+    const retainedContext = contextFields
+        .map(({ definition, text }) =>
+            text ? `[${definition.label} — preserve as context]\n${text}` : ""
+        )
+        .filter(Boolean)
+        .join("\n\n");
+    const jsonExample = Object.fromEntries(
+        targetFields.map((field) => [field.id, "..."])
+    );
+    return [
+        `Extract a compact roleplay baseline for the character ${characterName}.`,
+        "Use only the supplied character card. Do not continue roleplay and do not invent missing traits, trauma, moral judgments, hidden virtues, flaws, or relationships.",
+        "Do not prioritize appearance, long setting lore, plot summary, or lengthy examples unless they directly constrain personality, speech, or behavior.",
+        "Preserve deliberate simplicity, strong archetypal traits, and genuine contradictions. Do not make the character artificially balanced or more conventionally sympathetic.",
+        outputLanguage === "en"
+            ? "Write each requested field in natural English using one to three concise sentences. Keep it specific enough for later consistency auditing and avoid repeating the same fact across fields."
+            : "Write each requested field in natural Korean using one to three concise sentences. Keep it specific enough for later consistency auditing and avoid repeating the same fact across fields. Do not write English prose except for established proper nouns.",
+        `Also write boost_anchor in grammatical English as a compact character-specific reminder of at most ${CHARACTER_BOOST_ANCHOR_MAX_CHARS} characters. Use three to five short lines covering only the most distinctive personality tensions, values or boundaries, active motives, speech or behavioral signature, and relationship-specific response pattern supported by the card and fields. Avoid absolute claims such as always, never, completely, or zero unless the card explicitly establishes them. Do not repeat generic instructions about agency, continuity, prose variety, or user control; those are added separately.`,
+        "FIELDS TO GENERATE:",
+        targetList,
+        retainedContext
+            ? `EXISTING FIELDS TO PRESERVE AND USE ONLY AS CONTEXT:\n${retainedContext}`
+            : "",
+        `Return JSON only in this exact shape: ${JSON.stringify({ fields: jsonExample, boost_anchor: "English character-specific anchor" })}.`,
+    ].join("\n");
+}
+
+async function generateCharacterBaseline(fieldId = null) {
+    if (!isBoosterFeatureEnabled("character")) {
+        toastr?.info?.("전역 설정에서 캐릭터 부스터를 켜 주세요.");
+        return;
+    }
+    const baselineState = getCurrentCharacterBaseline();
+    if (!baselineState.identity) {
+        toastr?.warning?.("개별 캐릭터 채팅에서만 캐릭터 기준을 만들 수 있어요.");
+        return;
+    }
+    if (!baselineState.identity.source) {
+        toastr?.warning?.("분석할 캐릭터 시트 내용이 없습니다.");
+        return;
+    }
+    const { identity } = baselineState;
+    const taskChatId = getCurrentChatId();
+    const taskLatestAssistantMessageId = getLatestAssistantMessageId();
+    if (characterBaselinePendingTasks.has(identity.key)) return;
+    if (document.querySelector(".rp-character-field-text:not([readonly])")) {
+        toastr?.info?.("편집 중인 항목을 저장한 뒤 다시 시도해 주세요.");
+        return;
+    }
+    const baseline = baselineState.baseline || createEmptyCharacterBaseline(identity);
+    const requestedField = fieldId
+        ? getCharacterBaselineFieldDefinition(fieldId)
+        : null;
+    if (fieldId && !requestedField) return;
+    const targetFields = requestedField
+        ? [requestedField]
+        : CHARACTER_BASELINE_FIELDS.filter(
+              (definition) => !baseline.fields[definition.id]?.pinned
+          );
+    if (!targetFields.length) {
+        toastr?.info?.("모든 항목이 고정되어 있어 다시 요약할 항목이 없습니다.");
+        return;
+    }
+    const targetIds = new Set(targetFields.map((field) => field.id));
+    const contextFields = CHARACTER_BASELINE_FIELDS.filter((definition) =>
+        requestedField
+            ? definition.id !== requestedField.id
+            : baseline.fields[definition.id]?.pinned
+    ).map((definition) => ({
+        definition,
+        text: String(baseline.fields[definition.id]?.text || ""),
+    }));
+    characterBaselinePendingTasks.set(identity.key, fieldId || "all");
+    updateCharacterBoosterPanel();
+
+    const selectedProfileId = String(
+        ensureModuleSettings().analysisProfileId || ""
+    );
+    try {
+        const connectionSnapshot = await resolveBackgroundConnectionSnapshot(
+            selectedProfileId
+        );
+        const schemaProperties = Object.fromEntries(
+            targetFields.map((field) => [field.id, { type: "string" }])
+        );
+        const result = await generateStructuredAnalysis({
+            prompt: buildCharacterBaselinePrompt(
+                identity.name,
+                targetFields,
+                contextFields,
+                ensureModuleSettings().outputLanguage
+            ),
+            transcript: `<character_card>\n${identity.source.slice(
+                0,
+                CHARACTER_CARD_INPUT_MAX_CHARS
+            )}\n</character_card>`,
+            jsonSchema: {
+                name: "storybooster_character_baseline",
+                strict: true,
+                schema: {
+                    type: "object",
+                    properties: {
+                        fields: {
+                            type: "object",
+                            properties: schemaProperties,
+                            required: [...targetIds],
+                            additionalProperties: false,
+                        },
+                        boost_anchor: { type: "string" },
+                    },
+                    required: ["fields", "boost_anchor"],
+                    additionalProperties: false,
+                },
+            },
+            responseLength: requestedField ? 1000 : 2800,
+            connectionSnapshot,
+        });
+        if (!isBoosterFeatureEnabled("character")) {
+            toastr?.info?.(
+                "캐릭터 부스터가 꺼져 있어 생성 결과를 저장하지 않았어요."
+            );
+            return;
+        }
+        const parsed = extractJsonObject(
+            result,
+            "Character baseline returned no JSON object."
+        );
+        if (!parsed.fields || typeof parsed.fields !== "object") {
+            throw new Error("캐릭터 기준 항목이 누락되었습니다.");
+        }
+        const boostAnchor = String(parsed.boost_anchor || "")
+            .trim()
+            .slice(0, CHARACTER_BOOST_ANCHOR_MAX_CHARS);
+        if (boostAnchor.length < 30) {
+            throw new Error("상시 부스팅 앵커가 지나치게 짧습니다.");
+        }
+        const nextBaseline = normalizeCharacterBaseline(baseline) ||
+            createEmptyCharacterBaseline(identity);
+        for (const definition of targetFields) {
+            const text = String(parsed.fields[definition.id] || "")
+                .trim()
+                .slice(0, CHARACTER_BASELINE_FIELD_MAX_CHARS);
+            if (text.length < 10) {
+                throw new Error(`${definition.label} 항목이 지나치게 짧습니다.`);
+            }
+            nextBaseline.fields[definition.id] = {
+                ...nextBaseline.fields[definition.id],
+                text,
+                source: "ai",
+                updatedAt: Date.now(),
+            };
+        }
+        nextBaseline.characterName = identity.name;
+        nextBaseline.boostAnchor = boostAnchor;
+        nextBaseline.boostAnchorNeedsRefresh = false;
+        nextBaseline.updatedAt = Date.now();
+        if (!requestedField || !baselineState.baseline) {
+            nextBaseline.sourceHash = identity.sourceHash;
+        }
+        ensureModuleSettings().characterBaselines[identity.key] = {
+            characterName: identity.name,
+            ...nextBaseline,
+        };
+        resetAuditAfterCharacterBaselineChange(
+            taskChatId,
+            taskLatestAssistantMessageId
+        );
+        saveSettingsDebounced();
+        if (getCurrentCharacterIdentity()?.key === identity.key) {
+            updateGenrePrompt();
+            updateGenreAnchorPanel();
+        }
+        toastr?.success?.(
+            requestedField
+                ? `${requestedField.label} 항목을 다시 생성했어요.`
+                : "고정하지 않은 캐릭터 기준을 다시 요약했어요."
+        );
+    } catch (error) {
+        console.error(`[${MODULE_NAME}] character baseline failed:`, error);
+        toastr?.error?.(
+            `캐릭터 기준을 만들지 못했습니다: ${error?.message || "연결 상태를 확인해 주세요."}`
+        );
+    } finally {
+        characterBaselinePendingTasks.delete(identity.key);
+        updateCharacterBoosterPanel();
+    }
+}
+
+function setCharacterFieldSaveStatus(fieldId, text) {
+    const status = document.querySelector(
+        `.rp-character-field-save-status[data-field-id="${fieldId}"]`
+    );
+    if (status) status.textContent = text;
+}
+
+function getCharacterEditTarget(element) {
+    const identityKey = String(element?.dataset?.identityKey || "");
+    if (!identityKey) return null;
+    return {
+        identity: {
+            key: identityKey,
+            name: String(element.dataset.characterName || ""),
+            sourceHash: String(element.dataset.sourceHash || ""),
+        },
+        chatId: String(element.dataset.chatId || getCurrentChatId()),
+    };
+}
+
+function saveCharacterBaselineField(
+    fieldId,
+    value,
+    { refresh = false, target = null } = {}
+) {
+    const definition = getCharacterBaselineFieldDefinition(fieldId);
+    const currentIdentity = getCurrentCharacterIdentity();
+    const identity = target?.identity?.key ? target.identity : currentIdentity;
+    const targetChatId = String(target?.chatId || getCurrentChatId());
+    if (!definition || !identity?.key) return false;
+    const settings = ensureModuleSettings();
+    const baseline = normalizeCharacterBaseline(
+        settings.characterBaselines[identity.key]
+    ) || createEmptyCharacterBaseline(identity);
+    const text = String(value || "").trim().slice(0, CHARACTER_BASELINE_FIELD_MAX_CHARS);
+    baseline.fields[fieldId] = {
+        ...baseline.fields[fieldId],
+        text,
+        source: "user",
+        updatedAt: Date.now(),
+    };
+    baseline.characterName = identity.name;
+    baseline.boostAnchorNeedsRefresh = Boolean(baseline.boostAnchor);
+    baseline.updatedAt = Date.now();
+    if (!baseline.sourceHash) baseline.sourceHash = identity.sourceHash;
+    if (Object.values(baseline.fields).some((field) => field.text)) {
+        settings.characterBaselines[identity.key] = baseline;
+    } else {
+        delete settings.characterBaselines[identity.key];
+    }
+    resetAuditAfterCharacterBaselineChange(targetChatId);
+    saveSettingsDebounced();
+    if (getCurrentCharacterIdentity()?.key === identity.key) {
+        updateGenrePrompt();
+        setCharacterFieldSaveStatus(fieldId, "저장됨");
+        if (refresh) updateGenreAnchorPanel();
+    }
+    return true;
+}
+
+function scheduleCharacterBaselineAutosave(textarea) {
+    const fieldId = textarea?.dataset.fieldId;
+    if (!fieldId) return;
+    const target = getCharacterEditTarget(textarea);
+    const identityKey = target?.identity?.key || "none";
+    const timerKey = `${identityKey}:${fieldId}`;
+    const previousTimer = characterBaselineAutosaveTimers.get(timerKey);
+    if (previousTimer) clearTimeout(previousTimer);
+    setCharacterFieldSaveStatus(fieldId, "저장 중…");
+    const value = textarea.value;
+    characterBaselineAutosaveTimers.set(
+        timerKey,
+        setTimeout(() => {
+            characterBaselineAutosaveTimers.delete(timerKey);
+            saveCharacterBaselineField(fieldId, value, { target });
+        }, CHARACTER_BASELINE_AUTOSAVE_DELAY)
+    );
+}
+
+function flushCharacterBaselineAutosave(textarea, { refresh = false } = {}) {
+    const fieldId = textarea?.dataset.fieldId;
+    if (!fieldId) return false;
+    const target = getCharacterEditTarget(textarea);
+    const timerKey = `${target?.identity?.key || "none"}:${fieldId}`;
+    const timer = characterBaselineAutosaveTimers.get(timerKey);
+    if (timer) {
+        clearTimeout(timer);
+        characterBaselineAutosaveTimers.delete(timerKey);
+    }
+    return saveCharacterBaselineField(fieldId, textarea.value, {
+        refresh,
+        target,
+    });
+}
+
+function toggleCharacterFieldPin(fieldId) {
+    if (!getCharacterBaselineFieldDefinition(fieldId)) return;
+    const baselineState = getCurrentCharacterBaseline();
+    if (
+        !baselineState.identity ||
+        !String(baselineState.baseline?.fields?.[fieldId]?.text || "").trim()
+    ) {
+        return;
+    }
+    const baseline = baselineState.baseline || createEmptyCharacterBaseline(
+        baselineState.identity
+    );
+    baseline.fields[fieldId].pinned = !baseline.fields[fieldId].pinned;
+    baseline.updatedAt = Date.now();
+    ensureModuleSettings().characterBaselines[baselineState.identity.key] = baseline;
+    saveSettingsDebounced();
+    updateCharacterBoosterPanel();
+}
+
+function toggleCharacterFieldEditing(fieldId) {
+    const textarea = document.querySelector(
+        `.rp-character-field-text[data-field-id="${fieldId}"]`
+    );
+    const button = document.querySelector(
+        `.rp-character-edit-button[data-field-id="${fieldId}"]`
+    );
+    if (!textarea || !button) return;
+    if (textarea.readOnly) {
+        textarea.readOnly = false;
+        textarea.classList.add("is-editing");
+        button.textContent = "💾";
+        button.title = "저장하고 편집 잠금";
+        textarea.focus();
+    } else {
+        flushCharacterBaselineAutosave(textarea, { refresh: true });
+        textarea.readOnly = true;
+        textarea.classList.remove("is-editing");
+        button.textContent = "✏️";
+        button.title = "직접 편집";
+    }
+    updateCharacterBaselineActionStates();
+}
+
+function saveCharacterBoostAnchor(value, target = null) {
+    const currentIdentity = getCurrentCharacterIdentity();
+    const identity = target?.identity?.key ? target.identity : currentIdentity;
+    const targetChatId = String(target?.chatId || getCurrentChatId());
+    const settings = ensureModuleSettings();
+    const baseline = identity?.key
+        ? normalizeCharacterBaseline(settings.characterBaselines[identity.key])
+        : null;
+    if (!identity?.key || !baseline) return false;
+    const text = String(value || "")
+        .trim()
+        .slice(0, CHARACTER_BOOST_ANCHOR_MAX_CHARS);
+    baseline.boostAnchor = text;
+    baseline.boostAnchorNeedsRefresh = false;
+    baseline.updatedAt = Date.now();
+    settings.characterBaselines[identity.key] = baseline;
+    resetAuditAfterCharacterBaselineChange(targetChatId);
+    saveSettingsDebounced();
+    if (getCurrentCharacterIdentity()?.key === identity.key) {
+        updateGenrePrompt();
+        updateGenreAnchorPanel();
+    }
+    return true;
+}
+
+function toggleCharacterBoostAnchorEditing() {
+    const textarea = document.getElementById("rp-character-boost-anchor-text");
+    const button = document.getElementById("rp-character-boost-anchor-edit");
+    if (!textarea || !button) return;
+    if (textarea.readOnly) {
+        textarea.readOnly = false;
+        textarea.classList.add("is-editing");
+        button.textContent = "💾";
+        button.title = "저장하고 편집 잠금";
+        textarea.focus();
+    } else {
+        saveCharacterBoostAnchor(
+            textarea.value,
+            getCharacterEditTarget(textarea)
+        );
+        textarea.readOnly = true;
+        textarea.classList.remove("is-editing");
+        button.textContent = "✏️";
+        button.title = "상시 앵커 직접 편집";
+    }
+    updateCharacterBaselineActionStates();
+}
+
+function closeCharacterEditorsForChatChange() {
+    document
+        .querySelectorAll(".rp-character-field-text:not([readonly])")
+        .forEach((textarea) => {
+            flushCharacterBaselineAutosave(textarea);
+            textarea.readOnly = true;
+            textarea.classList.remove("is-editing");
+        });
+    const anchorText = document.getElementById("rp-character-boost-anchor-text");
+    if (anchorText && !anchorText.readOnly) {
+        anchorText.readOnly = true;
+        anchorText.classList.remove("is-editing");
+    }
+    const anchorEdit = document.getElementById("rp-character-boost-anchor-edit");
+    if (anchorEdit) {
+        anchorEdit.textContent = "✏️";
+        anchorEdit.title = "상시 앵커 직접 편집";
+    }
+}
+
+async function regenerateCharacterBoostAnchor() {
+    if (!isBoosterFeatureEnabled("character")) {
+        toastr?.info?.("전역 설정에서 캐릭터 부스터를 켜 주세요.");
+        return;
+    }
+    const baselineState = getCurrentCharacterBaseline();
+    if (!baselineState.identity || !baselineState.baseline) return;
+    const { identity, baseline } = baselineState;
+    const taskChatId = getCurrentChatId();
+    const taskLatestAssistantMessageId = getLatestAssistantMessageId();
+    if (characterBaselinePendingTasks.has(identity.key)) return;
+    characterBaselinePendingTasks.set(identity.key, "anchor");
+    updateCharacterBoosterPanel();
+    try {
+        const connectionSnapshot = await resolveBackgroundConnectionSnapshot(
+            String(ensureModuleSettings().analysisProfileId || "")
+        );
+        const result = await generateStructuredAnalysis({
+            prompt: [
+                `Create a compact persistent roleplay anchor for ${identity.name}.`,
+                `Write it in English as three to five short lines and no more than ${CHARACTER_BOOST_ANCHOR_MAX_CHARS} characters.`,
+                "Preserve only character-specific personality tensions, values or boundaries, active motives, speech or behavioral signature, and relationship-specific response patterns supported by the baseline.",
+                "Use complete, grammatical English. Avoid absolute claims such as always, never, completely, or zero unless the baseline explicitly establishes them.",
+                "Do not invent traits. Do not add generic instructions about agency, continuity, prose variety, or user control; those are supplied separately.",
+                'Return JSON only: {"boost_anchor":"English character-specific anchor"}.',
+            ].join("\n"),
+            transcript: `<character_baseline>\n${serializeCharacterBaseline(
+                baseline
+            )}\n</character_baseline>`,
+            jsonSchema: {
+                name: "storybooster_character_boost_anchor",
+                strict: true,
+                schema: {
+                    type: "object",
+                    properties: { boost_anchor: { type: "string" } },
+                    required: ["boost_anchor"],
+                    additionalProperties: false,
+                },
+            },
+            responseLength: 900,
+            connectionSnapshot,
+        });
+        if (!isBoosterFeatureEnabled("character")) {
+            toastr?.info?.(
+                "캐릭터 부스터가 꺼져 있어 앵커 생성 결과를 저장하지 않았어요."
+            );
+            return;
+        }
+        const parsed = extractJsonObject(
+            result,
+            "Character boost anchor returned no JSON object."
+        );
+        const boostAnchor = String(parsed.boost_anchor || "")
+            .trim()
+            .slice(0, CHARACTER_BOOST_ANCHOR_MAX_CHARS);
+        if (boostAnchor.length < 30) {
+            throw new Error("상시 부스팅 앵커가 지나치게 짧습니다.");
+        }
+        baseline.boostAnchor = boostAnchor;
+        baseline.boostAnchorNeedsRefresh = false;
+        baseline.updatedAt = Date.now();
+        ensureModuleSettings().characterBaselines[identity.key] = baseline;
+        resetAuditAfterCharacterBaselineChange(
+            taskChatId,
+            taskLatestAssistantMessageId
+        );
+        saveSettingsDebounced();
+        if (getCurrentCharacterIdentity()?.key === identity.key) {
+            updateGenrePrompt();
+            updateGenreAnchorPanel();
+        }
+        toastr?.success?.("캐릭터 전용 상시 앵커를 갱신했어요.");
+    } catch (error) {
+        console.error(`[${MODULE_NAME}] character boost anchor failed:`, error);
+        toastr?.error?.(
+            `상시 앵커를 만들지 못했습니다: ${error?.message || "연결 상태를 확인해 주세요."}`
+        );
+    } finally {
+        characterBaselinePendingTasks.delete(identity.key);
+        updateCharacterBoosterPanel();
+    }
+}
+
+function deleteCharacterBaseline() {
+    const baselineState = getCurrentCharacterBaseline();
+    if (!baselineState.identity || !baselineState.baseline) return;
+    if (!window.confirm("저장된 캐릭터 기준 요약을 삭제할까요?")) return;
+    delete ensureModuleSettings().characterBaselines[baselineState.identity.key];
+    resetAuditAfterCharacterBaselineChange();
+    saveSettingsDebounced();
+    updateGenrePrompt();
+    updateGenreAnchorPanel();
 }
 
 function normalizeGenreAuditRecord(record) {
@@ -1828,36 +3252,59 @@ function normalizeGenreAuditRecord(record) {
     const ratings =
         record.ratings && typeof record.ratings === "object"
             ? {
-                  primary_genre: ["present", "weak"].includes(
+                  primary_genre: ["present", "weak", "na"].includes(
                       record.ratings.primary_genre
                   )
                       ? record.ratings.primary_genre
-                      : "present",
+                      : "na",
+                  genre_expression: ["present", "weak", "na"].includes(
+                      record.ratings.genre_expression
+                  )
+                      ? record.ratings.genre_expression
+                      : "na",
                   support_texture: ["present", "dormant", "weak", "na"].includes(
                       record.ratings.support_texture
                   )
                       ? record.ratings.support_texture
                       : "na",
-                  char_agency: ["present", "weak"].includes(
+                  scene_density: ["present", "weak", "na"].includes(
+                      record.ratings.scene_density
+                  )
+                      ? record.ratings.scene_density
+                      : ["present", "weak"].includes(record.ratings.description)
+                        ? record.ratings.description
+                        : "na",
+                  character_consistency: [
+                      "stable",
+                      "drifted",
+                      "unavailable",
+                      "na",
+                  ].includes(record.ratings.character_consistency)
+                      ? record.ratings.character_consistency
+                      : "unavailable",
+                  character_interpretation: [
+                      "stable",
+                      "biased",
+                      "unavailable",
+                      "na",
+                  ].includes(record.ratings.character_interpretation)
+                      ? record.ratings.character_interpretation
+                      : "unavailable",
+                  char_agency: ["present", "weak", "na"].includes(
                       record.ratings.char_agency
                   )
                       ? record.ratings.char_agency
-                      : "present",
-                  relationship: ["present", "weak"].includes(
+                      : "na",
+                  relationship: ["present", "weak", "na"].includes(
                       record.ratings.relationship
                   )
                       ? record.ratings.relationship
-                      : "present",
-                  description: ["present", "weak"].includes(
-                      record.ratings.description
-                  )
-                      ? record.ratings.description
-                      : "present",
-                  continuity: ["present", "weak"].includes(
+                      : "na",
+                  continuity: ["present", "weak", "na"].includes(
                       record.ratings.continuity
                   )
                       ? record.ratings.continuity
-                      : "present",
+                      : "na",
                   repetition: Boolean(record.ratings.repetition),
               }
             : null;
@@ -1868,16 +3315,33 @@ function normalizeGenreAuditRecord(record) {
             ? Number(record.createdAt)
             : Date.now(),
         mode: record.mode === "manual" ? "manual" : "auto",
+        scope: ["genre", "character"].includes(record.scope)
+            ? record.scope
+            : "combined",
         primaryId: String(record.primaryId || ""),
         primaryLabel: String(record.primaryLabel || "").slice(0, 100),
         supportId: String(record.supportId || ""),
         supportLabel: String(record.supportLabel || "").slice(0, 100),
+        characterIncluded: record.characterIncluded === true,
         ratings,
         evidence:
             record.evidence && typeof record.evidence === "object"
                 ? {
                       primary: Array.isArray(record.evidence.primary)
                           ? record.evidence.primary
+                                .map((value) => Number(value))
+                                .filter(
+                                    (value) =>
+                                        Number.isSafeInteger(value) &&
+                                        value >= 1 &&
+                                        value <= GENRE_AUDIT_RESPONSE_LIMIT
+                                )
+                                .slice(0, GENRE_AUDIT_RESPONSE_LIMIT)
+                          : [],
+                      genreExpression: Array.isArray(
+                          record.evidence.genreExpression
+                      )
+                          ? record.evidence.genreExpression
                                 .map((value) => Number(value))
                                 .filter(
                                     (value) =>
@@ -1913,6 +3377,32 @@ function normalizeGenreAuditRecord(record) {
                           : [],
                       supportIdentifiable:
                           record.evidence.supportIdentifiable === true,
+                      characterConsistency: Array.isArray(
+                          record.evidence.characterConsistency
+                      )
+                          ? record.evidence.characterConsistency
+                                .map((value) => Number(value))
+                                .filter(
+                                    (value) =>
+                                        Number.isSafeInteger(value) &&
+                                        value >= 1 &&
+                                        value <= GENRE_AUDIT_RESPONSE_LIMIT
+                                )
+                                .slice(0, GENRE_AUDIT_RESPONSE_LIMIT)
+                          : [],
+                      characterInterpretation: Array.isArray(
+                          record.evidence.characterInterpretation
+                      )
+                          ? record.evidence.characterInterpretation
+                                .map((value) => Number(value))
+                                .filter(
+                                    (value) =>
+                                        Number.isSafeInteger(value) &&
+                                        value >= 1 &&
+                                        value <= GENRE_AUDIT_RESPONSE_LIMIT
+                                )
+                                .slice(0, GENRE_AUDIT_RESPONSE_LIMIT)
+                          : [],
                       reviewedResponses: Math.max(
                           0,
                           Math.min(
@@ -1925,6 +3415,14 @@ function normalizeGenreAuditRecord(record) {
         correctionCodes: Array.isArray(record.correctionCodes)
             ? record.correctionCodes
                   .filter((code) => GENRE_AUDIT_CODES.includes(code))
+                  .slice(0, 2)
+            : [],
+        correctionText: String(record.correctionText || "").slice(0, 600),
+        characterFocusFields: Array.isArray(record.characterFocusFields)
+            ? record.characterFocusFields
+                  .filter((fieldId) =>
+                      CHARACTER_BASELINE_FIELD_ID_SET.has(fieldId)
+                  )
                   .slice(0, 2)
             : [],
         status: allowedStatuses.includes(record.status)
@@ -1946,17 +3444,55 @@ function normalizeGenreAuditRecord(record) {
     };
 }
 
+function storeLastAuditRecord(anchor, record, scope = "combined") {
+    if (!anchor || !record) return;
+    anchor.lastAudit = record;
+    const hasGenreResult =
+        scope === "genre" ||
+        (scope === "combined" && Boolean(record.primaryId));
+    const hasCharacterResult =
+        scope === "character" ||
+        (scope === "combined" &&
+            (record.characterIncluded === true ||
+                (record.ratings &&
+                    [
+                        record.ratings.character_consistency,
+                        record.ratings.char_agency,
+                        record.ratings.relationship,
+                    ].some(
+                        (rating) => !["na", undefined].includes(rating)
+                    ))));
+    if (hasGenreResult) anchor.lastGenreAudit = record;
+    if (hasCharacterResult) anchor.lastCharacterAudit = record;
+}
+
+function updateStoredAuditStatus(anchor, status, appliedMessageId = null) {
+    const auditId = anchor?.lastAudit?.id;
+    if (!auditId) return;
+    ["lastAudit", "lastGenreAudit", "lastCharacterAudit"].forEach((key) => {
+        const record = anchor[key];
+        if (record?.id !== auditId) return;
+        record.status = status;
+        record.appliedMessageId = Number.isSafeInteger(appliedMessageId)
+            ? appliedMessageId
+            : null;
+    });
+}
+
 function ensureGenreAnchorState(state) {
     if (!state.genreAnchor || typeof state.genreAnchor !== "object") {
         state.genreAnchor = {
             responseCount: 0,
             correctionCodes: [],
+            correctionText: "",
+            correctionFieldIds: [],
             correctionRemaining: 0,
             correctionAppliedMessageId: null,
             auditStatus: "waiting",
-            auditInterval: DEFAULT_AUDIT_INTERVAL,
             recommendation: null,
             lastAudit: null,
+            lastGenreAudit: null,
+            lastCharacterAudit: null,
             lastCountedMessageId: null,
         };
     }
@@ -1973,6 +3509,25 @@ function ensureGenreAnchorState(state) {
     state.genreAnchor.correctionCodes = state.genreAnchor.correctionCodes
         .filter((code) => GENRE_AUDIT_CODES.includes(code))
         .slice(0, 2);
+    state.genreAnchor.correctionFieldIds = Array.isArray(
+        state.genreAnchor.correctionFieldIds
+    )
+        ? state.genreAnchor.correctionFieldIds
+              .filter((fieldId) =>
+                  CHARACTER_BASELINE_FIELD_ID_SET.has(fieldId)
+              )
+              .slice(0, 2)
+        : [];
+    if (
+        !state.genreAnchor.correctionCodes.some((code) =>
+            CHARACTER_BASELINE_CORRECTION_CODES.has(code)
+        )
+    ) {
+        state.genreAnchor.correctionFieldIds = [];
+    }
+    state.genreAnchor.correctionText = String(
+        state.genreAnchor.correctionText || ""
+    ).slice(0, 600);
     if (
         !Number.isSafeInteger(state.genreAnchor.correctionRemaining) ||
         state.genreAnchor.correctionRemaining < 0
@@ -1992,14 +3547,6 @@ function ensureGenreAnchorState(state) {
     ) {
         state.genreAnchor.auditStatus = "waiting";
     }
-    const hasValidAuditInterval =
-        Number.isSafeInteger(state.genreAnchor.auditInterval) &&
-        (state.genreAnchor.auditInterval === 0 ||
-            (state.genreAnchor.auditInterval >= MIN_AUDIT_INTERVAL &&
-                state.genreAnchor.auditInterval <= MAX_AUDIT_INTERVAL));
-    if (!hasValidAuditInterval) {
-        state.genreAnchor.auditInterval = DEFAULT_AUDIT_INTERVAL;
-    }
     if (
         state.genreAnchor.lastCountedMessageId !== null &&
         !Number.isSafeInteger(state.genreAnchor.lastCountedMessageId)
@@ -2016,6 +3563,31 @@ function ensureGenreAnchorState(state) {
     state.genreAnchor.lastAudit = normalizeGenreAuditRecord(
         state.genreAnchor.lastAudit
     );
+    state.genreAnchor.lastGenreAudit = normalizeGenreAuditRecord(
+        state.genreAnchor.lastGenreAudit
+    );
+    state.genreAnchor.lastCharacterAudit = normalizeGenreAuditRecord(
+        state.genreAnchor.lastCharacterAudit
+    );
+    if (!state.genreAnchor.lastGenreAudit) {
+        const legacyAudit = state.genreAnchor.lastAudit;
+        if (legacyAudit?.ratings?.primary_genre !== "na") {
+            state.genreAnchor.lastGenreAudit = legacyAudit;
+        }
+    }
+    if (!state.genreAnchor.lastCharacterAudit) {
+        const legacyAudit = state.genreAnchor.lastAudit;
+        if (
+            legacyAudit?.ratings &&
+            [
+                legacyAudit.ratings.character_consistency,
+                legacyAudit.ratings.char_agency,
+                legacyAudit.ratings.relationship,
+            ].some((rating) => !["na", "unavailable", undefined].includes(rating))
+        ) {
+            state.genreAnchor.lastCharacterAudit = legacyAudit;
+        }
+    }
 
     return state.genreAnchor;
 }
@@ -2023,7 +3595,7 @@ function ensureGenreAnchorState(state) {
 function handleGenreResponseReceived(messageId) {
     const chatId = getCurrentChatId();
     const state = ensureChatState();
-    const selection = getGenreAnchorSelection(state);
+    const selection = getBoosterSelection(state);
     if (!selection) return;
 
     const numericMessageId = Number(messageId);
@@ -2041,11 +3613,11 @@ function handleGenreResponseReceived(messageId) {
             state.genreAnchor.correctionAppliedMessageId === null
         ) {
             state.genreAnchor.correctionAppliedMessageId = resolvedMessageId;
-            if (state.genreAnchor.lastAudit?.status === "pending") {
-                state.genreAnchor.lastAudit.status = "applied";
-                state.genreAnchor.lastAudit.appliedMessageId =
-                    resolvedMessageId;
-            }
+            updateStoredAuditStatus(
+                state.genreAnchor,
+                "applied",
+                resolvedMessageId
+            );
             saveSettingsDebounced();
         }
         updateGenreAnchorPanel();
@@ -2058,13 +3630,15 @@ function handleGenreResponseReceived(messageId) {
         state.genreAnchor.correctionAppliedMessageId === null
     ) {
         state.genreAnchor.correctionAppliedMessageId = resolvedMessageId;
-        if (state.genreAnchor.lastAudit?.status === "pending") {
-            state.genreAnchor.lastAudit.status = "applied";
-            state.genreAnchor.lastAudit.appliedMessageId = resolvedMessageId;
-        }
+        updateStoredAuditStatus(
+            state.genreAnchor,
+            "applied",
+            resolvedMessageId
+        );
     }
 
-    if (state.genreAnchor.auditInterval === 0) {
+    const auditInterval = getGlobalAuditInterval();
+    if (auditInterval === 0) {
         state.genreAnchor.responseCount = 0;
         saveSettingsDebounced();
         updateGenreAnchorPanel();
@@ -2078,10 +3652,10 @@ function handleGenreResponseReceived(messageId) {
     saveSettingsDebounced();
 
     if (
-        state.genreAnchor.responseCount % state.genreAnchor.auditInterval ===
+        state.genreAnchor.responseCount % auditInterval ===
         0
     ) {
-        runGenreDriftAudit(chatId, getGenreAnchorSelection(state));
+        runGenreDriftAudit(chatId, getBoosterSelection(state));
     } else {
         updateGenreAnchorPanel();
     }
@@ -2097,6 +3671,8 @@ function clearAppliedGenreCorrectionOnUserTurn() {
     }
 
     state.genreAnchor.correctionCodes = [];
+    state.genreAnchor.correctionText = "";
+    state.genreAnchor.correctionFieldIds = [];
     state.genreAnchor.correctionRemaining = 0;
     state.genreAnchor.correctionAppliedMessageId = null;
     state.genreAnchor.auditStatus = "monitoring";
@@ -2107,8 +3683,7 @@ function clearAppliedGenreCorrectionOnUserTurn() {
 
 function markPendingGenreAuditCancelled(state) {
     if (state?.genreAnchor?.lastAudit?.status === "pending") {
-        state.genreAnchor.lastAudit.status = "cancelled";
-        state.genreAnchor.lastAudit.appliedMessageId = null;
+        updateStoredAuditStatus(state.genreAnchor, "cancelled");
     }
 }
 
@@ -2125,17 +3700,19 @@ function cancelPendingGenreCorrection() {
         return;
     }
     state.genreAnchor.correctionCodes = [];
+    state.genreAnchor.correctionText = "";
+    state.genreAnchor.correctionFieldIds = [];
     state.genreAnchor.correctionRemaining = 0;
     state.genreAnchor.correctionAppliedMessageId = null;
     state.genreAnchor.auditStatus =
-        state.genreAnchor.auditInterval === 0 ? "waiting" : "monitoring";
+        getGlobalAuditInterval() === 0 ? "waiting" : "monitoring";
     markPendingGenreAuditCancelled(state);
     saveSettingsDebounced();
     updateGenrePrompt();
     updateGenreAnchorPanel();
     showGenreAuditToast(
         "info",
-        "이번 진단 보정을 취소했어요. 상시 장르 부스팅은 계속 유지돼요."
+        "이번 진단 보정을 취소했어요. 상시 부스팅은 계속 유지돼요."
     );
 }
 
@@ -2170,6 +3747,10 @@ function createEmptyPlotModeDrafts() {
 }
 
 function triggerPlotEvent(eventText) {
+    if (!isBoosterFeatureEnabled("plot")) {
+        toastr?.info?.("전역 설정에서 플롯 부스터가 꺼져 있습니다.");
+        return;
+    }
     const line = eventText?.trim();
     if (!line) return;
 
@@ -2395,7 +3976,7 @@ function restorePlotModeDraft(mode) {
 }
 
 function getPlotOutputInstruction(
-    language = ensureModuleSettings().plotOutputLanguage
+    language = ensureModuleSettings().outputLanguage
 ) {
     return language === "en"
         ? 'OUTPUT LANGUAGE AND FORMAT REQUIREMENT: Write the entire value of the "event" field in natural English in 1–3 sentences as an editorial plot brief using prospective or planning language. Do not use Korean narration. Do not write direct dialogue, internal monologue, character-roleplay narration, or a completed scene.'
@@ -2438,11 +4019,15 @@ function isRoleplayLikePlotCandidate(text) {
 
 function isPlotOutputLanguageMismatch(
     text,
-    language = ensureModuleSettings().plotOutputLanguage
+    language = ensureModuleSettings().outputLanguage
 ) {
     const hangulCount = (String(text).match(/[가-힣]/g) || []).length;
     const latinCount = (String(text).match(/[A-Za-z]/g) || []).length;
-    if (language === "ko") return hangulCount === 0;
+    if (language === "ko") {
+        if (hangulCount === 0) return true;
+        const letterCount = hangulCount + latinCount;
+        return letterCount >= 80 && hangulCount / letterCount < 0.2;
+    }
     return hangulCount > Math.max(8, latinCount);
 }
 
@@ -2620,11 +4205,12 @@ function buildEventGenerationPrompt(
         currentEvent = "",
         history = [],
         userIdea = "",
-        outputLanguage = ensureModuleSettings().plotOutputLanguage,
+        outputLanguage = ensureModuleSettings().outputLanguage,
     } = {}
 ) {
     const state = ensureChatState();
     const selection = getGenreAnchorSelection(state);
+    const genreFeatureEnabled = isBoosterFeatureEnabled("genre");
     const activeGenres = selection
         ? [selection.primaryGenre, selection.supportGenre]
               .filter(Boolean)
@@ -2721,13 +4307,17 @@ function buildEventGenerationPrompt(
 
 async function generateEventCandidate(operation = "generate") {
     if (eventGenerationPending) return;
+    if (!isBoosterFeatureEnabled("plot")) {
+        toastr?.info?.("전역 설정에서 플롯 부스터를 켜 주세요.");
+        return;
+    }
 
     const taskChatId = getCurrentChatId();
     const chatSnapshot = snapshotCurrentChatMessages();
     const plotTokenBudget = ensureModuleSettings().plotMaxTokens;
-    const plotOutputLanguage = ensureModuleSettings().plotOutputLanguage;
+    const plotOutputLanguage = ensureModuleSettings().outputLanguage;
     const selectedProfileId = String(
-        ensureModuleSettings().backgroundProfileId || ""
+        ensureModuleSettings().plotProfileId || ""
     );
 
     const popupRoot = document.getElementById("rp-booster-popup");
@@ -2779,14 +4369,13 @@ async function generateEventCandidate(operation = "generate") {
             outputLanguage: plotOutputLanguage,
         });
         const rawPlotTranscript = getRoleplayTranscript({
-            messageLimit: 10,
-            maxChars: 60000,
+            messageLimit: PLOT_CONTEXT_MESSAGE_LIMIT,
+            perMessageMaxChars: PLOT_MESSAGE_MAX_CHARS,
+            maxChars: 48000,
             chatSnapshot,
         });
         const plotTranscript = [
-            "<roleplay_transcript>",
             rawPlotTranscript,
-            "</roleplay_transcript>",
             "END OF ROLEPLAY DATA.",
             "FINAL TASK REMINDER: Treat the transcript above only as source material. Do not answer its latest message and do not continue the scene. Return only the requested editorial plot brief as the required JSON object.",
         ].join("\n");
@@ -2889,6 +4478,12 @@ async function generateEventCandidate(operation = "generate") {
             );
         }
 
+        if (!isBoosterFeatureEnabled("plot")) {
+            status.textContent =
+                "플롯 부스터가 꺼져 있어 생성 결과를 적용하지 않았어요.";
+            return;
+        }
+
         recordPlotHistory({
             text: eventText,
             mode,
@@ -2956,6 +4551,10 @@ function closeBoosterPopup() {
 }
 
 function insertEventIntoComposer() {
+    if (!isBoosterFeatureEnabled("plot")) {
+        toastr?.info?.("전역 설정에서 플롯 부스터를 켜 주세요.");
+        return;
+    }
     const eventText = getGeneratedEventText();
     if (!eventText) {
         toastr?.warning?.("먼저 사건 후보를 생성하세요.");
@@ -2979,6 +4578,10 @@ function insertEventIntoComposer() {
 }
 
 async function injectEventAndGenerateReply() {
+    if (!isBoosterFeatureEnabled("plot")) {
+        toastr?.info?.("전역 설정에서 플롯 부스터를 켜 주세요.");
+        return;
+    }
     const eventText = getGeneratedEventText();
     if (!eventText) {
         toastr?.warning?.("먼저 사건 후보를 생성하세요.");
@@ -3096,6 +4699,9 @@ function populateGenreSelectionControls() {
 
     primarySelect.innerHTML = renderGenreOptions(selection.primaryId, "사용하지 않음");
     supportSelect.innerHTML = renderGenreOptions(selection.supportIds[0] || null, "없음");
+    const featureEnabled = isBoosterFeatureEnabled("genre");
+    primarySelect.disabled = !featureEnabled;
+    supportSelect.disabled = !featureEnabled;
 }
 
 function syncGenreSelectionFromControls() {
@@ -3114,6 +4720,8 @@ function syncGenreSelectionFromControls() {
     state.genreAnchor.responseCount = 0;
     markPendingGenreAuditCancelled(state);
     state.genreAnchor.correctionCodes = [];
+    state.genreAnchor.correctionText = "";
+    state.genreAnchor.correctionFieldIds = [];
     state.genreAnchor.correctionRemaining = 0;
     state.genreAnchor.correctionAppliedMessageId = null;
     state.genreAnchor.auditStatus = "waiting";
@@ -3185,6 +4793,8 @@ function deleteCustomGenre(genreId) {
         state.genreAnchor.responseCount = 0;
         markPendingGenreAuditCancelled(state);
         state.genreAnchor.correctionCodes = [];
+        state.genreAnchor.correctionText = "";
+        state.genreAnchor.correctionFieldIds = [];
         state.genreAnchor.correctionRemaining = 0;
         state.genreAnchor.correctionAppliedMessageId = null;
         state.genreAnchor.auditStatus = "waiting";
@@ -3205,9 +4815,15 @@ const genreRecommendationPendingChats = new Set();
 const GENRE_AUDIT_DISPLAY_ITEMS = Object.freeze([
     { code: "primary_genre", label: "주 장르", title: "주 장르 정체성" },
     { code: "support_texture", label: "보조 렌즈", title: "보조 장르 렌즈" },
+    { code: "genre_expression", label: "장르 표현", title: "묘사·행동·사건 진행의 장르 표현" },
+    { code: "scene_density", label: "장면 밀도", title: "장면의 구체성과 체감 밀도" },
+]);
+
+const CHARACTER_AUDIT_DISPLAY_ITEMS = Object.freeze([
+    { code: "character_consistency", label: "캐릭터성", title: "캐릭터 설정 일관성" },
+    { code: "character_interpretation", label: "캐릭터 해석", title: "한쪽 성향·전형 편향" },
     { code: "char_agency", label: "능동성", title: "캐릭터 능동성" },
-    { code: "relationship", label: "관계", title: "캐릭터-펠소 관계" },
-    { code: "description", label: "장면 묘사", title: "배경·감각·행동 묘사" },
+    { code: "relationship", label: "관계 반응", title: "캐릭터-펠소 관계 반응" },
     { code: "continuity", label: "연속성", title: "현재 장면 연속성" },
     { code: "repetition", label: "표현 다양성", title: "표현 반복 방지" },
 ]);
@@ -3219,6 +4835,20 @@ function getGenreAuditDisplayStatus(audit, code) {
             : { text: "안정", className: "is-stable" };
     }
     const rating = audit.ratings[code];
+    if (code === "character_consistency") {
+        if (rating === "drifted") return { text: "이탈", className: "is-weak" };
+        if (["unavailable", "na"].includes(rating)) {
+            return { text: rating === "unavailable" ? "판단 보류" : "미사용", className: "is-off" };
+        }
+        return { text: "안정", className: "is-stable" };
+    }
+    if (code === "character_interpretation") {
+        if (rating === "biased") return { text: "편향", className: "is-weak" };
+        if (["unavailable", "na"].includes(rating)) {
+            return { text: rating === "unavailable" ? "판단 보류" : "미사용", className: "is-off" };
+        }
+        return { text: "안정", className: "is-stable" };
+    }
     if (code === "support_texture") {
         switch (rating) {
             case "present":
@@ -3231,9 +4861,32 @@ function getGenreAuditDisplayStatus(audit, code) {
                 return { text: "미사용", className: "is-off" };
         }
     }
+    if (rating === "na") return { text: "미사용", className: "is-off" };
     return rating === "weak"
         ? { text: "약화", className: "is-weak" }
         : { text: "안정", className: "is-stable" };
+}
+
+function renderAuditStatusGrid(grid, audit, items) {
+    if (!grid) return;
+    grid.replaceChildren();
+    if (audit?.ratings) {
+        items.forEach((item) => {
+            const status = getGenreAuditDisplayStatus(audit, item.code);
+            const row = document.createElement("div");
+            row.className = "rp-audit-status-item";
+            row.title = item.title;
+            const label = document.createElement("span");
+            label.className = "rp-audit-status-label";
+            label.textContent = item.label;
+            const chip = document.createElement("span");
+            chip.className = `rp-audit-status-chip ${status.className}`;
+            chip.textContent = status.text;
+            row.append(label, chip);
+            grid.append(row);
+        });
+    }
+    grid.hidden = !audit?.ratings;
 }
 
 function getGenreAuditResultStatusText(audit) {
@@ -3249,7 +4902,7 @@ function getGenreAuditResultStatusText(audit) {
         case "stable":
             return "추가 보정이 필요하지 않음";
         case "error":
-            return "진단 실패 · 상시 장르 부스팅은 유지";
+            return "진단 실패 · 상시 부스팅은 유지";
         default:
             return "";
     }
@@ -3258,7 +4911,7 @@ function getGenreAuditResultStatusText(audit) {
 function renderLastGenreAudit(state) {
     const details = document.getElementById("rp-last-audit");
     if (!details) return;
-    const audit = state.genreAnchor.lastAudit;
+    const audit = state.genreAnchor.lastGenreAudit;
     if (!audit) {
         details.hidden = true;
         return;
@@ -3293,32 +4946,14 @@ function renderLastGenreAudit(state) {
             : `진단 장르: ${audit.primaryLabel || "기록 없음"}`;
     }
     if (statusGrid) {
-        statusGrid.replaceChildren();
-        if (audit.ratings) {
-            GENRE_AUDIT_DISPLAY_ITEMS.forEach((item) => {
-                const status = getGenreAuditDisplayStatus(audit, item.code);
-                const row = document.createElement("div");
-                row.className = "rp-audit-status-item";
-                row.title = item.title;
-
-                const label = document.createElement("span");
-                label.className = "rp-audit-status-label";
-                label.textContent = item.label;
-
-                const chip = document.createElement("span");
-                chip.className = `rp-audit-status-chip ${status.className}`;
-                chip.textContent = status.text;
-
-                row.append(label, chip);
-                statusGrid.append(row);
-            });
-        }
-        statusGrid.hidden = !audit.ratings;
+        renderAuditStatusGrid(statusGrid, audit, GENRE_AUDIT_DISPLAY_ITEMS);
     }
     if (correction) {
-        const descriptions = audit.correctionCodes.map(
-            (code) => GENRE_CORRECTION_DESCRIPTIONS[code]
-        );
+        const descriptions = audit.correctionCodes
+            .filter((code) =>
+                GENRE_AUDIT_DISPLAY_ITEMS.some((item) => item.code === code)
+            )
+            .map((code) => GENRE_CORRECTION_DESCRIPTIONS[code]);
         correction.textContent = descriptions.length
             ? `적용 보정: ${descriptions.join(" · ")}`
             : "적용 보정: 없음";
@@ -3341,7 +4976,11 @@ function renderLastGenreAudit(state) {
     }
     if (cancelButton) {
         const canCancel =
+            audit.id === state.genreAnchor.lastAudit?.id &&
             audit.status === "pending" &&
+            audit.correctionCodes.some((code) =>
+                GENRE_AUDIT_DISPLAY_ITEMS.some((item) => item.code === code)
+            ) &&
             state.genreAnchor.correctionRemaining > 0 &&
             state.genreAnchor.correctionAppliedMessageId === null;
         cancelButton.hidden = !canCancel;
@@ -3350,16 +4989,313 @@ function renderLastGenreAudit(state) {
     }
 }
 
+function renderLastCharacterAudit(state) {
+    const details = document.getElementById("rp-character-last-audit");
+    if (!details) return;
+    const audit = state.genreAnchor.lastCharacterAudit;
+    if (!audit) {
+        details.hidden = true;
+        return;
+    }
+    details.hidden = false;
+    const meta = document.getElementById("rp-character-last-audit-meta");
+    const grid = document.getElementById("rp-character-last-audit-grid");
+    const correction = document.getElementById("rp-character-last-audit-correction");
+    const connection = document.getElementById("rp-character-last-audit-connection");
+    const resultStatus = document.getElementById("rp-character-last-audit-status");
+    const cancelButton = document.getElementById("rp-character-cancel-correction");
+    if (meta) {
+        const date = new Date(audit.createdAt);
+        const timeText = Number.isNaN(date.getTime())
+            ? ""
+            : date.toLocaleString("ko-KR", {
+                  month: "numeric",
+                  day: "numeric",
+                  hour: "2-digit",
+                  minute: "2-digit",
+              });
+        meta.textContent = `${audit.mode === "manual" ? "수동" : "자동"} 진단${
+            timeText ? ` · ${timeText}` : ""
+        }`;
+    }
+    renderAuditStatusGrid(grid, audit, CHARACTER_AUDIT_DISPLAY_ITEMS);
+    if (correction) {
+        const descriptions = audit.correctionCodes
+            .filter((code) =>
+                CHARACTER_AUDIT_DISPLAY_ITEMS.some((item) => item.code === code)
+            )
+            .map((code) => GENRE_CORRECTION_DESCRIPTIONS[code]);
+        correction.textContent = descriptions.length
+            ? `적용 보정: ${descriptions.join(" · ")}`
+            : "적용 보정: 없음";
+        correction.hidden = audit.status === "error";
+    }
+    if (connection) {
+        connection.textContent = `진단 연결: ${
+            audit.connection?.profileName || "현재 채팅 연결"
+        }${audit.connection?.model ? ` · ${audit.connection.model}` : ""}`;
+    }
+    if (resultStatus) {
+        resultStatus.textContent = `상태: ${getGenreAuditResultStatusText(audit)}${
+            audit.status === "error" && audit.errorMessage
+                ? ` · ${audit.errorMessage}`
+                : ""
+        }`;
+    }
+    if (cancelButton) {
+        const canCancel =
+            audit.id === state.genreAnchor.lastAudit?.id &&
+            audit.status === "pending" &&
+            audit.correctionCodes.some((code) =>
+                CHARACTER_AUDIT_DISPLAY_ITEMS.some((item) => item.code === code)
+            ) &&
+            state.genreAnchor.correctionRemaining > 0 &&
+            state.genreAnchor.correctionAppliedMessageId === null;
+        cancelButton.hidden = !canCancel;
+        cancelButton.disabled = !canCancel;
+    }
+}
+
+function renderCharacterBaselineFields(
+    baseline,
+    identity = null,
+    chatId = getCurrentChatId()
+) {
+    const identityAttributes = identity?.key
+        ? `data-identity-key="${escapeHtml(identity.key)}" data-character-name="${escapeHtml(identity.name || "")}" data-source-hash="${escapeHtml(identity.sourceHash || "")}" data-chat-id="${escapeHtml(chatId)}"`
+        : "";
+    return CHARACTER_BASELINE_FIELDS.map((definition) => {
+        const field = baseline?.fields?.[definition.id] || {
+            text: "",
+            pinned: false,
+            source: "ai",
+        };
+        const hasText = Boolean(String(field.text || "").trim());
+        return `
+            <article class="rp-character-field-card" data-field-id="${definition.id}">
+                <div class="rp-character-field-header">
+                    <label for="rp-character-field-${definition.id}">${definition.label}</label>
+                    <div class="rp-character-field-tools" aria-label="${definition.label} 항목 도구">
+                        <button
+                            type="button"
+                            class="rp-character-tool-button rp-character-pin-button ${field.pinned ? "is-active" : ""}"
+                            data-field-id="${definition.id}"
+                            aria-pressed="${field.pinned ? "true" : "false"}"
+                            aria-label="${definition.label} 고정"
+                            title="전체 다시 요약할 때 이 항목 유지"
+                            ${hasText ? "" : "disabled"}
+                        >📌</button>
+                        <button
+                            type="button"
+                            class="rp-character-tool-button rp-character-edit-button"
+                            data-field-id="${definition.id}"
+                            aria-label="${definition.label} 직접 편집"
+                            title="직접 편집"
+                        >✏️</button>
+                        <button
+                            type="button"
+                            class="rp-character-tool-button rp-character-regenerate-button"
+                            data-field-id="${definition.id}"
+                            aria-label="${definition.label} 다시 생성"
+                            title="이 항목만 다시 생성"
+                        >↻</button>
+                    </div>
+                </div>
+                <textarea
+                    id="rp-character-field-${definition.id}"
+                    class="rp-character-field-text"
+                    data-field-id="${definition.id}"
+                    ${identityAttributes}
+                    rows="3"
+                    maxlength="${CHARACTER_BASELINE_FIELD_MAX_CHARS}"
+                    placeholder="직접 입력하거나 ↻ 버튼으로 이 항목만 생성할 수 있어요."
+                    readonly
+                >${escapeHtml(field.text || "")}</textarea>
+                <small class="rp-character-field-save-status" data-field-id="${definition.id}">${
+                    hasText
+                        ? field.source === "user"
+                            ? "직접 수정 · 저장됨"
+                            : "AI 요약 · 저장됨"
+                        : "비어 있음"
+                }</small>
+            </article>`;
+    }).join("");
+}
+
+function hasOpenCharacterBaselineEditor() {
+    return Boolean(
+        document.querySelector(".rp-character-field-text:not([readonly])")
+    );
+}
+
+function updateCharacterBaselineActionStates() {
+    const baselineState = getCurrentCharacterBaseline();
+    const featureEnabled = isBoosterFeatureEnabled("character");
+    const task = baselineState.identity
+        ? characterBaselinePendingTasks.get(baselineState.identity.key)
+        : null;
+    const pending = Boolean(task);
+    const editing = hasOpenCharacterBaselineEditor();
+    const baseline = baselineState.baseline;
+    const allPinned = Boolean(
+        baseline &&
+            CHARACTER_BASELINE_FIELDS.every(
+                (definition) => baseline.fields[definition.id]?.pinned
+            )
+    );
+    const generate = document.getElementById("rp-character-baseline-generate");
+    const remove = document.getElementById("rp-character-baseline-delete");
+    if (generate) {
+        generate.disabled =
+            !featureEnabled || !baselineState.identity || pending || editing || allPinned;
+        generate.textContent = pending
+            ? task === "all"
+                ? "전체 요약 중…"
+                : task === "anchor"
+                  ? "상시 앵커 생성 중…"
+                  : `${getCharacterBaselineFieldDefinition(task)?.label || "항목"} 생성 중…`
+            : baseline
+              ? "전체 다시 요약"
+              : "전체 요약하기";
+    }
+    if (remove) {
+        remove.disabled = !featureEnabled || !baseline || pending || editing;
+    }
+    document.querySelectorAll(".rp-character-tool-button").forEach((button) => {
+        const fieldId = button.dataset.fieldId;
+        const field = baseline?.fields?.[fieldId];
+        if (button.classList.contains("rp-character-pin-button")) {
+            button.disabled =
+                !featureEnabled || pending || editing || !String(field?.text || "").trim();
+        } else if (button.classList.contains("rp-character-regenerate-button")) {
+            button.disabled =
+                !featureEnabled || !baselineState.identity || pending || editing;
+        } else if (button.classList.contains("rp-character-edit-button")) {
+            const ownTextarea = document.querySelector(
+                `.rp-character-field-text[data-field-id="${fieldId}"]`
+            );
+            const editingThis = ownTextarea && !ownTextarea.readOnly;
+            button.disabled =
+                !featureEnabled ||
+                !baselineState.identity ||
+                pending ||
+                (editing && !editingThis);
+        }
+    });
+}
+
+function updateCharacterBoosterPanel() {
+    const state = ensureChatState();
+    const baselineState = getCurrentCharacterBaseline();
+    const featureEnabled = isBoosterFeatureEnabled("character");
+    const enabled = featureEnabled && Boolean(baselineState.baseline);
+    const pendingTask = baselineState.identity
+        ? characterBaselinePendingTasks.get(baselineState.identity.key)
+        : null;
+    const pending = Boolean(pendingTask);
+    const auditInterval = getGlobalAuditInterval();
+    const name = document.getElementById("rp-character-current-name");
+    const status = document.getElementById("rp-character-baseline-status");
+    const fields = document.getElementById("rp-character-baseline-fields");
+    if (name) {
+        name.textContent = baselineState.identity
+            ? `현재 캐릭터: ${baselineState.identity.name}`
+            : "개별 캐릭터 채팅에서 사용할 수 있어요.";
+    }
+    if (status) {
+        status.textContent = pending
+            ? pendingTask === "all"
+                ? "캐릭터 시트를 분석해 전체 기준을 만드는 중이에요…"
+                : pendingTask === "anchor"
+                  ? "현재 기준으로 캐릭터 전용 상시 앵커를 만드는 중이에요…"
+                  : `${getCharacterBaselineFieldDefinition(pendingTask)?.label || "선택한 항목"}을 다시 만드는 중이에요…`
+            : baselineState.status === "current"
+              ? featureEnabled
+                  ? "캐릭터 기준 저장됨 · 상시 보강 중"
+                  : "캐릭터 기준 저장됨 · 전역 설정에서 캐릭터 부스터가 꺼져 있어요."
+              : baselineState.status === "stale"
+                ? "갱신 필요 · 캐릭터 시트가 바뀌었습니다. 다시 요약하거나 직접 수정해 주세요."
+                : baselineState.status === "missing"
+                  ? "아직 저장된 캐릭터 기준이 없습니다."
+                  : "그룹 채팅이나 캐릭터가 없는 화면에서는 기준을 만들 수 없습니다.";
+    }
+    if (fields && !hasOpenCharacterBaselineEditor()) {
+        fields.innerHTML = renderCharacterBaselineFields(
+            baselineState.baseline,
+            baselineState.identity,
+            getCurrentChatId()
+        );
+    }
+    const anchorText = document.getElementById("rp-character-boost-anchor-text");
+    const anchorStatus = document.getElementById("rp-character-boost-anchor-status");
+    const anchorEdit = document.getElementById("rp-character-boost-anchor-edit");
+    const anchorRegenerate = document.getElementById(
+        "rp-character-boost-anchor-regenerate"
+    );
+    if (anchorText?.readOnly) {
+        anchorText.value = baselineState.baseline?.boostAnchor || "";
+        anchorText.dataset.identityKey = baselineState.identity?.key || "";
+        anchorText.dataset.characterName = baselineState.identity?.name || "";
+        anchorText.dataset.sourceHash = baselineState.identity?.sourceHash || "";
+        anchorText.dataset.chatId = getCurrentChatId();
+    }
+    if (anchorStatus) {
+        anchorStatus.textContent = pendingTask === "anchor"
+            ? "현재 기준으로 상시 앵커를 만드는 중이에요…"
+            : baselineState.baseline?.boostAnchorNeedsRefresh
+              ? "기준이 수정되어 앵커 갱신이 필요해요. ↻ 버튼을 눌러 주세요."
+              : baselineState.baseline?.boostAnchor
+                ? "AI 주입용 영문 요약 · 공통 보강 규칙과 함께 매 응답에 사용"
+                : baselineState.baseline
+                  ? "상시 앵커가 없습니다. ↻ 버튼으로 만들 수 있어요."
+                  : "전체 요약을 실행하면 상시 앵커도 함께 생성됩니다.";
+    }
+    if (anchorEdit) {
+        anchorEdit.disabled = !featureEnabled || !baselineState.baseline || pending;
+    }
+    if (anchorRegenerate) {
+        anchorRegenerate.disabled =
+            !featureEnabled || !baselineState.baseline || pending;
+    }
+    updateCharacterBaselineActionStates();
+
+    const manual = document.getElementById("rp-character-manual-audit-btn");
+    const count = document.getElementById("rp-character-audit-count");
+    if (manual) {
+        manual.disabled = !enabled || genreAuditPendingChats.has(getCurrentChatId());
+        manual.textContent = genreAuditPendingChats.has(getCurrentChatId())
+            ? "🔍 진단 중…"
+            : "🔍 지금 진단하기";
+    }
+    if (count) {
+        if (!featureEnabled) {
+            count.textContent = "전역 설정에서 캐릭터 부스터가 꺼져 있습니다.";
+        } else if (!baselineState.baseline) {
+            count.textContent = "캐릭터 기준을 만들면 상시 보강과 진단을 시작합니다.";
+        }
+        else if (auditInterval === 0) {
+            count.textContent = "자동 진단 꺼짐 · 수동 진단은 사용할 수 있어요";
+        } else {
+            const progress = state.genreAnchor.responseCount % auditInterval;
+            const remaining = progress === 0
+                ? auditInterval
+                : auditInterval - progress;
+            count.textContent = `자동 진단까지 ${remaining}회`;
+        }
+    }
+    renderLastCharacterAudit(state);
+}
+
 function getGenreAuditStatusText(state) {
     const chatId = getCurrentChatId();
     if (genreAuditPendingChats.has(chatId)) return "최근 응답을 진단하는 중입니다…";
-    if (state.genreAnchor.auditInterval === 0) {
+    if (getGlobalAuditInterval() === 0) {
         return "상시 장르 부스팅 중입니다.";
     }
 
     switch (state.genreAnchor.auditStatus) {
         case "stable":
-            return state.genreAnchor.lastAudit?.ratings?.support_texture ===
+            return state.genreAnchor.lastGenreAudit?.ratings?.support_texture ===
                 "dormant"
                 ? "최근 진단: 주 장르는 안정 · 보조 렌즈는 대기 중이에요."
                 : "최근 진단: 안정적으로 유지되고 있어요.";
@@ -3382,7 +5318,6 @@ function updateGenreAnchorPanel() {
     const status = document.getElementById("rp-anchor-status");
     const focus = document.getElementById("rp-anchor-focus");
     const count = document.getElementById("rp-anchor-count");
-    const intervalSelect = document.getElementById("rp-audit-interval");
     const manualAuditButton = document.getElementById("rp-manual-audit-btn");
     const selectionSummary = document.getElementById(
         "rp-genre-selection-summary"
@@ -3395,16 +5330,14 @@ function updateGenreAnchorPanel() {
         !support ||
         !status ||
         !focus ||
-        !count ||
-        !intervalSelect
+        !count
     ) {
         return;
     }
 
     const state = ensureChatState();
     const selection = getGenreAnchorSelection(state);
-    intervalSelect.value = String(state.genreAnchor.auditInterval);
-    intervalSelect.disabled = !selection;
+    const auditInterval = getGlobalAuditInterval();
     if (manualAuditButton) {
         manualAuditButton.disabled =
             !selection || genreAuditPendingChats.has(getCurrentChatId());
@@ -3420,9 +5353,13 @@ function updateGenreAnchorPanel() {
             selectionSummary.hidden = true;
             selectionSummary.textContent = "";
         }
+        emptyState.textContent = genreFeatureEnabled
+            ? "주 장르를 선택하면 상시 부스팅을 시작합니다."
+            : "전역 설정에서 장르 부스터가 꺼져 있습니다.";
         emptyState.hidden = false;
         content.hidden = true;
         renderGenreRecommendation();
+        updateCharacterBoosterPanel();
         return;
     }
 
@@ -3454,11 +5391,14 @@ function updateGenreAnchorPanel() {
     }
 
     status.textContent = getGenreAuditStatusText(state);
-    if (selection.correctionCodes.length) {
+    const genreCorrectionCodes = selection.correctionCodes.filter((code) =>
+        GENRE_AUDIT_DISPLAY_ITEMS.some((item) => item.code === code)
+    );
+    if (genreCorrectionCodes.length) {
         focus.hidden = false;
         focus.textContent =
             "다음 응답 보정: " +
-            selection.correctionCodes
+            genreCorrectionCodes
                 .map((code) => GENRE_CORRECTION_LABELS[code])
                 .join(" · ");
     } else {
@@ -3466,24 +5406,24 @@ function updateGenreAnchorPanel() {
         focus.textContent = "";
     }
 
-    if (state.genreAnchor.auditInterval === 0) {
+    if (auditInterval === 0) {
         count.textContent =
             "자동 진단 꺼짐 · 수동 진단은 사용할 수 있어요";
     } else {
-        const progress =
-            state.genreAnchor.responseCount % state.genreAnchor.auditInterval;
+        const progress = state.genreAnchor.responseCount % auditInterval;
         count.textContent =
             `자동 진단까지 ${
                 progress === 0
-                    ? state.genreAnchor.auditInterval
-                    : state.genreAnchor.auditInterval - progress
-            }회 · 진단 주기 ${state.genreAnchor.auditInterval}회`;
+                    ? auditInterval
+                    : auditInterval - progress
+            }회 · 진단 주기 ${auditInterval}회`;
     }
     renderGenreRecommendation();
     renderLastGenreAudit(state);
+    updateCharacterBoosterPanel();
 }
 
-function changeGenreAuditInterval(value) {
+function changeGlobalAuditInterval(value) {
     const interval = Number(value);
     if (
         !Number.isSafeInteger(interval) ||
@@ -3494,16 +5434,59 @@ function changeGenreAuditInterval(value) {
         return;
     }
 
-    const state = ensureChatState();
-    state.genreAnchor.auditInterval = interval;
-    state.genreAnchor.responseCount = 0;
-    state.genreAnchor.auditStatus = interval === 0 ? "waiting" : "monitoring";
-    state.genreAnchor.lastCountedMessageId = getLatestAssistantMessageId();
+    const settings = ensureModuleSettings();
+    settings.auditInterval = interval;
+    Object.entries(settings.chats).forEach(([chatId, state]) => {
+        if (!state || typeof state !== "object") return;
+        const anchor = ensureGenreAnchorState(state);
+        anchor.responseCount = 0;
+        anchor.auditStatus = interval === 0 ? "waiting" : "monitoring";
+        if (chatId === getCurrentChatId()) {
+            anchor.lastCountedMessageId = getLatestAssistantMessageId();
+        }
+    });
     saveSettingsDebounced();
     updateGenreAnchorPanel();
 }
 
-function buildGenreRecommendationPrompt(availableGenres = getAvailableGenres()) {
+function changeBoosterFeature(feature, enabled) {
+    if (!["genre", "character", "plot"].includes(feature)) return;
+    const settings = ensureModuleSettings();
+    settings.enabledFeatures[feature] = enabled === true;
+
+    if (feature === "plot" && !settings.enabledFeatures.plot) {
+        clearPlotPromptIfPending();
+    }
+    if (["genre", "character"].includes(feature)) {
+        for (const state of Object.values(settings.chats)) {
+            if (!state || typeof state !== "object") continue;
+            const anchor = ensureGenreAnchorState(state);
+            markPendingGenreAuditCancelled(state);
+            anchor.responseCount = 0;
+            anchor.correctionCodes = [];
+            anchor.correctionText = "";
+            anchor.correctionFieldIds = [];
+            anchor.correctionRemaining = 0;
+            anchor.correctionAppliedMessageId = null;
+            anchor.auditStatus = "waiting";
+            if (state === settings.chats[getCurrentChatId()]) {
+                anchor.lastCountedMessageId = getLatestAssistantMessageId();
+            }
+        }
+        updateGenrePrompt();
+        updateGenreAnchorPanel();
+    }
+    const notice = document.getElementById(`rp-${feature}-feature-disabled`);
+    if (notice) notice.hidden = enabled === true;
+    if (feature === "genre") populateGenreSelectionControls();
+    if (feature === "character") updateCharacterBoosterPanel();
+    saveSettingsDebounced();
+}
+
+function buildGenreRecommendationPrompt(
+    availableGenres = getAvailableGenres(),
+    outputLanguage = ensureModuleSettings().outputLanguage
+) {
     const genreCatalog = availableGenres
         .map((genre) => {
             const direction = String(
@@ -3527,14 +5510,17 @@ function buildGenreRecommendationPrompt(availableGenres = getAvailableGenres()) 
         "Do not choose the same genre twice. Prefer no supporting genre if none adds a clearly useful secondary lens.",
         "GENRE CATALOG:",
         genreCatalog,
-        'Return JSON only: {"primaryId":"catalog_id","supportId":"catalog_id_or_empty_string","reason":"한국어로 간결한 추천 이유 2~3문장"}.',
+        outputLanguage === "en"
+            ? 'Return JSON only: {"primaryId":"catalog_id","supportId":"catalog_id_or_empty_string","reason":"A concise recommendation reason in natural English, 2–3 sentences"}.'
+            : 'Return JSON only: {"primaryId":"catalog_id","supportId":"catalog_id_or_empty_string","reason":"자연스러운 한국어로 간결한 추천 이유 2~3문장"}. Do not write the reason in English except for established proper nouns.',
         "The JSON must be the final answer, not reasoning or thinking.",
     ].join("\n");
 }
 
 function parseGenreRecommendationResult(
     rawResult,
-    availableGenres = getAvailableGenres()
+    availableGenres = getAvailableGenres(),
+    outputLanguage = ensureModuleSettings().outputLanguage
 ) {
     const parsed = extractJsonObject(
         rawResult,
@@ -3555,27 +5541,41 @@ function parseGenreRecommendationResult(
     return {
         primaryId: parsed.primaryId,
         supportId,
-        reason: String(parsed.reason || "현재 롤플의 중심 관계와 분위기를 기준으로 추천했습니다.")
+        reason: String(
+            parsed.reason ||
+                (outputLanguage === "en"
+                    ? "Recommended from the current roleplay's central relationship and atmosphere."
+                    : "현재 롤플의 중심 관계와 분위기를 기준으로 추천했습니다.")
+        )
             .trim()
             .slice(0, 600),
     };
 }
 
 async function generateGenreRecommendation() {
+    if (!isBoosterFeatureEnabled("genre")) {
+        toastr?.info?.("전역 설정에서 장르 부스터를 켜 주세요.");
+        return;
+    }
     const chatId = getCurrentChatId();
     if (genreRecommendationPendingChats.has(chatId)) return;
     const chatSnapshot = snapshotCurrentChatMessages();
     const availableGenres = getAvailableGenres();
+    const outputLanguage = ensureModuleSettings().outputLanguage;
     genreRecommendationPendingChats.add(chatId);
     renderGenreRecommendation();
 
     try {
         const availableGenreIds = availableGenres.map((genre) => genre.id);
         const result = await generateStructuredAnalysis({
-            prompt: buildGenreRecommendationPrompt(availableGenres),
+            prompt: buildGenreRecommendationPrompt(
+                availableGenres,
+                outputLanguage
+            ),
             transcript: getRoleplayTranscript({
-                messageLimit: 15,
-                maxChars: 80000,
+                messageLimit: GENRE_RECOMMENDATION_MESSAGE_LIMIT,
+                perMessageMaxChars: GENRE_RECOMMENDATION_MESSAGE_MAX_CHARS,
+                maxChars: 55000,
                 chatSnapshot,
             }),
             jsonSchema: {
@@ -3604,8 +5604,15 @@ async function generateGenreRecommendation() {
         });
         const recommendation = parseGenreRecommendationResult(
             result,
-            availableGenres
+            availableGenres,
+            outputLanguage
         );
+        if (!isBoosterFeatureEnabled("genre")) {
+            toastr?.info?.(
+                "장르 부스터가 꺼져 있어 추천 결과를 적용하지 않았어요."
+            );
+            return;
+        }
         const currentGenreIds = new Set(
             getAvailableGenres().map((genre) => genre.id)
         );
@@ -3646,10 +5653,13 @@ function renderGenreRecommendation() {
     const pending = genreRecommendationPendingChats.has(chatId);
     const state = ensureChatState();
     const recommendation = state.genreAnchor.recommendation;
-    button.disabled = pending;
+    const featureEnabled = isBoosterFeatureEnabled("genre");
+    button.disabled = pending || !featureEnabled;
     status.textContent = pending
         ? "최근 롤플을 읽고 주 장르와 보조 장르를 추천하는 중입니다…"
-        : "추천은 자동 적용되지 않습니다.";
+        : featureEnabled
+          ? "추천은 자동 적용되지 않습니다."
+          : "전역 설정에서 장르 부스터가 꺼져 있습니다.";
 
     if (!recommendation) {
         resultWrap.hidden = true;
@@ -3685,6 +5695,8 @@ function applyGenreRecommendation() {
     state.genreAnchor.responseCount = 0;
     markPendingGenreAuditCancelled(state);
     state.genreAnchor.correctionCodes = [];
+    state.genreAnchor.correctionText = "";
+    state.genreAnchor.correctionFieldIds = [];
     state.genreAnchor.correctionRemaining = 0;
     state.genreAnchor.correctionAppliedMessageId = null;
     state.genreAnchor.auditStatus = "waiting";
@@ -3738,24 +5750,12 @@ function handleBoosterTabKeydown(event) {
 function renderBoosterPopupHtml() {
     const s = ensureChatState();
     const genreSelection = normalizeGenreSelection(s);
-    const timedAuditIntervalOptions = Array.from(
-        { length: MAX_AUDIT_INTERVAL - MIN_AUDIT_INTERVAL + 1 },
-        (_, index) => index + MIN_AUDIT_INTERVAL
-    )
-        .map(
-            (interval) =>
-                `<option value="${interval}" ${
-                    s.genreAnchor.auditInterval === interval ? "selected" : ""
-                }>${interval}회마다 자동 진단${
-                    interval === DEFAULT_AUDIT_INTERVAL ? " · 기본" : ""
-                }</option>`
-        )
-        .join("");
-    const auditIntervalOptions = `
-        <option value="0" ${
-            s.genreAnchor.auditInterval === 0 ? "selected" : ""
-        }>자동 진단 끄기 · 추가 호출 없음</option>
-        ${timedAuditIntervalOptions}`;
+    const auditInterval = getGlobalAuditInterval();
+    const auditIntervalLabel =
+        auditInterval === 0 ? "꺼짐" : `${auditInterval}회마다`;
+    const genreFeatureEnabled = isBoosterFeatureEnabled("genre");
+    const characterFeatureEnabled = isBoosterFeatureEnabled("character");
+    const plotFeatureEnabled = isBoosterFeatureEnabled("plot");
 
     return `
     <div id="rp-booster-popup">
@@ -3766,6 +5766,9 @@ function renderBoosterPopupHtml() {
                 <button id="rp-tab-genre" type="button" class="rp-booster-tab is-active" role="tab" aria-selected="true" aria-controls="rp-booster-genre-panel" data-tab="genre">
                     🎭 장르 부스터
                 </button>
+                <button id="rp-tab-character" type="button" class="rp-booster-tab" role="tab" aria-selected="false" aria-controls="rp-booster-character-panel" data-tab="character" tabindex="-1">
+                    👤 캐릭터 부스터
+                </button>
                 <button id="rp-tab-plot" type="button" class="rp-booster-tab" role="tab" aria-selected="false" aria-controls="rp-booster-plot-panel" data-tab="plot" tabindex="-1">
                     🎲 플롯 부스터
                 </button>
@@ -3774,6 +5777,7 @@ function renderBoosterPopupHtml() {
 
         <section id="rp-booster-genre-panel" class="rp-booster-tab-panel" role="tabpanel" aria-labelledby="rp-tab-genre" data-tab-panel="genre">
         <h4>장르 부스터 <small>(채팅별 저장)</small></h4>
+        <p id="rp-genre-feature-disabled" class="rp-feature-disabled-notice" ${genreFeatureEnabled ? "hidden" : ""}>전역 설정에서 장르 부스터가 꺼져 있습니다. 저장된 장르 설정은 유지돼요.</p>
         <p class="rp-genre-help">주 장르는 캐릭터와 장면의 중심 논리를 잡고, 보조 장르는 자연스러운 기회에서 압력·세계 논리·분위기와 질감을 보강합니다.</p>
         <div class="rp-genre-select-grid">
             <label class="rp-primary-select" for="rp-primary-genre">
@@ -3819,15 +5823,11 @@ function renderBoosterPopupHtml() {
                 </details>
             </div>
 
-            <label class="rp-audit-interval-control" for="rp-audit-interval">
-                <span>자동 진단 주기</span>
-                <select id="rp-audit-interval">${auditIntervalOptions}</select>
-                <small class="rp-audit-call-notice">자동 진단을 켜면 설정한 주기마다 추가 AI 호출이 발생합니다.</small>
-            </label>
+            <p class="rp-global-audit-summary">자동 진단 ${auditIntervalLabel} · 확장 설정에서 변경</p>
             <button id="rp-manual-audit-btn" type="button" class="menu_button">
                 🔍 지금 진단하기
             </button>
-            <p class="rp-anchor-help">최근 응답의 장르 희석과 수동성을 확인해 다음 응답 한 번만 보정합니다.</p>
+            <p class="rp-anchor-help">최근 응답의 주 장르·보조 렌즈·장르 표현·장면 밀도를 확인해 다음 응답 한 번만 보정합니다.</p>
         </section>
 
         <section id="rp-genre-recommendation">
@@ -3855,6 +5855,57 @@ function renderBoosterPopupHtml() {
         </details>
         </section>
 
+        <section id="rp-booster-character-panel" class="rp-booster-tab-panel" role="tabpanel" aria-labelledby="rp-tab-character" data-tab-panel="character" hidden>
+        <h4>캐릭터 부스터 <small>(캐릭터별 기준 저장)</small></h4>
+        <p id="rp-character-feature-disabled" class="rp-feature-disabled-notice" ${characterFeatureEnabled ? "hidden" : ""}>전역 설정에서 캐릭터 부스터가 꺼져 있습니다. 저장된 기준과 앵커는 유지돼요.</p>
+        <p class="rp-genre-help">캐릭터의 성격·대사·행동·관계 반응을 살리고, 캐릭터성 이탈과 한쪽으로 치우친 해석을 점검합니다.</p>
+
+        <section class="rp-character-baseline-card">
+            <div class="rp-anchor-title">📋 캐릭터 기준</div>
+            <p id="rp-character-current-name"></p>
+            <p id="rp-character-baseline-status" aria-live="polite"></p>
+            <p class="rp-character-privacy">기준이 하나라도 저장되면 상시 캐릭터 보강이 시작됩니다. 기준 전체는 매번 주입하지 않고 진단과 필요한 일회성 보정에만 사용해요.</p>
+            <p class="rp-character-field-guide">📌 전체 다시 요약에서도 유지 · ✏️ 편집 · ↻ 항목만 다시 생성</p>
+            <div id="rp-character-baseline-fields" class="rp-character-baseline-fields">
+                ${renderCharacterBaselineFields(getCurrentCharacterBaseline().baseline)}
+            </div>
+            <div class="rp-character-field-card rp-character-boost-anchor-card">
+                <div class="rp-character-field-header">
+                    <strong>🧭 캐릭터 전용 상시 앵커</strong>
+                    <div class="rp-character-field-tools">
+                        <button id="rp-character-boost-anchor-edit" type="button" class="rp-character-tool-button" title="상시 앵커 직접 편집">✏️</button>
+                        <button id="rp-character-boost-anchor-regenerate" type="button" class="rp-character-tool-button" title="현재 기준으로 상시 앵커 다시 만들기">↻</button>
+                    </div>
+                </div>
+                <textarea id="rp-character-boost-anchor-text" class="rp-character-field-text" rows="4" maxlength="${CHARACTER_BOOST_ANCHOR_MAX_CHARS}" placeholder="전체 요약을 실행하면 캐릭터별 짧은 영문 앵커가 생성됩니다." readonly>${escapeHtml(getCurrentCharacterBaseline().baseline?.boostAnchor || "")}</textarea>
+                <small id="rp-character-boost-anchor-status" class="rp-character-field-save-status">AI 주입용 영문 요약 · 공통 보강 규칙과 함께 매 응답에 사용</small>
+            </div>
+            <div class="rp-character-baseline-actions">
+                <button id="rp-character-baseline-generate" type="button" class="rp-character-wide-button">전체 요약하기</button>
+                <button id="rp-character-baseline-delete" type="button" class="rp-character-wide-button rp-character-delete-button">전체 삭제</button>
+            </div>
+        </section>
+
+        <section class="rp-character-audit-card">
+            <div class="rp-anchor-title">🔍 캐릭터 진단</div>
+            <p class="rp-anchor-help">캐릭터성·캐릭터 해석·능동성·관계 반응·연속성·표현 다양성을 최근 캐릭터 응답에서 확인합니다.</p>
+            <p class="rp-global-audit-summary">자동 진단 ${auditIntervalLabel} · 확장 설정에서 변경</p>
+            <button id="rp-character-manual-audit-btn" type="button" class="menu_button">🔍 지금 진단하기</button>
+            <p id="rp-character-audit-count" class="rp-anchor-help"></p>
+            <details id="rp-character-last-audit" class="rp-last-audit" hidden>
+                <summary>최근 진단 결과</summary>
+                <div class="rp-last-audit-body">
+                    <p id="rp-character-last-audit-meta" class="rp-last-audit-meta"></p>
+                    <div id="rp-character-last-audit-grid" class="rp-audit-status-grid" hidden></div>
+                    <p id="rp-character-last-audit-correction"></p>
+                    <p id="rp-character-last-audit-connection" class="rp-last-audit-connection"></p>
+                    <p id="rp-character-last-audit-status" class="rp-last-audit-status" aria-live="polite"></p>
+                    <button id="rp-character-cancel-correction" type="button" class="menu_button" hidden>이번 보정 적용 안 하기</button>
+                </div>
+            </details>
+        </section>
+        </section>
+
         <section id="rp-booster-plot-panel" class="rp-booster-tab-panel" role="tabpanel" aria-labelledby="rp-tab-plot" data-tab-panel="plot" hidden>
         <div class="rp-plot-panel-heading">
             <h4>플롯 부스터</h4>
@@ -3873,6 +5924,7 @@ function renderBoosterPopupHtml() {
                 }>${getPlotHistory().length}</span>
             </button>
         </div>
+        <p id="rp-plot-feature-disabled" class="rp-feature-disabled-notice" ${plotFeatureEnabled ? "hidden" : ""}>전역 설정에서 플롯 부스터가 꺼져 있습니다. 생성과 일회성 주입을 사용하지 않아요.</p>
         <div id="rp-plot-history-drawer" class="rp-plot-history-drawer" hidden>
             <div class="rp-plot-history-drawer-head">
                 <strong>최근 추천</strong>
@@ -3985,11 +6037,16 @@ function openBoosterPopup() {
         return;
     }
 
-    // wire up events after popup is in the DOM
-    setTimeout(() => {
+    // Some mobile builds attach the popup DOM asynchronously. Retry briefly
+    // instead of assuming one fixed render delay.
+    const wirePopupControls = (attempt = 0) => {
         const popupRoot = document.getElementById("rp-booster-popup");
         if (!popupRoot) {
-            console.error(`[${MODULE_NAME}] #rp-booster-popup not found in DOM after popup call — popup likely didn't render`);
+            if (attempt < 20) {
+                setTimeout(() => wirePopupControls(attempt + 1), 50);
+                return;
+            }
+            console.error(`[${MODULE_NAME}] #rp-booster-popup not found after popup call`);
             return;
         }
         console.log(`[${MODULE_NAME}] wiring up popup controls`);
@@ -4011,13 +6068,8 @@ function openBoosterPopup() {
         });
 
         popupRoot
-            .querySelector("#rp-audit-interval")
-            ?.addEventListener("change", (event) =>
-                changeGenreAuditInterval(event.currentTarget.value)
-            );
-        popupRoot
             .querySelector("#rp-manual-audit-btn")
-            ?.addEventListener("click", runManualGenreAudit);
+            ?.addEventListener("click", () => runManualGenreAudit("genre"));
         popupRoot
             .querySelector("#rp-cancel-audit-correction")
             ?.addEventListener("click", cancelPendingGenreCorrection);
@@ -4030,7 +6082,72 @@ function openBoosterPopup() {
         popupRoot
             .querySelector("#rp-custom-genre-add-btn")
             ?.addEventListener("click", addCustomGenre);
+        popupRoot
+            .querySelector("#rp-character-baseline-generate")
+            ?.addEventListener("click", () => {
+                const existing = getCurrentCharacterBaseline().baseline;
+                if (
+                    !existing ||
+                    window.confirm("고정하지 않은 캐릭터 기준을 새 요약으로 바꿀까요?")
+                ) {
+                    generateCharacterBaseline();
+                }
+            });
+        popupRoot
+            .querySelector("#rp-character-baseline-delete")
+            ?.addEventListener("click", deleteCharacterBaseline);
+        popupRoot
+            .querySelector("#rp-character-boost-anchor-edit")
+            ?.addEventListener("click", toggleCharacterBoostAnchorEditing);
+        popupRoot
+            .querySelector("#rp-character-boost-anchor-regenerate")
+            ?.addEventListener("click", () => {
+                if (
+                    window.confirm(
+                        "현재 캐릭터 기준으로 상시 부스팅 앵커를 다시 만들까요?"
+                    )
+                ) {
+                    regenerateCharacterBoostAnchor();
+                }
+            });
+        popupRoot
+            .querySelector("#rp-character-manual-audit-btn")
+            ?.addEventListener("click", () =>
+                runManualGenreAudit("character")
+            );
+        popupRoot
+            .querySelector("#rp-character-cancel-correction")
+            ?.addEventListener("click", cancelPendingGenreCorrection);
         popupRoot.addEventListener("click", (event) => {
+            const characterPinButton = event.target.closest(
+                ".rp-character-pin-button"
+            );
+            if (characterPinButton) {
+                toggleCharacterFieldPin(characterPinButton.dataset.fieldId);
+                return;
+            }
+            const characterEditButton = event.target.closest(
+                ".rp-character-edit-button"
+            );
+            if (characterEditButton) {
+                toggleCharacterFieldEditing(characterEditButton.dataset.fieldId);
+                return;
+            }
+            const characterRegenerateButton = event.target.closest(
+                ".rp-character-regenerate-button"
+            );
+            if (characterRegenerateButton) {
+                const fieldId = characterRegenerateButton.dataset.fieldId;
+                const definition = getCharacterBaselineFieldDefinition(fieldId);
+                const field = getCurrentCharacterBaseline().baseline?.fields?.[fieldId];
+                if (
+                    !field?.text ||
+                    window.confirm(`${definition?.label || "이 항목"}을 새 요약으로 바꿀까요?`)
+                ) {
+                    generateCharacterBaseline(fieldId);
+                }
+                return;
+            }
             const historyLoadButton = event.target.closest(
                 ".rp-plot-history-load"
             );
@@ -4060,6 +6177,11 @@ function openBoosterPopup() {
                 ".rp-plot-category-card"
             );
             if (categoryButton) selectPlotCategory(categoryButton.dataset.id);
+        });
+        popupRoot.addEventListener("input", (event) => {
+            const textarea = event.target.closest(".rp-character-field-text");
+            if (!textarea || textarea.readOnly) return;
+            scheduleCharacterBaselineAutosave(textarea);
         });
         renderCustomGenreList();
         updateGenreAnchorPanel();
@@ -4116,7 +6238,8 @@ function openBoosterPopup() {
         activatePlotGenerationMode("free");
         selectPlotCategory(getSelectedPlotCategory().id);
         updatePlotHistoryUI();
-    }, 50);
+    };
+    wirePopupControls();
 }
 
 function addWandMenuButton() {
@@ -4157,71 +6280,100 @@ function attachWandMenuButtonWithRetry() {
     }, 500);
 }
 
-async function refreshBackgroundProfileSelect() {
-    const select = document.getElementById("rp-background-profile");
-    const status = document.getElementById("rp-background-profile-status");
-    if (!select) return;
-
+async function refreshConnectionProfileSelects() {
     const settings = ensureModuleSettings();
-    const defaultOption = document.createElement("option");
-    defaultOption.value = "";
-    defaultOption.textContent = "현재 채팅 연결 사용 · 기본";
-    select.replaceChildren(defaultOption);
+    const targets = [
+        {
+            selectId: "rp-analysis-profile",
+            statusId: "rp-analysis-profile-status",
+            settingKey: "analysisProfileId",
+            defaultLabel: "현재 채팅 연결 사용 · 권장",
+            readyHelp:
+                "장르 추천·진단과 캐릭터 기준·앵커 생성에 사용합니다.",
+        },
+        {
+            selectId: "rp-plot-profile",
+            statusId: "rp-plot-profile-status",
+            settingKey: "plotProfileId",
+            defaultLabel: "현재 채팅 연결 사용 · 기본",
+            readyHelp:
+                "플롯 후보 생성에만 사용합니다. 실제 롤플 응답 연결은 바뀌지 않습니다.",
+        },
+    ];
+    const activeTargets = targets
+        .map((target) => ({
+            ...target,
+            select: document.getElementById(target.selectId),
+            status: document.getElementById(target.statusId),
+        }))
+        .filter((target) => target.select);
+    if (!activeTargets.length) return;
+
+    activeTargets.forEach((target) => {
+        const defaultOption = document.createElement("option");
+        defaultOption.value = "";
+        defaultOption.textContent = target.defaultLabel;
+        target.select.replaceChildren(defaultOption);
+    });
 
     try {
         const service = getConnectionProfileService();
         if (!service || typeof service.getSupportedProfiles !== "function") {
             throw new Error("연결 프로필 기능을 찾을 수 없음");
         }
-
         const profiles = [...(await service.getSupportedProfiles())].sort((a, b) =>
             String(a?.name || "").localeCompare(String(b?.name || ""))
         );
-        for (const profile of profiles) {
-            if (!profile?.id) continue;
-            const option = document.createElement("option");
-            option.value = profile.id;
-            option.textContent = profile.model
-                ? `${profile.name || "이름 없는 프로필"} · ${profile.model}`
-                : profile.name || "이름 없는 프로필";
-            select.appendChild(option);
-        }
 
-        const selectedExists =
-            !settings.backgroundProfileId ||
-            profiles.some(
-                (profile) =>
-                    String(profile.id) === String(settings.backgroundProfileId)
-            );
-        if (!selectedExists) {
-            const missingOption = document.createElement("option");
-            missingOption.value = settings.backgroundProfileId;
-            missingOption.textContent = "선택한 프로필을 찾을 수 없음";
-            select.appendChild(missingOption);
-        }
-        select.value = settings.backgroundProfileId;
-        select.disabled = false;
-        if (status) {
-            status.textContent = !selectedExists
-                ? "선택한 프로필이 없습니다. 요청 전에 다른 프로필이나 현재 채팅 연결을 선택해 주세요."
-                : profiles.length
-                  ? "플롯 후보·장르 추천·자동 진단에 사용합니다. 실제 롤플 답변 연결은 바뀌지 않습니다."
-                  : "저장된 호환 연결 프로필이 없어 현재 채팅 연결을 사용합니다.";
-        }
+        activeTargets.forEach((target) => {
+            for (const profile of profiles) {
+                if (!profile?.id) continue;
+                const option = document.createElement("option");
+                option.value = profile.id;
+                option.textContent = profile.model
+                    ? `${profile.name || "이름 없는 프로필"} · ${profile.model}`
+                    : profile.name || "이름 없는 프로필";
+                target.select.appendChild(option);
+            }
+            const selectedId = String(settings[target.settingKey] || "");
+            const selectedExists =
+                !selectedId ||
+                profiles.some(
+                    (profile) => String(profile.id) === selectedId
+                );
+            if (!selectedExists) {
+                const missingOption = document.createElement("option");
+                missingOption.value = selectedId;
+                missingOption.textContent = "선택한 프로필을 찾을 수 없음";
+                target.select.appendChild(missingOption);
+            }
+            target.select.value = selectedId;
+            target.select.disabled = false;
+            if (target.status) {
+                target.status.textContent = !selectedExists
+                    ? "선택한 프로필이 없습니다. 다른 프로필이나 현재 채팅 연결을 선택해 주세요."
+                    : profiles.length
+                      ? target.readyHelp
+                      : "저장된 호환 연결 프로필이 없어 현재 채팅 연결을 사용합니다.";
+            }
+        });
     } catch (err) {
         console.info(`[${MODULE_NAME}] connection profiles unavailable:`, err);
-        if (settings.backgroundProfileId) {
-            const unavailableOption = document.createElement("option");
-            unavailableOption.value = settings.backgroundProfileId;
-            unavailableOption.textContent = "선택한 프로필을 확인할 수 없음";
-            select.appendChild(unavailableOption);
-            select.value = settings.backgroundProfileId;
-        }
-        select.disabled = false;
-        if (status) {
-            status.textContent =
-                "연결 프로필 기능을 확인할 수 없습니다. 현재 채팅 연결을 쓰려면 기본 항목을 직접 선택해 주세요.";
-        }
+        activeTargets.forEach((target) => {
+            const selectedId = String(settings[target.settingKey] || "");
+            if (selectedId) {
+                const unavailableOption = document.createElement("option");
+                unavailableOption.value = selectedId;
+                unavailableOption.textContent = "선택한 프로필을 확인할 수 없음";
+                target.select.appendChild(unavailableOption);
+                target.select.value = selectedId;
+            }
+            target.select.disabled = false;
+            if (target.status) {
+                target.status.textContent =
+                    "연결 프로필 기능을 확인할 수 없습니다. 기본 연결을 쓰려면 첫 항목을 선택해 주세요.";
+            }
+        });
     }
 }
 
@@ -4234,6 +6386,20 @@ function addExtensionSettingsPanel() {
     if (!settingsRoot) return false;
 
     const settings = ensureModuleSettings();
+    const auditIntervalOptions = [
+        `<option value="0" ${settings.auditInterval === 0 ? "selected" : ""}>자동 진단 끄기 · 추가 호출 없음</option>`,
+        ...Array.from(
+            { length: MAX_AUDIT_INTERVAL - MIN_AUDIT_INTERVAL + 1 },
+            (_, index) => index + MIN_AUDIT_INTERVAL
+        ).map(
+            (interval) =>
+                `<option value="${interval}" ${
+                    settings.auditInterval === interval ? "selected" : ""
+                }>${interval}회마다${
+                    interval === DEFAULT_AUDIT_INTERVAL ? " · 기본" : ""
+                }</option>`
+        ),
+    ].join("");
     const panel = document.createElement("div");
     panel.id = "rp-storybooster-settings";
     panel.className = "extension_container";
@@ -4244,50 +6410,91 @@ function addExtensionSettingsPanel() {
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content">
-                <label for="rp-background-profile">보조 AI 연결</label>
-                <select id="rp-background-profile">
-                    <option value="">현재 채팅 연결 사용 · 기본</option>
-                </select>
-                <small id="rp-background-profile-status" class="rp-settings-help">
-                    저장된 연결 프로필을 불러오는 중이에요…
-                </small>
+                <div class="rp-settings-stack">
+                    <section class="rp-settings-card">
+                        <div class="rp-settings-card-title">사용 기능</div>
+                        <div class="rp-feature-toggle-grid">
+                            <label><input type="checkbox" data-rp-feature="genre" ${settings.enabledFeatures.genre ? "checked" : ""}> <span>장르 부스터</span></label>
+                            <label><input type="checkbox" data-rp-feature="character" ${settings.enabledFeatures.character ? "checked" : ""}> <span>캐릭터 부스터</span></label>
+                            <label><input type="checkbox" data-rp-feature="plot" ${settings.enabledFeatures.plot ? "checked" : ""}> <span>플롯 부스터</span></label>
+                        </div>
+                        <small class="rp-settings-help">끄면 저장된 설정은 유지하면서 해당 기능의 주입과 보조 AI 호출을 중지합니다.</small>
+                    </section>
 
-                <label for="rp-plot-max-tokens">플롯 생성 토큰</label>
-                <input
-                    id="rp-plot-max-tokens"
-                    type="number"
-                    min="${MIN_PLOT_MAX_TOKENS}"
-                    step="100"
-                    value="${settings.plotMaxTokens}"
-                >
-                <small class="rp-settings-help">
-                    기본 ${DEFAULT_PLOT_MAX_TOKENS} · 결과가 실제로 잘린 경우에만 한 번 자동 확장합니다.
-                </small>
+                    <section class="rp-settings-card">
+                        <div class="rp-settings-card-title">연결 프로필</div>
+                        <div class="rp-settings-field">
+                            <label for="rp-analysis-profile">장르/캐릭터 진단 프로필</label>
+                            <select id="rp-analysis-profile">
+                                <option value="">현재 채팅 연결 사용 · 권장</option>
+                            </select>
+                            <small id="rp-analysis-profile-status" class="rp-settings-help">저장된 연결 프로필을 불러오는 중이에요…</small>
+                        </div>
+                        <div class="rp-settings-field">
+                            <label for="rp-plot-profile">플롯 프로필</label>
+                            <select id="rp-plot-profile">
+                                <option value="">현재 채팅 연결 사용 · 기본</option>
+                            </select>
+                            <small id="rp-plot-profile-status" class="rp-settings-help">저장된 연결 프로필을 불러오는 중이에요…</small>
+                        </div>
+                    </section>
 
-                <label for="rp-plot-output-language">플롯 후보 출력 언어</label>
-                <select id="rp-plot-output-language">
-                    <option value="ko" ${
-                        settings.plotOutputLanguage === "ko" ? "selected" : ""
-                    }>한국어 · 기본</option>
-                    <option value="en" ${
-                        settings.plotOutputLanguage === "en" ? "selected" : ""
-                    }>English</option>
-                </select>
-                <small class="rp-settings-help">
-                    자유 생성과 내 아이디어로 작성한 플롯 결과에 모두 적용합니다. 내부 명령은 영어로 유지됩니다.
-                </small>
+                    <section class="rp-settings-card">
+                        <div class="rp-settings-card-title">자동 진단</div>
+                        <div class="rp-settings-field">
+                            <label for="rp-global-audit-interval">자동 진단 주기</label>
+                            <select id="rp-global-audit-interval">${auditIntervalOptions}</select>
+                            <small class="rp-settings-help">기본 ${DEFAULT_AUDIT_INTERVAL}회 · 활성화된 장르와 캐릭터를 한 번의 요청으로 함께 진단합니다. 진행 횟수와 결과는 채팅별로 저장돼요.</small>
+                        </div>
+                    </section>
+
+                    <section class="rp-settings-card">
+                        <div class="rp-settings-card-title">생성 설정</div>
+                        <div class="rp-settings-field">
+                            <label for="rp-plot-max-tokens">플롯 생성 토큰</label>
+                            <input id="rp-plot-max-tokens" type="number" min="${MIN_PLOT_MAX_TOKENS}" step="100" value="${settings.plotMaxTokens}">
+                            <small class="rp-settings-help">기본 ${DEFAULT_PLOT_MAX_TOKENS} · 결과가 실제로 잘린 경우에만 한 번 자동 확장합니다.</small>
+                        </div>
+                        <div class="rp-settings-field">
+                            <label for="rp-output-language">출력 언어</label>
+                            <select id="rp-output-language">
+                                <option value="ko" ${settings.outputLanguage === "ko" ? "selected" : ""}>한국어 · 기본</option>
+                                <option value="en" ${settings.outputLanguage === "en" ? "selected" : ""}>English</option>
+                            </select>
+                            <small class="rp-settings-help">플롯 후보, 장르 추천 이유, 캐릭터 기준 생성에 적용합니다. 내부 명령은 영어로 유지됩니다.</small>
+                        </div>
+                    </section>
+                </div>
             </div>
         </div>
     `;
     settingsRoot.appendChild(panel);
 
+    panel.querySelectorAll("[data-rp-feature]").forEach((checkbox) => {
+        checkbox.addEventListener("change", (event) =>
+            changeBoosterFeature(
+                event.currentTarget.dataset.rpFeature,
+                event.currentTarget.checked
+            )
+        );
+    });
+
     panel
-        .querySelector("#rp-background-profile")
-        ?.addEventListener("change", (event) => {
-            ensureModuleSettings().backgroundProfileId =
-                String(event.currentTarget.value || "");
+        .querySelector("#rp-global-audit-interval")
+        ?.addEventListener("change", (event) =>
+            changeGlobalAuditInterval(event.currentTarget.value)
+        );
+    [
+        ["#rp-analysis-profile", "analysisProfileId"],
+        ["#rp-plot-profile", "plotProfileId"],
+    ].forEach(([selector, settingKey]) => {
+        panel.querySelector(selector)?.addEventListener("change", (event) => {
+            ensureModuleSettings()[settingKey] = String(
+                event.currentTarget.value || ""
+            );
             saveSettingsDebounced();
         });
+    });
     panel
         .querySelector("#rp-plot-max-tokens")
         ?.addEventListener("change", (event) => {
@@ -4303,10 +6510,10 @@ function addExtensionSettingsPanel() {
             saveSettingsDebounced();
         });
     panel
-        .querySelector("#rp-plot-output-language")
+        .querySelector("#rp-output-language")
         ?.addEventListener("change", (event) => {
             const language = String(event.currentTarget.value || "ko");
-            ensureModuleSettings().plotOutputLanguage = ["ko", "en"].includes(
+            ensureModuleSettings().outputLanguage = ["ko", "en"].includes(
                 language
             )
                 ? language
@@ -4314,7 +6521,7 @@ function addExtensionSettingsPanel() {
             saveSettingsDebounced();
         });
 
-    refreshBackgroundProfileSelect();
+    refreshConnectionProfileSelects();
     return true;
 }
 
@@ -4359,7 +6566,8 @@ jQuery(async () => {
 
         // A received {{char}} response consumes a one-shot plot injection and
         // advances the automatic genre-drift counter. The quiet audit runs only
-        // at the per-chat interval selected by the user (default: eight replies).
+        // at the global interval selected by the user (default: ten replies),
+        // while progress and results remain isolated per chat.
         eventSource.on(event_types.MESSAGE_RECEIVED, (messageId) => {
             try {
                 clearPlotPromptIfPending();
@@ -4388,7 +6596,7 @@ jQuery(async () => {
         ]
             .filter(Boolean)
             .forEach((eventType) => {
-                eventSource.on(eventType, refreshBackgroundProfileSelect);
+                eventSource.on(eventType, refreshConnectionProfileSelects);
             });
 
         // when the user switches chats, reload state for the NEW chat and
@@ -4396,6 +6604,7 @@ jQuery(async () => {
         eventSource.on(event_types.CHAT_CHANGED, () => {
             plotPending = false;
             setExtensionPrompt(PLOT_PROMPT_KEY, "", extension_prompt_types.IN_CHAT, 0);
+            closeCharacterEditorsForChatChange();
             updateGenrePrompt();
             resyncLastCountedMessageId();
             updateGenreAnchorPanel();
