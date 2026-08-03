@@ -55,7 +55,7 @@ const MAX_PLOT_HISTORY = 5;
 const AUDIT_MESSAGE_MAX_CHARS = 5000;
 const PLOT_CONTEXT_MESSAGE_LIMIT = 10;
 const PLOT_MESSAGE_MAX_CHARS = 4500;
-const GENRE_RECOMMENDATION_MESSAGE_LIMIT = 15;
+const GENRE_RECOMMENDATION_MESSAGE_LIMIT = 10;
 const GENRE_RECOMMENDATION_MESSAGE_MAX_CHARS = 3500;
 
 const CHARACTER_BASELINE_FIELDS = Object.freeze([
@@ -2720,28 +2720,51 @@ function runManualGenreAudit(scope = "genre") {
 const characterBaselinePendingTasks = new Map();
 const characterBaselineAutosaveTimers = new Map();
 
-function resetAuditAfterCharacterBaselineChange(
-    chatId = getCurrentChatId(),
-    latestAssistantMessageId = null
-) {
+function invalidateCharacterAuditAfterBaselineChange(chatId = getCurrentChatId()) {
     const state = ensureChatState(chatId);
-    const characterAuditId = state.genreAnchor.lastCharacterAudit?.id || "";
-    markPendingGenreAuditCancelled(state);
-    state.genreAnchor.responseCount = 0;
-    state.genreAnchor.correctionCodes = [];
-    state.genreAnchor.correctionText = "";
-    state.genreAnchor.correctionFieldIds = [];
-    state.genreAnchor.correctionRemaining = 0;
-    state.genreAnchor.correctionAppliedMessageId = null;
-    state.genreAnchor.auditStatus = "waiting";
-    state.genreAnchor.lastCharacterAudit = null;
-    if (state.genreAnchor.lastAudit?.id === characterAuditId) {
-        state.genreAnchor.lastAudit = null;
+    const anchor = ensureGenreAnchorState(state);
+    const characterAuditId = anchor.lastCharacterAudit?.id || "";
+    const genreCorrectionCodes = anchor.correctionCodes.filter((code) =>
+        GENRE_BOOST_CORRECTION_CODES.has(code)
+    );
+
+    // A changed character baseline invalidates character-side findings, but it
+    // does not invalidate elapsed replies, genre findings, or a pending genre
+    // correction. Keep the shared automatic-audit schedule intact.
+    if (anchor.lastGenreAudit) {
+        anchor.lastGenreAudit = {
+            ...anchor.lastGenreAudit,
+            correctionCodes: anchor.lastGenreAudit.correctionCodes.filter((code) =>
+                GENRE_BOOST_CORRECTION_CODES.has(code)
+            ),
+            correctionText: "",
+            characterFocusFields: [],
+        };
+        if (
+            !anchor.lastGenreAudit.correctionCodes.length &&
+            ["pending", "applied", "cancelled"].includes(
+                anchor.lastGenreAudit.status
+            )
+        ) {
+            anchor.lastGenreAudit.status = "stable";
+            anchor.lastGenreAudit.appliedMessageId = null;
+        }
     }
-    if (chatId === getCurrentChatId()) {
-        state.genreAnchor.lastCountedMessageId = getLatestAssistantMessageId();
-    } else if (latestAssistantMessageId !== null) {
-        state.genreAnchor.lastCountedMessageId = latestAssistantMessageId;
+    anchor.lastCharacterAudit = null;
+    if (anchor.lastAudit?.id === characterAuditId) {
+        anchor.lastAudit =
+            anchor.lastGenreAudit?.id === characterAuditId
+                ? anchor.lastGenreAudit
+                : null;
+    }
+    anchor.correctionCodes = genreCorrectionCodes;
+    anchor.correctionText = "";
+    anchor.correctionFieldIds = [];
+    if (!genreCorrectionCodes.length) {
+        anchor.correctionRemaining = 0;
+        anchor.correctionAppliedMessageId = null;
+        anchor.auditStatus =
+            getGlobalAuditInterval() === 0 ? "waiting" : "monitoring";
     }
 }
 
@@ -2801,7 +2824,6 @@ async function generateCharacterBaseline(fieldId = null) {
     }
     const { identity } = baselineState;
     const taskChatId = getCurrentChatId();
-    const taskLatestAssistantMessageId = getLatestAssistantMessageId();
     if (characterBaselinePendingTasks.has(identity.key)) return;
     if (document.querySelector(".rp-character-field-text:not([readonly])")) {
         toastr?.info?.("편집 중인 항목을 저장한 뒤 다시 시도해 주세요.");
@@ -2921,10 +2943,7 @@ async function generateCharacterBaseline(fieldId = null) {
             characterName: identity.name,
             ...nextBaseline,
         };
-        resetAuditAfterCharacterBaselineChange(
-            taskChatId,
-            taskLatestAssistantMessageId
-        );
+        invalidateCharacterAuditAfterBaselineChange(taskChatId);
         saveSettingsDebounced();
         if (getCurrentCharacterIdentity()?.key === identity.key) {
             updateGenrePrompt();
@@ -2996,7 +3015,7 @@ function saveCharacterBaselineField(
     } else {
         delete settings.characterBaselines[identity.key];
     }
-    resetAuditAfterCharacterBaselineChange(targetChatId);
+    invalidateCharacterAuditAfterBaselineChange(targetChatId);
     saveSettingsDebounced();
     if (getCurrentCharacterIdentity()?.key === identity.key) {
         updateGenrePrompt();
@@ -3100,7 +3119,6 @@ function saveCharacterBoostAnchor(value, target = null) {
     baseline.boostAnchorNeedsRefresh = false;
     baseline.updatedAt = Date.now();
     settings.characterBaselines[identity.key] = baseline;
-    resetAuditAfterCharacterBaselineChange(targetChatId);
     saveSettingsDebounced();
     if (getCurrentCharacterIdentity()?.key === identity.key) {
         updateGenrePrompt();
@@ -3161,7 +3179,6 @@ async function regenerateCharacterBoostAnchor() {
     if (!baselineState.identity || !baselineState.baseline) return;
     const { identity, baseline } = baselineState;
     const taskChatId = getCurrentChatId();
-    const taskLatestAssistantMessageId = getLatestAssistantMessageId();
     if (characterBaselinePendingTasks.has(identity.key)) return;
     characterBaselinePendingTasks.set(identity.key, "anchor");
     updateCharacterBoosterPanel();
@@ -3214,10 +3231,6 @@ async function regenerateCharacterBoostAnchor() {
         baseline.boostAnchorNeedsRefresh = false;
         baseline.updatedAt = Date.now();
         ensureModuleSettings().characterBaselines[identity.key] = baseline;
-        resetAuditAfterCharacterBaselineChange(
-            taskChatId,
-            taskLatestAssistantMessageId
-        );
         saveSettingsDebounced();
         if (getCurrentCharacterIdentity()?.key === identity.key) {
             updateGenrePrompt();
@@ -3240,7 +3253,7 @@ function deleteCharacterBaseline() {
     if (!baselineState.identity || !baselineState.baseline) return;
     if (!window.confirm("저장된 캐릭터 기준 요약을 삭제할까요?")) return;
     delete ensureModuleSettings().characterBaselines[baselineState.identity.key];
-    resetAuditAfterCharacterBaselineChange();
+    invalidateCharacterAuditAfterBaselineChange();
     saveSettingsDebounced();
     updateGenrePrompt();
     updateGenreAnchorPanel();
