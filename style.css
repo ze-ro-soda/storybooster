@@ -5,6 +5,7 @@
     --sb-blue-selected: rgba(120, 167, 232, 0.2);
     --sb-blue-hover: rgba(120, 167, 232, 0.13);
     --sb-blue-panel: rgba(120, 167, 232, 0.075);
+    --sb-blue-soft: #dceaff;
     --sb-blue-border: rgba(120, 167, 232, 0.48);
     --sb-blue-shadow: rgba(58, 103, 175, 0.18);
     --sb-danger: #c85f7f;
@@ -57,6 +58,72 @@
     margin: 4px 0 5px;
     color: color-mix(in srgb, currentColor 72%, var(--sb-blue-strong) 28%);
     font-size: 1.04em;
+}
+
+#rp-booster-popup .rp-booster-section-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+
+#rp-booster-popup .rp-booster-section-heading h4 {
+    min-width: 0;
+    margin-bottom: 0;
+}
+
+#rp-booster-popup .rp-booster-live-status {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 6px;
+    max-width: 48%;
+    padding: 4px 8px;
+    border: 1px solid rgba(120, 167, 232, 0.34);
+    border-radius: 999px;
+    background: var(--sb-blue-panel);
+    font-size: 0.76em;
+    font-weight: 800;
+    line-height: 1.2;
+    text-align: center;
+    word-break: keep-all;
+}
+
+#rp-booster-popup .rp-live-status-dot {
+    display: inline-block;
+    flex: 0 0 auto;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #8da0b8;
+    box-shadow: 0 0 0 3px rgba(141, 160, 184, 0.14);
+}
+
+#rp-booster-popup .rp-booster-live-status.is-active {
+    border-color: var(--sb-blue-border);
+    background: var(--sb-blue-selected);
+    color: var(--sb-blue-text);
+}
+
+#rp-booster-popup .rp-booster-live-status.is-active .rp-live-status-dot {
+    background: var(--sb-blue-strong);
+    box-shadow: 0 0 0 3px rgba(85, 127, 196, 0.18), 0 0 8px rgba(85, 127, 196, 0.5);
+}
+
+#rp-booster-popup .rp-booster-live-status.is-setup {
+    border-color: rgba(213, 162, 75, 0.42);
+    background: rgba(239, 193, 102, 0.12);
+    color: #a37325;
+}
+
+#rp-booster-popup .rp-booster-live-status.is-setup .rp-live-status-dot {
+    background: #dda64c;
+    box-shadow: 0 0 0 3px rgba(221, 166, 76, 0.16);
+}
+
+#rp-booster-popup .rp-booster-live-status.is-off {
+    opacity: 0.68;
 }
 
 #rp-booster-popup .rp-booster-tabs {
@@ -441,26 +508,26 @@
     flex: 0 0 auto;
     flex-flow: row nowrap !important;
     align-items: center;
-    gap: 4px;
+    gap: 3px;
 }
 
 #rp-booster-popup .rp-character-tool-button {
     display: inline-flex !important;
-    width: 31px !important;
-    min-width: 31px !important;
-    max-width: 31px !important;
-    height: 31px !important;
-    min-height: 31px !important;
+    width: 27px !important;
+    min-width: 27px !important;
+    max-width: 27px !important;
+    height: 27px !important;
+    min-height: 27px !important;
     align-items: center !important;
     justify-content: center !important;
     margin: 0 !important;
     padding: 0 !important;
     border: 1px solid var(--sb-blue-border) !important;
-    border-radius: 7px !important;
+    border-radius: 6px !important;
     background: rgba(255, 255, 255, 0.38) !important;
     color: inherit !important;
     font: inherit !important;
-    font-size: 15px !important;
+    font-size: 13px !important;
     line-height: 1 !important;
     text-align: center !important;
     white-space: nowrap !important;
@@ -508,6 +575,31 @@
     opacity: 0.62;
     font-size: 0.72em;
     line-height: 1.3;
+}
+
+#rp-booster-popup #rp-character-boost-anchor-status.is-warning {
+    margin-top: 8px;
+    padding: 8px 10px;
+    border: 1px solid rgba(218, 151, 42, 0.5);
+    border-radius: 9px;
+    background: rgba(255, 193, 75, 0.14);
+    color: color-mix(in srgb, currentColor 70%, #a76500 30%);
+    opacity: 1;
+    font-size: 0.82em;
+    font-weight: 800;
+    line-height: 1.4;
+}
+
+#rp-booster-popup #rp-character-boost-anchor-regenerate.is-attention {
+    width: auto !important;
+    min-width: 62px !important;
+    max-width: none !important;
+    padding: 0 9px !important;
+    border-color: rgba(218, 151, 42, 0.68) !important;
+    background: rgba(255, 193, 75, 0.18) !important;
+    color: color-mix(in srgb, currentColor 72%, #9b5d00 28%) !important;
+    font-size: 0.78em !important;
+    font-weight: 800 !important;
 }
 
 #rp-booster-popup .rp-character-baseline-actions {
@@ -883,10 +975,6 @@
     font-size: 0.86em;
 }
 
-#rp-event-status.is-loading::before {
-    content: "⏳ ";
-}
-
 #rp-event-generate-btn {
     width: 100%;
     min-height: 44px;
@@ -1055,6 +1143,16 @@
 }
 
 @media (max-width: 430px) {
+    #rp-booster-popup .rp-booster-section-heading {
+        align-items: flex-start;
+    }
+
+    #rp-booster-popup .rp-booster-live-status {
+        max-width: 55%;
+        padding-inline: 7px;
+        font-size: 0.7em;
+    }
+
     #rp-booster-popup .rp-booster-tab {
         padding-inline: 4px;
         font-size: 0.78em;
