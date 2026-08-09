@@ -366,7 +366,9 @@
 
 .rp-audit-status-item {
     display: flex;
+    width: 100%;
     min-width: 0;
+    min-height: 34px;
     align-items: center;
     justify-content: space-between;
     gap: 6px;
@@ -374,6 +376,19 @@
     border: 1px solid rgba(120, 167, 232, 0.24);
     border-radius: 7px;
     background: var(--sb-blue-panel);
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    box-shadow: none;
+    writing-mode: horizontal-tb;
+    white-space: normal;
+}
+
+.rp-audit-status-item:hover,
+.rp-audit-status-item[aria-expanded="true"] {
+    border-color: var(--sb-blue-strong);
+    background: var(--sb-blue-selected);
 }
 
 .rp-audit-status-label {
@@ -410,6 +425,48 @@
 .rp-audit-status-chip.is-weak {
     color: color-mix(in srgb, var(--sb-danger) 82%, currentColor 18%);
     background: rgba(200, 95, 127, 0.14);
+}
+
+.rp-audit-detail {
+    margin-top: 8px;
+    padding: 9px;
+    border: 1px solid var(--sb-blue-border);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--sb-blue-selected) 72%, transparent);
+}
+
+.rp-audit-detail[hidden] {
+    display: none;
+}
+
+.rp-audit-detail-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.rp-audit-detail-reason {
+    margin: 7px 0 0 !important;
+    font-size: 0.86em !important;
+    line-height: 1.55 !important;
+}
+
+#rp-booster-popup .rp-audit-manual-boost {
+    width: 100%;
+    min-height: 38px;
+    margin-top: 9px;
+    border-color: var(--sb-blue-strong);
+    background: var(--sb-blue-panel);
+    font-weight: 750;
+}
+
+.rp-audit-detail-help {
+    display: block;
+    margin-top: 6px;
+    opacity: 0.68;
+    font-size: 0.75em;
+    line-height: 1.45;
 }
 
 .rp-last-audit-status {
