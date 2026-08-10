@@ -623,6 +623,7 @@ function ensureModuleSettings() {
             customPlotCategories: [],
             plotMaxTokens: DEFAULT_PLOT_MAX_TOKENS,
             outputLanguage: "ko",
+            characterCardChangeDetection: true,
             selectedPlotCategoryId: EVENT_CATEGORIES[0].id,
             analysisProfileId: "",
             plotProfileId: "",
@@ -633,7 +634,7 @@ function ensureModuleSettings() {
                 plot: true,
             },
             characterBaselines: {},
-            settingsSchemaVersion: 16,
+            settingsSchemaVersion: 17,
         };
     }
     if (!extension_settings[MODULE_NAME].chats) {
@@ -742,6 +743,32 @@ function ensureModuleSettings() {
         extension_settings[MODULE_NAME].settingsSchemaVersion = 16;
         saveSettingsDebounced();
     }
+    if (previousSchemaVersion < 17) {
+        const legacyLanguage = ["ko", "en"].includes(
+            extension_settings[MODULE_NAME].outputLanguage
+        )
+            ? extension_settings[MODULE_NAME].outputLanguage
+            : "ko";
+        extension_settings[MODULE_NAME].characterCardChangeDetection = true;
+        for (const [key, entry] of Object.entries(
+            extension_settings[MODULE_NAME].characterBaselines
+        )) {
+            const normalized = normalizeCharacterBaseline(entry);
+            if (!normalized) continue;
+            for (const field of Object.values(normalized.fields)) {
+                if (!field.language) field.language = legacyLanguage;
+            }
+            if (normalized.boostAnchor) {
+                normalized.boostAnchorDisplay ||= normalized.boostAnchor;
+                normalized.boostAnchorDisplayLanguage ||= "en";
+                normalized.boostAnchorUpdatedAt ||=
+                    normalized.updatedAt || Date.now();
+            }
+            extension_settings[MODULE_NAME].characterBaselines[key] = normalized;
+        }
+        extension_settings[MODULE_NAME].settingsSchemaVersion = 17;
+        saveSettingsDebounced();
+    }
     if (
         !Number.isSafeInteger(extension_settings[MODULE_NAME].plotMaxTokens) ||
         extension_settings[MODULE_NAME].plotMaxTokens < MIN_PLOT_MAX_TOKENS
@@ -756,6 +783,12 @@ function ensureModuleSettings() {
     }
     if (!["ko", "en"].includes(extension_settings[MODULE_NAME].outputLanguage)) {
         extension_settings[MODULE_NAME].outputLanguage = "ko";
+    }
+    if (
+        typeof extension_settings[MODULE_NAME].characterCardChangeDetection !==
+        "boolean"
+    ) {
+        extension_settings[MODULE_NAME].characterCardChangeDetection = true;
     }
     if (
         !extension_settings[MODULE_NAME].enabledFeatures ||
@@ -1021,7 +1054,9 @@ function getCurrentCharacterRecord() {
 }
 
 function getCharacterField(character, field) {
-    return String(character?.[field] ?? character?.data?.[field] ?? "").trim();
+    // V2 character-card data is canonical. Keep the flattened legacy field as
+    // a fallback for older SillyTavern versions and shallow character records.
+    return String(character?.data?.[field] ?? character?.[field] ?? "").trim();
 }
 
 function buildCharacterCardSource(character = getCurrentCharacterRecord()) {
@@ -1076,6 +1111,9 @@ function normalizeCharacterBaseline(entry) {
                 .trim()
                 .slice(0, CHARACTER_BASELINE_FIELD_MAX_CHARS),
             pinned: rawObject?.pinned === true,
+            language: ["ko", "en"].includes(rawObject?.language)
+                ? rawObject.language
+                : "",
             source:
                 rawObject?.source === "user" ||
                 (!rawObject && index === 0 && entry.manuallyEdited === true)
@@ -1091,8 +1129,24 @@ function normalizeCharacterBaseline(entry) {
         boostAnchor: String(entry.boostAnchor || "")
             .trim()
             .slice(0, CHARACTER_BOOST_ANCHOR_MAX_CHARS),
+        boostAnchorDisplay: String(
+            entry.boostAnchorDisplay || entry.boostAnchor || ""
+        )
+            .trim()
+            .slice(0, CHARACTER_BOOST_ANCHOR_MAX_CHARS),
+        boostAnchorDisplayLanguage: ["ko", "en"].includes(
+            entry.boostAnchorDisplayLanguage
+        )
+            ? entry.boostAnchorDisplayLanguage
+            : entry.boostAnchor
+              ? "en"
+              : "",
+        boostAnchorUpdatedAt:
+            Number(entry.boostAnchorUpdatedAt) ||
+            (entry.boostAnchor ? Number(entry.updatedAt) || Date.now() : 0),
         boostAnchorNeedsRefresh: entry.boostAnchorNeedsRefresh === true,
         sourceHash: String(entry.sourceHash || "").slice(0, 100),
+        notifiedSourceHash: String(entry.notifiedSourceHash || "").slice(0, 100),
         updatedAt: Number(entry.updatedAt) || Date.now(),
     };
 }
@@ -1104,6 +1158,7 @@ function createEmptyCharacterBaseline(identity) {
             {
                 text: "",
                 pinned: false,
+                language: "",
                 source: "ai",
                 updatedAt: Date.now(),
             },
@@ -1113,8 +1168,12 @@ function createEmptyCharacterBaseline(identity) {
         characterName: String(identity?.name || "").slice(0, 100),
         fields,
         boostAnchor: "",
+        boostAnchorDisplay: "",
+        boostAnchorDisplayLanguage: "",
+        boostAnchorUpdatedAt: 0,
         boostAnchorNeedsRefresh: false,
         sourceHash: String(identity?.sourceHash || ""),
+        notifiedSourceHash: "",
         updatedAt: Date.now(),
     };
 }
@@ -1179,6 +1238,101 @@ function getCurrentCharacterBaseline() {
         // new full summary; sourceHash is retained only as source metadata.
         status: baseline ? "current" : "missing",
     };
+}
+
+function getCharacterCardChangeStatus(
+    baselineState = getCurrentCharacterBaseline()
+) {
+    const enabled = ensureModuleSettings().characterCardChangeDetection === true;
+    const identity = baselineState?.identity || null;
+    const baseline = baselineState?.baseline || null;
+    const currentHash = String(identity?.sourceHash || "");
+    const savedHash = String(baseline?.sourceHash || "");
+    const changed = Boolean(
+        enabled && baseline && currentHash && savedHash && currentHash !== savedHash
+    );
+    return {
+        enabled,
+        changed,
+        identity,
+        baseline,
+        currentHash,
+        alreadyNotified:
+            changed && baseline?.notifiedSourceHash === currentHash,
+    };
+}
+
+function notifyCharacterCardChangeIfNeeded() {
+    const status = getCharacterCardChangeStatus();
+    if (!status.changed || status.alreadyNotified || !status.identity?.key) {
+        return status;
+    }
+    status.baseline.notifiedSourceHash = status.currentHash;
+    ensureModuleSettings().characterBaselines[status.identity.key] =
+        status.baseline;
+    saveSettingsDebounced();
+    toastr?.info?.(
+        "캐릭터 카드의 변경을 감지했어요. 현재는 기존 기준과 앵커로 계속 부스팅하고 있어요."
+    );
+    return { ...status, alreadyNotified: true };
+}
+
+function acknowledgeCharacterCardChange() {
+    const status = getCharacterCardChangeStatus();
+    if (!status.identity?.key || !status.baseline) return false;
+    status.baseline.sourceHash = status.currentHash;
+    status.baseline.notifiedSourceHash = "";
+    status.baseline.updatedAt = Date.now();
+    ensureModuleSettings().characterBaselines[status.identity.key] =
+        status.baseline;
+    saveSettingsDebounced();
+    safelyUpdateCharacterBoosterPanel("캐릭터 카드 변경 확인");
+    toastr?.success?.("현재 캐릭터 기준과 앵커를 그대로 유지합니다.");
+    return true;
+}
+
+function getCharacterAnchorDisplayValue(baseline) {
+    if (!baseline) return "";
+    const language = ensureModuleSettings().outputLanguage;
+    if (
+        language === "ko" &&
+        baseline.boostAnchorDisplayLanguage === "ko" &&
+        baseline.boostAnchorDisplay
+    ) {
+        return baseline.boostAnchorDisplay;
+    }
+    return String(baseline.boostAnchor || "");
+}
+
+function hasCharacterDisplayLanguageMismatch(baseline) {
+    if (!baseline) return false;
+    const language = ensureModuleSettings().outputLanguage;
+    const fieldMismatch = CHARACTER_BASELINE_FIELDS.some((definition) => {
+        const field = baseline.fields?.[definition.id];
+        return Boolean(field?.text && field.language && field.language !== language);
+    });
+    const anchorMismatch = Boolean(
+        baseline.boostAnchor && baseline.boostAnchorDisplayLanguage !== language
+    );
+    return fieldMismatch || anchorMismatch;
+}
+
+function formatSavedAt(timestamp) {
+    const value = Number(timestamp);
+    if (!value) return "";
+    try {
+        return new Intl.DateTimeFormat(
+            ensureModuleSettings().outputLanguage === "en" ? "en-US" : "ko-KR",
+            {
+                month: "long",
+                day: "numeric",
+                hour: "numeric",
+                minute: "2-digit",
+            }
+        ).format(new Date(value));
+    } catch {
+        return new Date(value).toLocaleString();
+    }
 }
 
 function getCharacterBoosterReadiness(
@@ -3332,7 +3486,11 @@ function buildCharacterBaselinePrompt(
             ? "Write each requested field in natural English using one to three concise sentences. Keep it specific enough for later consistency auditing and avoid repeating the same fact across fields."
             : "Write each requested field in natural Korean using one to three concise sentences. Keep it specific enough for later consistency auditing and avoid repeating the same fact across fields. Do not write English prose except for established proper nouns.",
         includeBoostAnchor
-            ? `Also write boost_anchor in grammatical English as a compact character-specific reminder of at most ${CHARACTER_BOOST_ANCHOR_MAX_CHARS} characters. Use three to five short lines covering only the most distinctive personality tensions, values or boundaries, active motives, speech or behavioral signature, and relationship-specific response pattern supported by the card and fields. Avoid absolute claims such as always, never, completely, or zero unless the card explicitly establishes them. Do not repeat generic instructions about agency, continuity, prose variety, or user control; those are added separately.`
+            ? `Also write boost_anchor in grammatical English as a compact character-specific reminder of at most ${CHARACTER_BOOST_ANCHOR_MAX_CHARS} characters. Use three to five short lines covering only the most distinctive personality tensions, values or boundaries, active motives, speech or behavioral signature, and relationship-specific response pattern supported by the card and fields. Avoid absolute claims such as always, never, completely, or zero unless the card explicitly establishes them. Do not repeat generic instructions about agency, continuity, prose variety, or user control; those are added separately.${
+                  outputLanguage === "ko"
+                      ? " Also write boost_anchor_display as a faithful, natural Korean display version of boost_anchor. Preserve every instruction and do not add interpretation."
+                      : ""
+              }`
             : "Generate only the requested field. Do not generate or rewrite boost_anchor for this single-field request.",
         "FIELDS TO GENERATE:",
         targetList,
@@ -3344,6 +3502,9 @@ function buildCharacterBaselinePrompt(
                 ? {
                       fields: jsonExample,
                       boost_anchor: "English character-specific anchor",
+                      ...(outputLanguage === "ko"
+                          ? { boost_anchor_display: "한국어 표시용 앵커" }
+                          : {}),
                   }
                 : { fields: jsonExample }
         )}.`,
@@ -3402,6 +3563,7 @@ async function generateCharacterBaseline(fieldId = null) {
     const selectedProfileId = String(
         ensureModuleSettings().analysisProfileId || ""
     );
+    const outputLanguage = ensureModuleSettings().outputLanguage;
     try {
         const connectionSnapshot = await resolveBackgroundConnectionSnapshot(
             selectedProfileId
@@ -3413,7 +3575,7 @@ async function generateCharacterBaseline(fieldId = null) {
             prompt: buildCharacterBaselinePrompt(
                 targetFields,
                 contextFields,
-                ensureModuleSettings().outputLanguage,
+                outputLanguage,
                 !requestedField
             ),
             transcript: `<character_card>\n${identity.source.slice(
@@ -3433,12 +3595,27 @@ async function generateCharacterBaseline(fieldId = null) {
                             additionalProperties: false,
                         },
                         ...(!requestedField
-                            ? { boost_anchor: { type: "string" } }
+                            ? {
+                                  boost_anchor: { type: "string" },
+                                  ...(outputLanguage === "ko"
+                                      ? {
+                                            boost_anchor_display: {
+                                                type: "string",
+                                            },
+                                        }
+                                      : {}),
+                              }
                             : {}),
                     },
                     required: requestedField
                         ? ["fields"]
-                        : ["fields", "boost_anchor"],
+                        : [
+                              "fields",
+                              "boost_anchor",
+                              ...(outputLanguage === "ko"
+                                  ? ["boost_anchor_display"]
+                                  : []),
+                          ],
                     additionalProperties: false,
                 },
             },
@@ -3466,6 +3643,20 @@ async function generateCharacterBaseline(fieldId = null) {
         if (!requestedField && boostAnchor.length < 30) {
             throw new Error("캐릭터 앵커가 지나치게 짧습니다.");
         }
+        const boostAnchorDisplay = requestedField
+            ? ""
+            : outputLanguage === "ko"
+              ? String(parsed.boost_anchor_display || "")
+                    .trim()
+                    .slice(0, CHARACTER_BOOST_ANCHOR_MAX_CHARS)
+              : boostAnchor;
+        if (
+            !requestedField &&
+            outputLanguage === "ko" &&
+            boostAnchorDisplay.length < 15
+        ) {
+            throw new Error("한국어 표시용 캐릭터 앵커가 지나치게 짧습니다.");
+        }
         const nextBaseline = normalizeCharacterBaseline(baseline) ||
             createEmptyCharacterBaseline(identity);
         for (const definition of targetFields) {
@@ -3479,6 +3670,7 @@ async function generateCharacterBaseline(fieldId = null) {
                 ...nextBaseline.fields[definition.id],
                 text,
                 source: "ai",
+                language: outputLanguage,
                 updatedAt: Date.now(),
             };
         }
@@ -3489,11 +3681,15 @@ async function generateCharacterBaseline(fieldId = null) {
             nextBaseline.boostAnchorNeedsRefresh = Boolean(nextBaseline.boostAnchor);
         } else {
             nextBaseline.boostAnchor = boostAnchor;
+            nextBaseline.boostAnchorDisplay = boostAnchorDisplay;
+            nextBaseline.boostAnchorDisplayLanguage = outputLanguage;
+            nextBaseline.boostAnchorUpdatedAt = Date.now();
             nextBaseline.boostAnchorNeedsRefresh = false;
         }
         nextBaseline.updatedAt = Date.now();
         if (!requestedField || !baselineState.baseline) {
             nextBaseline.sourceHash = identity.sourceHash;
+            nextBaseline.notifiedSourceHash = "";
         }
         ensureModuleSettings().characterBaselines[identity.key] = {
             characterName: identity.name,
@@ -3567,6 +3763,7 @@ function saveCharacterBaselineField(
         ...baseline.fields[fieldId],
         text,
         source: "user",
+        language: ensureModuleSettings().outputLanguage,
         updatedAt: Date.now(),
     };
     baseline.characterName = identity.name;
@@ -3686,7 +3883,10 @@ function toggleCharacterFieldEditing(fieldId, sourceButton = null) {
     updateCharacterBaselineActionStates();
 }
 
-function saveCharacterBoostAnchor(value, target = null) {
+function saveCharacterBoostAnchor(
+    { canonicalText, displayText, displayLanguage },
+    target = null
+) {
     const currentIdentity = getCurrentCharacterIdentity();
     const identity = target?.identity?.key ? target.identity : currentIdentity;
     const targetChatId = String(target?.chatId || getCurrentChatId());
@@ -3695,10 +3895,19 @@ function saveCharacterBoostAnchor(value, target = null) {
         ? normalizeCharacterBaseline(settings.characterBaselines[identity.key])
         : null;
     if (!identity?.key || !baseline) return false;
-    const text = String(value || "")
+    const text = String(canonicalText || "")
         .trim()
         .slice(0, CHARACTER_BOOST_ANCHOR_MAX_CHARS);
+    const visibleText = String(displayText || text)
+        .trim()
+        .slice(0, CHARACTER_BOOST_ANCHOR_MAX_CHARS);
+    if (!text || !visibleText) return false;
     baseline.boostAnchor = text;
+    baseline.boostAnchorDisplay = visibleText;
+    baseline.boostAnchorDisplayLanguage = ["ko", "en"].includes(displayLanguage)
+        ? displayLanguage
+        : "en";
+    baseline.boostAnchorUpdatedAt = Date.now();
     baseline.boostAnchorNeedsRefresh = false;
     baseline.updatedAt = Date.now();
     settings.characterBaselines[identity.key] = baseline;
@@ -3715,57 +3924,156 @@ function saveCharacterBoostAnchor(value, target = null) {
     return true;
 }
 
-function toggleCharacterBoostAnchorEditing() {
+async function convertCharacterAnchorDisplayToEnglish(displayText) {
+    const connectionSnapshot = await resolveBackgroundConnectionSnapshot(
+        String(ensureModuleSettings().analysisProfileId || "")
+    );
+    const result = await generateStructuredAnalysis({
+        prompt: [
+            "Convert the supplied user-edited Korean character anchor into a concise English roleplay instruction.",
+            "Preserve every character-specific trait, tension, value, boundary, motive, speech pattern, and relationship response. Do not add, soften, intensify, interpret, or omit content.",
+            `Use complete grammatical English and stay within ${CHARACTER_BOOST_ANCHOR_MAX_CHARS} characters.`,
+            'Return JSON only: {"boost_anchor":"English character-specific anchor"}.',
+        ].join("\n"),
+        transcript: `<display_anchor>\n${String(displayText || "").slice(
+            0,
+            CHARACTER_BOOST_ANCHOR_MAX_CHARS
+        )}\n</display_anchor>`,
+        jsonSchema: {
+            name: "storybooster_character_anchor_conversion",
+            strict: true,
+            schema: {
+                type: "object",
+                properties: { boost_anchor: { type: "string" } },
+                required: ["boost_anchor"],
+                additionalProperties: false,
+            },
+        },
+        responseLength: 900,
+        connectionSnapshot,
+    });
+    const parsed = extractJsonObject(
+        result,
+        "Character anchor conversion returned no JSON object."
+    );
+    const translated = String(parsed.boost_anchor || "")
+        .trim()
+        .slice(0, CHARACTER_BOOST_ANCHOR_MAX_CHARS);
+    if (translated.length < 15) {
+        throw new Error("영문 주입용 앵커가 지나치게 짧습니다.");
+    }
+    return translated;
+}
+
+function setCharacterBoostAnchorEditMode(editing) {
     const textarea = getBoosterElement("rp-character-boost-anchor-text");
-    const button = getBoosterElement("rp-character-boost-anchor-edit");
-    if (!textarea || !button) return;
-    if (textarea.readOnly) {
+    const editButton = getBoosterElement("rp-character-boost-anchor-edit");
+    const saveButton = getBoosterElement("rp-character-boost-anchor-save");
+    const cancelButton = getBoosterElement("rp-character-boost-anchor-cancel");
+    if (!textarea || !editButton || !saveButton || !cancelButton) return;
+    if (editing) {
+        textarea.dataset.originalValue = textarea.value;
         textarea.readOnly = false;
         textarea.classList.add("is-editing");
-        button.textContent = "💾";
-        button.title = "저장하고 편집 잠금";
+        editButton.hidden = true;
+        saveButton.hidden = false;
+        cancelButton.hidden = false;
         textarea.focus();
     } else {
-        try {
-            const saved = saveCharacterBoostAnchor(
-                textarea.value,
-                getCharacterEditTarget(textarea)
-            );
-            if (!saved) throw new Error("저장할 캐릭터를 찾지 못했습니다.");
-        } catch (error) {
-            console.error(`[${MODULE_NAME}] character anchor save failed:`, error);
-            toastr?.error?.(
-                `상시 앵커 저장에 실패했습니다: ${error?.message || "화면을 다시 열어 주세요."}`
-            );
-        } finally {
-            textarea.readOnly = true;
-            textarea.classList.remove("is-editing");
-            button.textContent = "✏️";
-            button.title = "상시 앵커 직접 편집";
-        }
+        textarea.readOnly = true;
+        textarea.classList.remove("is-editing");
+        editButton.hidden = false;
+        saveButton.hidden = true;
+        cancelButton.hidden = true;
+        delete textarea.dataset.originalValue;
     }
     updateCharacterBaselineActionStates();
 }
 
+function beginCharacterBoostAnchorEditing() {
+    setCharacterBoostAnchorEditMode(true);
+}
+
+function cancelCharacterBoostAnchorEditing() {
+    const textarea = getBoosterElement("rp-character-boost-anchor-text");
+    if (textarea && !textarea.readOnly) {
+        textarea.value = textarea.dataset.originalValue || "";
+    }
+    setCharacterBoostAnchorEditMode(false);
+}
+
+async function saveEditedCharacterBoostAnchor() {
+    const textarea = getBoosterElement("rp-character-boost-anchor-text");
+    const baselineState = getCurrentCharacterBaseline();
+    if (!textarea || textarea.readOnly || !baselineState.identity) return;
+    // Capture the save target before a possible translation request. The
+    // active popup is reused across chat changes, so its dataset may point to
+    // another character by the time the request resolves.
+    const target = getCharacterEditTarget(textarea) || {
+        identity: baselineState.identity,
+        chatId: getCurrentChatId(),
+    };
+    const displayText = textarea.value.trim();
+    if (!displayText) {
+        toastr?.warning?.("캐릭터 앵커를 비워 둘 수 없습니다.");
+        return;
+    }
+    const language = ensureModuleSettings().outputLanguage;
+    const identityKey = target.identity.key;
+    if (characterBaselinePendingTasks.has(identityKey)) return;
+    characterBaselinePendingTasks.set(identityKey, "anchor");
+    safelyUpdateCharacterBoosterPanel("캐릭터 앵커 저장 시작");
+    try {
+        const canonicalText =
+            language === "ko"
+                ? await convertCharacterAnchorDisplayToEnglish(displayText)
+                : displayText;
+        if (!isBoosterFeatureEnabled("character")) {
+            toastr?.info?.(
+                "캐릭터 부스터가 꺼져 있어 편집 결과를 저장하지 않았어요."
+            );
+            return;
+        }
+        const saved = saveCharacterBoostAnchor(
+            { canonicalText, displayText, displayLanguage: language },
+            target
+        );
+        if (!saved) throw new Error("저장할 캐릭터를 찾지 못했습니다.");
+        if (getCurrentCharacterIdentity()?.key === identityKey) {
+            setCharacterBoostAnchorEditMode(false);
+        }
+        toastr?.success?.(
+            language === "ko"
+                ? "한국어 앵커를 저장하고 영문 주입용 앵커를 갱신했어요."
+                : "캐릭터 앵커를 저장했어요."
+        );
+    } catch (error) {
+        console.error(`[${MODULE_NAME}] character anchor save failed:`, error);
+        toastr?.error?.(
+            `캐릭터 앵커 저장에 실패했습니다: ${error?.message || "연결 상태를 확인해 주세요."}`
+        );
+    } finally {
+        characterBaselinePendingTasks.delete(identityKey);
+        safelyUpdateCharacterBoosterPanel("캐릭터 앵커 저장 종료");
+    }
+}
+
 function closeCharacterEditorsForChatChange() {
     const popupRoot = getActiveBoosterPopupRoot();
+    const anchorText = getBoosterElement("rp-character-boost-anchor-text");
+    if (anchorText && !anchorText.readOnly) {
+        anchorText.value = anchorText.dataset.originalValue || anchorText.value;
+        setCharacterBoostAnchorEditMode(false);
+    }
     popupRoot
-        ?.querySelectorAll(".rp-character-field-text:not([readonly])")
+        ?.querySelectorAll(
+            ".rp-character-field-text[data-field-id]:not([readonly])"
+        )
         .forEach((textarea) => {
             flushCharacterBaselineAutosave(textarea);
             textarea.readOnly = true;
             textarea.classList.remove("is-editing");
         });
-    const anchorText = getBoosterElement("rp-character-boost-anchor-text");
-    if (anchorText && !anchorText.readOnly) {
-        anchorText.readOnly = true;
-        anchorText.classList.remove("is-editing");
-    }
-    const anchorEdit = getBoosterElement("rp-character-boost-anchor-edit");
-    if (anchorEdit) {
-        anchorEdit.textContent = "✏️";
-        anchorEdit.title = "상시 앵커 직접 편집";
-    }
 }
 
 async function regenerateCharacterBoostAnchor() {
@@ -3776,6 +4084,7 @@ async function regenerateCharacterBoostAnchor() {
     const baselineState = getCurrentCharacterBaseline();
     if (!baselineState.identity || !baselineState.baseline) return;
     const { identity, baseline } = baselineState;
+    const outputLanguage = ensureModuleSettings().outputLanguage;
     const taskChatId = getCurrentChatId();
     if (characterBaselinePendingTasks.has(identity.key)) return;
     characterBaselinePendingTasks.set(identity.key, "anchor");
@@ -3791,7 +4100,9 @@ async function regenerateCharacterBoostAnchor() {
                 "Preserve only character-specific personality tensions, values or boundaries, active motives, speech or behavioral signature, and relationship-specific response patterns supported by the baseline.",
                 "Use complete, grammatical English. Avoid absolute claims such as always, never, completely, or zero unless the baseline explicitly establishes them.",
                 "Do not invent traits. Do not add generic instructions about agency, continuity, prose variety, or user control; those are supplied separately.",
-                'Return JSON only: {"boost_anchor":"English character-specific anchor"}.',
+                outputLanguage === "ko"
+                    ? 'Also provide boost_anchor_display as a faithful natural Korean display version. Return JSON only: {"boost_anchor":"English character-specific anchor","boost_anchor_display":"한국어 표시용 앵커"}.'
+                    : 'Return JSON only: {"boost_anchor":"English character-specific anchor"}.',
             ].join("\n"),
             transcript: `<character_baseline>\n${serializeCharacterBaseline(
                 baseline
@@ -3801,8 +4112,18 @@ async function regenerateCharacterBoostAnchor() {
                 strict: true,
                 schema: {
                     type: "object",
-                    properties: { boost_anchor: { type: "string" } },
-                    required: ["boost_anchor"],
+                    properties: {
+                        boost_anchor: { type: "string" },
+                        ...(outputLanguage === "ko"
+                            ? { boost_anchor_display: { type: "string" } }
+                            : {}),
+                    },
+                    required: [
+                        "boost_anchor",
+                        ...(outputLanguage === "ko"
+                            ? ["boost_anchor_display"]
+                            : []),
+                    ],
                     additionalProperties: false,
                 },
             },
@@ -3825,7 +4146,19 @@ async function regenerateCharacterBoostAnchor() {
         if (boostAnchor.length < 30) {
             throw new Error("캐릭터 앵커가 지나치게 짧습니다.");
         }
+        const boostAnchorDisplay =
+            outputLanguage === "ko"
+                ? String(parsed.boost_anchor_display || "")
+                      .trim()
+                      .slice(0, CHARACTER_BOOST_ANCHOR_MAX_CHARS)
+                : boostAnchor;
+        if (outputLanguage === "ko" && boostAnchorDisplay.length < 15) {
+            throw new Error("한국어 표시용 캐릭터 앵커가 지나치게 짧습니다.");
+        }
         baseline.boostAnchor = boostAnchor;
+        baseline.boostAnchorDisplay = boostAnchorDisplay;
+        baseline.boostAnchorDisplayLanguage = outputLanguage;
+        baseline.boostAnchorUpdatedAt = Date.now();
         baseline.boostAnchorNeedsRefresh = false;
         baseline.updatedAt = Date.now();
         ensureModuleSettings().characterBaselines[identity.key] = baseline;
@@ -6413,6 +6746,11 @@ function updateCharacterBoosterPanel() {
     const name = getBoosterElement("rp-character-current-name");
     const status = getBoosterElement("rp-character-baseline-status");
     const fields = getBoosterElement("rp-character-baseline-fields");
+    const cardChange = getCharacterCardChangeStatus(baselineState);
+    const cardChangeNotice = getBoosterElement(
+        "rp-character-card-change-notice"
+    );
+    const languageStatus = getBoosterElement("rp-character-language-status");
     updateBoosterLiveStatus(
         "rp-character-live-status",
         !featureEnabled ? "off" : boostActive ? "active" : "setup",
@@ -6450,6 +6788,12 @@ function updateCharacterBoosterPanel() {
                   ? "아직 저장된 캐릭터 기준이 없습니다."
                   : "그룹 채팅이나 캐릭터가 없는 화면에서는 기준을 만들 수 없습니다.";
     }
+    if (cardChangeNotice) cardChangeNotice.hidden = !cardChange.changed;
+    if (languageStatus) {
+        languageStatus.hidden = !hasCharacterDisplayLanguageMismatch(
+            baselineState.baseline
+        );
+    }
     if (fields && !hasOpenCharacterBaselineEditor()) {
         fields.innerHTML = renderCharacterBaselineFields(
             baselineState.baseline,
@@ -6460,12 +6804,19 @@ function updateCharacterBoosterPanel() {
     const anchorText = getBoosterElement("rp-character-boost-anchor-text");
     const anchorStatus = getBoosterElement("rp-character-boost-anchor-status");
     const anchorEdit = getBoosterElement("rp-character-boost-anchor-edit");
+    const anchorSave = getBoosterElement("rp-character-boost-anchor-save");
+    const anchorCancel = getBoosterElement("rp-character-boost-anchor-cancel");
     const anchorRegenerate = getBoosterElement(
         "rp-character-boost-anchor-regenerate"
     );
+    const anchorSavedAt = getBoosterElement(
+        "rp-character-boost-anchor-saved-at"
+    );
     const anchorNeedsRefresh = anchorContentStale;
     if (anchorText?.readOnly) {
-        anchorText.value = baselineState.baseline?.boostAnchor || "";
+        anchorText.value = getCharacterAnchorDisplayValue(
+            baselineState.baseline
+        );
         anchorText.dataset.identityKey = baselineState.identity?.key || "";
         anchorText.dataset.characterName = baselineState.identity?.name || "";
         anchorText.dataset.sourceHash = baselineState.identity?.sourceHash || "";
@@ -6481,7 +6832,10 @@ function updateCharacterBoosterPanel() {
             : anchorNeedsRefresh
               ? "⚠️ 캐릭터 기준이 변경됐어요. 앵커를 갱신해 주세요."
               : baselineState.baseline?.boostAnchor
-                ? "AI 주입용 영문 요약 · 공통 보강 규칙과 함께 매 응답에 사용"
+                ? baselineState.baseline.boostAnchorDisplayLanguage !==
+                  ensureModuleSettings().outputLanguage
+                    ? "표시 언어가 달라요. ↻ 버튼으로 현재 언어 표시를 만들 수 있어요. 실제 부스팅은 기존 영문 앵커로 계속됩니다."
+                    : "표시 언어와 관계없이 실제 부스팅에는 영문 앵커를 사용합니다."
                 : baselineState.baseline
                   ? "상시 앵커가 없습니다. ↻ 버튼으로 만들 수 있어요."
                   : "전체 요약을 실행하면 상시 앵커도 함께 생성됩니다.";
@@ -6489,6 +6843,8 @@ function updateCharacterBoosterPanel() {
     if (anchorEdit) {
         anchorEdit.disabled = !featureEnabled || !baselineState.baseline || pending;
     }
+    if (anchorSave) anchorSave.disabled = pending;
+    if (anchorCancel) anchorCancel.disabled = pending;
     if (anchorRegenerate) {
         anchorRegenerate.disabled =
             !featureEnabled || !baselineState.baseline || pending;
@@ -6507,6 +6863,14 @@ function updateCharacterBoosterPanel() {
                   ? "변경된 캐릭터 기준으로 앵커 갱신"
                   : "현재 기준으로 상시 앵커 다시 만들기"
         );
+    }
+    if (anchorSavedAt) {
+        const savedAt = formatSavedAt(
+            baselineState.baseline?.boostAnchorUpdatedAt
+        );
+        anchorSavedAt.textContent = savedAt
+            ? `마지막 저장: ${savedAt}`
+            : "아직 저장된 앵커가 없어요.";
     }
     updateCharacterBaselineActionStates();
 
@@ -7025,6 +7389,12 @@ function renderBoosterPopupHtml(popupInstanceId = "") {
     const characterReadiness = getCharacterBoosterReadiness(
         characterBaselineState
     );
+    const characterCardChange = getCharacterCardChangeStatus(
+        characterBaselineState
+    );
+    const characterLanguageMismatch = hasCharacterDisplayLanguageMismatch(
+        characterBaselineState.baseline
+    );
     const genreLiveActive = genreFeatureEnabled && Boolean(genreSelection.primaryId);
     const characterLiveActive = characterReadiness.boostActive;
     const characterLiveLabel = !characterFeatureEnabled
@@ -7159,6 +7529,15 @@ function renderBoosterPopupHtml(popupInstanceId = "") {
             <div class="rp-anchor-title">📋 캐릭터 기준</div>
             <p id="rp-character-current-name"></p>
             <p id="rp-character-baseline-status" aria-live="polite"></p>
+            <div id="rp-character-card-change-notice" class="rp-character-card-change-notice" ${characterCardChange.changed ? "" : "hidden"}>
+                <strong>캐릭터 카드 변경을 감지했어요</strong>
+                <span>현재는 기존 기준과 앵커로 계속 부스팅하고 있습니다.</span>
+                <div class="rp-character-card-change-actions">
+                    <button id="rp-character-card-reanalyze" type="button">다시 분석하기</button>
+                    <button id="rp-character-card-keep" type="button">기존 기준 유지</button>
+                </div>
+            </div>
+            <p id="rp-character-language-status" class="rp-character-language-status" ${characterLanguageMismatch ? "" : "hidden"}>출력 언어가 변경됐어요. 기준을 다시 요약하고 앵커를 갱신하면 현재 언어로 표시됩니다.</p>
             <p class="rp-character-privacy">캐릭터 기준은 진단에 사용됩니다. 최신 캐릭터 전용 앵커가 준비되면 캐릭터 부스팅을 시작해요. 기준 전체는 매번 주입하지 않고 필요한 일회성 보정에만 사용합니다.</p>
             <p class="rp-character-field-guide">📌 전체 다시 요약에서도 유지 · ✏️ 편집 · ↻ 항목만 다시 생성</p>
             <div id="rp-character-baseline-fields" class="rp-character-baseline-fields">
@@ -7169,11 +7548,14 @@ function renderBoosterPopupHtml(popupInstanceId = "") {
                     <strong>🧭 캐릭터 전용 상시 앵커</strong>
                     <div class="rp-character-field-tools">
                         <button id="rp-character-boost-anchor-edit" type="button" class="rp-character-tool-button" title="상시 앵커 직접 편집">✏️</button>
+                        <button id="rp-character-boost-anchor-save" type="button" class="rp-character-tool-button" title="편집 내용 저장" hidden>✅</button>
+                        <button id="rp-character-boost-anchor-cancel" type="button" class="rp-character-tool-button" title="편집 취소" hidden>✕</button>
                         <button id="rp-character-boost-anchor-regenerate" type="button" class="rp-character-tool-button" title="현재 기준으로 상시 앵커 다시 만들기">↻</button>
                     </div>
                 </div>
-                <textarea id="rp-character-boost-anchor-text" class="rp-character-field-text" rows="4" maxlength="${CHARACTER_BOOST_ANCHOR_MAX_CHARS}" placeholder="전체 요약을 실행하면 캐릭터별 짧은 영문 앵커가 생성됩니다." readonly>${escapeHtml(characterBaselineState.baseline?.boostAnchor || "")}</textarea>
-                <small id="rp-character-boost-anchor-status" class="rp-character-field-save-status">AI 주입용 영문 요약 · 공통 보강 규칙과 함께 매 응답에 사용</small>
+                <textarea id="rp-character-boost-anchor-text" class="rp-character-field-text" rows="4" maxlength="${CHARACTER_BOOST_ANCHOR_MAX_CHARS}" placeholder="전체 요약을 실행하면 캐릭터별 짧은 앵커가 생성됩니다." readonly>${escapeHtml(getCharacterAnchorDisplayValue(characterBaselineState.baseline))}</textarea>
+                <small id="rp-character-boost-anchor-status" class="rp-character-field-save-status">표시 언어와 관계없이 실제 부스팅에는 영문 앵커를 사용합니다.</small>
+                <small id="rp-character-boost-anchor-saved-at" class="rp-character-anchor-saved-at"></small>
             </div>
             <div class="rp-character-baseline-actions">
                 <button id="rp-character-baseline-generate" type="button" class="rp-character-wide-button">전체 요약하기</button>
@@ -7317,6 +7699,7 @@ function openBoosterPopup() {
     const popupInstanceId = `${Date.now()}-${Math.random()
         .toString(36)
         .slice(2, 9)}`;
+    notifyCharacterCardChangeIfNeeded();
     const html = renderBoosterPopupHtml(popupInstanceId);
 
     try {
@@ -7400,11 +7783,49 @@ function openBoosterPopup() {
             .querySelector("#rp-character-baseline-delete")
             ?.addEventListener("click", deleteCharacterBaseline);
         popupRoot
+            .querySelector("#rp-character-card-reanalyze")
+            ?.addEventListener("click", () => {
+                if (
+                    window.confirm(
+                        "변경된 캐릭터 카드로 고정하지 않은 기준과 앵커를 다시 만들까요?"
+                    )
+                ) {
+                    generateCharacterBaseline();
+                }
+            });
+        popupRoot
+            .querySelector("#rp-character-card-keep")
+            ?.addEventListener("click", acknowledgeCharacterCardChange);
+        popupRoot
             .querySelector("#rp-character-boost-anchor-edit")
-            ?.addEventListener("click", toggleCharacterBoostAnchorEditing);
+            ?.addEventListener("click", beginCharacterBoostAnchorEditing);
+        popupRoot
+            .querySelector("#rp-character-boost-anchor-save")
+            ?.addEventListener("click", saveEditedCharacterBoostAnchor);
+        popupRoot
+            .querySelector("#rp-character-boost-anchor-cancel")
+            ?.addEventListener("click", cancelCharacterBoostAnchorEditing);
         popupRoot
             .querySelector("#rp-character-boost-anchor-regenerate")
             ?.addEventListener("click", () => {
+                const anchorText = getBoosterElement(
+                    "rp-character-boost-anchor-text"
+                );
+                const hasUnsavedEdit = Boolean(
+                    anchorText && !anchorText.readOnly
+                );
+                if (hasUnsavedEdit) {
+                    if (
+                        !window.confirm(
+                            "저장하지 않은 편집 내용을 버리고 앵커를 다시 만들까요?"
+                        )
+                    ) {
+                        return;
+                    }
+                    cancelCharacterBoostAnchorEditing();
+                    regenerateCharacterBoostAnchor();
+                    return;
+                }
                 if (
                     window.confirm(
                         "현재 캐릭터 기준으로 캐릭터 앵커를 다시 만들까요?"
@@ -7780,6 +8201,15 @@ function addExtensionSettingsPanel() {
                     </section>
 
                     <section class="rp-settings-card">
+                        <div class="rp-settings-card-title">캐릭터 카드</div>
+                        <label class="rp-settings-check-row">
+                            <input id="rp-character-card-change-detection" type="checkbox" ${settings.characterCardChangeDetection ? "checked" : ""}>
+                            <span>캐릭터 시트 변경 알림</span>
+                        </label>
+                        <small class="rp-settings-help">설명·성격·대화 예시가 변경되면 기준 재확인을 안내합니다. 기존 부스팅은 중단하지 않으며 AI 호출도 발생하지 않습니다.</small>
+                    </section>
+
+                    <section class="rp-settings-card">
                         <div class="rp-settings-card-title">생성 설정</div>
                         <div class="rp-settings-field">
                             <label for="rp-plot-max-tokens">플롯 생성 토큰</label>
@@ -7815,6 +8245,17 @@ function addExtensionSettingsPanel() {
         ?.addEventListener("change", (event) =>
             changeGlobalAuditInterval(event.currentTarget.value)
         );
+    panel
+        .querySelector("#rp-character-card-change-detection")
+        ?.addEventListener("change", (event) => {
+            ensureModuleSettings().characterCardChangeDetection =
+                event.currentTarget.checked;
+            saveSettingsDebounced();
+            if (event.currentTarget.checked) {
+                notifyCharacterCardChangeIfNeeded();
+            }
+            safelyUpdateCharacterBoosterPanel("캐릭터 시트 변경 알림 설정");
+        });
     [
         ["#rp-analysis-profile", "analysisProfileId"],
         ["#rp-plot-profile", "plotProfileId"],
@@ -7850,6 +8291,10 @@ function addExtensionSettingsPanel() {
                 ? language
                 : "ko";
             saveSettingsDebounced();
+            safelyUpdateCharacterBoosterPanel("출력 언어 변경");
+            toastr?.info?.(
+                "저장된 캐릭터 기준과 앵커는 자동 번역하지 않습니다. 다시 요약하거나 갱신하면 현재 출력 언어로 표시돼요."
+            );
         });
 
     refreshConnectionProfileSelects();
@@ -7920,6 +8365,17 @@ jQuery(async () => {
             });
         }
 
+        // SillyTavern refreshes the in-memory character record before emitting
+        // this event. Re-check immediately so an already-open StoryBooster
+        // popup shows the change notice without requiring a chat switch or a
+        // popup reopen. This is a local hash comparison and makes no AI call.
+        if (event_types.CHARACTER_EDITED) {
+            eventSource.on(event_types.CHARACTER_EDITED, () => {
+                notifyCharacterCardChangeIfNeeded();
+                safelyUpdateCharacterBoosterPanel("캐릭터 카드 저장");
+            });
+        }
+
         [
             event_types.CONNECTION_PROFILE_CREATED,
             event_types.CONNECTION_PROFILE_UPDATED,
@@ -7938,6 +8394,7 @@ jQuery(async () => {
             closeCharacterEditorsForChatChange();
             updateGenrePrompt();
             resyncLastCountedMessageId();
+            notifyCharacterCardChangeIfNeeded();
             updateGenreAnchorPanel();
             const popupRoot = getActiveBoosterPopupRoot();
             if (popupRoot) {
