@@ -1461,6 +1461,11 @@ const GENRE_AUDIT_CODES = Object.freeze([
 const AUDIT_REASON_MAX_CHARS_KO = 80;
 const AUDIT_REASON_MAX_CHARS_EN = 140;
 const AUDIT_REASON_MAX_SENTENCES = 1;
+const AUDIT_RESPONSE_LENGTHS = Object.freeze({
+    genre: 2200,
+    character: 4000,
+    combined: 5200,
+});
 const GENRE_BOOST_CORRECTION_CODES = new Set([
     "primary_genre",
     "support_texture",
@@ -3384,7 +3389,8 @@ async function runGenreDriftAudit(
             scope,
             auditOutputLanguage
         );
-        const auditResponseLength = scope === "combined" ? 2400 : 1600;
+        const auditResponseLength =
+            AUDIT_RESPONSE_LENGTHS[scope] || AUDIT_RESPONSE_LENGTHS.combined;
         let result = await generateStructuredAnalysis({
             prompt: auditPrompt,
             transcript: auditTranscript,
