@@ -1790,6 +1790,17 @@ function extractJsonObject(rawResult, emptyMessage) {
     throw new Error(emptyMessage);
 }
 
+function normalizeSillyTavernJsonSchema(jsonSchema) {
+    if (!jsonSchema || typeof jsonSchema !== "object") return null;
+    const { schema, value, ...metadata } = jsonSchema;
+    const schemaValue = value || schema;
+    if (!schemaValue || typeof schemaValue !== "object") return null;
+    return {
+        ...metadata,
+        value: schemaValue,
+    };
+}
+
 function getConnectionProfileService() {
     return getContext()?.ConnectionManagerRequestService || null;
 }
@@ -1870,6 +1881,7 @@ async function generateWithBackgroundProfile({
     }
 
     const requestController = new AbortController();
+    const compatibleJsonSchema = normalizeSillyTavernJsonSchema(jsonSchema);
     const result = await withRequestTimeout(
         service.sendRequest(
             connectionSnapshot.profileId,
@@ -1892,8 +1904,8 @@ async function generateWithBackgroundProfile({
                 includeInstruct: true,
                 signal: requestController.signal,
             },
-            jsonSchema && connectionSnapshot.apiType === "openai"
-                ? { json_schema: jsonSchema }
+            compatibleJsonSchema && connectionSnapshot.apiType === "openai"
+                ? { json_schema: compatibleJsonSchema }
                 : {}
         ),
         "선택한 연결 프로필의 응답이 3분 안에 완료되지 않았습니다. 연결 상태를 확인해 주세요.",
@@ -1918,6 +1930,7 @@ async function generateStructuredAnalysis({
 }) {
     const stableConnection =
         connectionSnapshot || (await resolveBackgroundConnectionSnapshot());
+    const compatibleJsonSchema = normalizeSillyTavernJsonSchema(jsonSchema);
     try {
         const context = getContext();
         const systemInstruction = [
@@ -1948,6 +1961,7 @@ async function generateStructuredAnalysis({
                 context.generateRawData({
                     prompt: rawPrompt,
                     responseLength,
+                    jsonSchema: compatibleJsonSchema,
                 }),
                 "현재 채팅 연결의 백그라운드 요청이 3분 안에 완료되지 않았습니다."
             );
@@ -1965,6 +1979,7 @@ async function generateStructuredAnalysis({
                 context.generateRaw({
                     prompt: rawPrompt,
                     responseLength,
+                    jsonSchema: compatibleJsonSchema,
                 }),
                 "현재 채팅 연결의 백그라운드 요청이 3분 안에 완료되지 않았습니다."
             );
@@ -1988,15 +2003,6 @@ async function generateStructuredAnalysis({
             "IMPORTANT: Put the required JSON in the visible final answer/content field, not only in reasoning or thinking.",
             "Do not output Markdown fences or prose outside the JSON.",
         ].join("\n");
-        const compatibleJsonSchema = jsonSchema
-            ? (() => {
-                  const { schema, ...metadata } = jsonSchema;
-                  return {
-                      ...metadata,
-                      value: jsonSchema.value || schema,
-                  };
-              })()
-            : null;
         const result = await withRequestTimeout(
             context.generateQuietPrompt({
                 quietPrompt,
