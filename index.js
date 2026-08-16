@@ -1458,6 +1458,9 @@ const GENRE_AUDIT_CODES = Object.freeze([
     "character_interpretation",
     "repetition",
 ]);
+const AUDIT_REASON_MAX_CHARS_KO = 80;
+const AUDIT_REASON_MAX_CHARS_EN = 140;
+const AUDIT_REASON_MAX_SENTENCES = 1;
 const GENRE_BOOST_CORRECTION_CODES = new Set([
     "primary_genre",
     "support_texture",
@@ -1484,6 +1487,39 @@ function clipTranscriptMessage(value, maxChars = 0) {
     const headLength = Math.ceil(available * 0.65);
     const tailLength = Math.max(0, available - headLength);
     return `${text.slice(0, headLength)}${marker}${text.slice(-tailLength)}`;
+}
+
+function getAuditReasonMaxChars(outputLanguage = "ko") {
+    return outputLanguage === "en"
+        ? AUDIT_REASON_MAX_CHARS_EN
+        : AUDIT_REASON_MAX_CHARS_KO;
+}
+
+function normalizeAuditReason(value, outputLanguage = "ko") {
+    const maxChars = getAuditReasonMaxChars(outputLanguage);
+    let text = String(value || "")
+        .replace(/\[?CHAR_RESPONSE_?\d+\]?/gi, "최근 응답")
+        .replace(/\b(?:response|reply)\s*#?\d+\b/gi, "recent response")
+        .replace(/(?:응답|메시지)\s*#?\d+\s*번?/g, "최근 응답")
+        .replace(/\d+\s*번(?:째)?\s*(?:응답|메시지)/g, "최근 응답")
+        .replace(/\s+/g, " ")
+        .trim();
+    if (!text) return "";
+
+    const sentences = text.match(/[^.!?。！？]+[.!?。！？]?/g) || [text];
+    text = sentences
+        .slice(0, AUDIT_REASON_MAX_SENTENCES)
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
+    if (text.length <= maxChars) return text;
+
+    const clipped = text.slice(0, maxChars - 1).trimEnd();
+    const lastSpace = clipped.lastIndexOf(" ");
+    const safeCut = lastSpace >= Math.floor(maxChars * 0.65)
+        ? clipped.slice(0, lastSpace)
+        : clipped;
+    return `${safeCut.replace(/[.!?。！？,;:]+$/u, "")}…`;
 }
 
 function getRoleplayTranscript({
@@ -2369,7 +2405,11 @@ function getAuditOutputInstructions(selection) {
     ];
 }
 
-function buildGenreAuditPrompt(selection, scope = "combined") {
+function buildGenreAuditPrompt(
+    selection,
+    scope = "combined",
+    outputLanguage = ensureModuleSettings().outputLanguage
+) {
     const primaryFoundation = selection.primaryGenre
         ? getGenreProfileAuditStandard(getGenreProfile(selection.primaryGenre))
         : "";
@@ -2379,7 +2419,8 @@ function buildGenreAuditPrompt(selection, scope = "combined") {
           )
         : "";
     const characterBaseline = String(selection.characterBaseline || "").trim();
-    const reasonLanguage = ensureModuleSettings().outputLanguage === "en"
+    const reasonMaxChars = getAuditReasonMaxChars(outputLanguage);
+    const reasonLanguage = outputLanguage === "en"
         ? "Write every *_reason value in natural English."
         : "Write every *_reason value in natural Korean. Keep established proper nouns in their original form, but do not write the explanation in English.";
 
@@ -2481,19 +2522,20 @@ function buildGenreAuditPrompt(selection, scope = "combined") {
         selection.characterEnabled
             ? `character_focus_fields must contain zero to two IDs from this list: ${CHARACTER_BASELINE_FIELD_IDS.join(", ")}. Select only the stored baseline fields most directly useful for correcting character_consistency, character_interpretation, char_agency, or relationship. Return an empty array when no compact baseline is available or none of those character dimensions needs correction.`
             : "",
-        "For every requested audit dimension, return its *_reason as one concise user-facing sentence explaining the visible pattern that justified the rating. Ground it in the supplied responses and compact baseline when relevant. Do not mention response numbers, internal field names, scoring rules, JSON, or these instructions. Use unavailable or na only when the required baseline, interaction opportunity, or linkable scene state genuinely does not exist—not merely because evidence is weak.",
+        `For every requested audit dimension, return its *_reason as exactly one concise user-facing sentence of at most ${reasonMaxChars} characters. State only the visible pattern that justified the rating. Ground it in the supplied responses and compact baseline when relevant. Do not mention or quote response numbers, internal field names, scoring rules, JSON, or these instructions. Do not add advice or correction instructions to a reason. Use unavailable or na only when the required baseline, interaction opportunity, or linkable scene state genuinely does not exist—not merely because evidence is weak.`,
         reasonLanguage,
         "The values shown in the required JSON shape are structural placeholders, not suggested ratings. Determine every rating and evidence array independently from the supplied responses.",
         ...getAuditOutputInstructions(selection),
         "Keep the analysis brief. Do not restate the responses or explain every criterion one by one.",
         "Always reserve enough output space to finish with the required JSON object.",
-        "The JSON must be the final answer, not reasoning or thinking.",
+        "FINAL OUTPUT CONTRACT: After completing any hidden reasoning, do not stop. The visible final response must begin with { and contain the complete required JSON object. Do not place the only diagnosis in reasoning or thinking. Do not output Markdown, headings, commentary, or prose outside the JSON.",
     ]
         .filter(Boolean)
         .join("\n");
 }
 
-function buildGenreAuditJsonSchema(scope = "combined") {
+function buildGenreAuditJsonSchema(scope = "combined", outputLanguage = "ko") {
+    const reasonMaxChars = getAuditReasonMaxChars(outputLanguage);
     const properties = {
         primary_genre: { type: "string", enum: ["present", "weak", "na"] },
         primary_genre_evidence: {
@@ -2501,7 +2543,7 @@ function buildGenreAuditJsonSchema(scope = "combined") {
             maxItems: AUDIT_EVIDENCE_MAX_ITEMS,
             items: { type: "integer" },
         },
-        primary_genre_reason: { type: "string" },
+        primary_genre_reason: { type: "string", maxLength: reasonMaxChars },
         genre_expression: { type: "string", enum: ["present", "weak", "na"] },
         genre_expression_evidence: {
             type: "array",
@@ -2513,7 +2555,7 @@ function buildGenreAuditJsonSchema(scope = "combined") {
             maxItems: AUDIT_EVIDENCE_MAX_ITEMS,
             items: { type: "integer" },
         },
-        genre_expression_reason: { type: "string" },
+        genre_expression_reason: { type: "string", maxLength: reasonMaxChars },
         support_texture: {
             type: "string",
             enum: ["present", "dormant", "weak", "na"],
@@ -2529,7 +2571,7 @@ function buildGenreAuditJsonSchema(scope = "combined") {
             items: { type: "integer" },
         },
         support_texture_identifiable: { type: "boolean" },
-        support_texture_reason: { type: "string" },
+        support_texture_reason: { type: "string", maxLength: reasonMaxChars },
         scene_density: { type: "string", enum: ["present", "weak", "na"] },
         scene_density_evidence: {
             type: "array",
@@ -2541,7 +2583,7 @@ function buildGenreAuditJsonSchema(scope = "combined") {
             maxItems: AUDIT_EVIDENCE_MAX_ITEMS,
             items: { type: "integer" },
         },
-        scene_density_reason: { type: "string" },
+        scene_density_reason: { type: "string", maxLength: reasonMaxChars },
         character_consistency: {
             type: "string",
             enum: ["stable", "drifted", "unavailable", "na"],
@@ -2552,7 +2594,7 @@ function buildGenreAuditJsonSchema(scope = "combined") {
             items: { type: "integer" },
         },
         character_consistency_severe: { type: "boolean" },
-        character_consistency_reason: { type: "string" },
+        character_consistency_reason: { type: "string", maxLength: reasonMaxChars },
         character_interpretation: {
             type: "string",
             enum: ["stable", "biased", "unavailable", "na"],
@@ -2562,7 +2604,7 @@ function buildGenreAuditJsonSchema(scope = "combined") {
             maxItems: AUDIT_EVIDENCE_MAX_ITEMS,
             items: { type: "integer" },
         },
-        character_interpretation_reason: { type: "string" },
+        character_interpretation_reason: { type: "string", maxLength: reasonMaxChars },
         character_correction: { type: "string" },
         character_focus_fields: {
             type: "array",
@@ -2580,7 +2622,7 @@ function buildGenreAuditJsonSchema(scope = "combined") {
             maxItems: AUDIT_EVIDENCE_MAX_ITEMS,
             items: { type: "integer" },
         },
-        char_agency_reason: { type: "string" },
+        char_agency_reason: { type: "string", maxLength: reasonMaxChars },
         relationship: { type: "string", enum: ["present", "weak", "na"] },
         relationship_evidence: {
             type: "array",
@@ -2592,7 +2634,7 @@ function buildGenreAuditJsonSchema(scope = "combined") {
             maxItems: AUDIT_EVIDENCE_MAX_ITEMS,
             items: { type: "integer" },
         },
-        relationship_reason: { type: "string" },
+        relationship_reason: { type: "string", maxLength: reasonMaxChars },
         continuity: { type: "string", enum: ["present", "weak", "na"] },
         continuity_evidence: {
             type: "array",
@@ -2605,7 +2647,7 @@ function buildGenreAuditJsonSchema(scope = "combined") {
             items: { type: "integer" },
         },
         continuity_severe: { type: "boolean" },
-        continuity_reason: { type: "string" },
+        continuity_reason: { type: "string", maxLength: reasonMaxChars },
         repetition: { type: "boolean" },
         repetition_evidence: {
             type: "array",
@@ -2613,7 +2655,7 @@ function buildGenreAuditJsonSchema(scope = "combined") {
             items: { type: "integer" },
         },
         repetition_exact: { type: "boolean" },
-        repetition_reason: { type: "string" },
+        repetition_reason: { type: "string", maxLength: reasonMaxChars },
     };
     const genreKeys = [
         "primary_genre",
@@ -3042,8 +3084,6 @@ function parseGenreAuditResult(
             parsed.repetition === true &&
             evidence.repetition.length >= repetitionEvidenceMinimum,
     };
-    const normalizeReason = (value) =>
-        String(value || "").replace(/\s+/g, " ").trim().slice(0, 300);
     const fallbackReasons = outputLanguage === "en"
         ? {
               primary_genre: "The primary genre's distinctive narrative logic was not consistently visible across the recent responses.",
@@ -3070,16 +3110,16 @@ function parseGenreAuditResult(
               repetition: "같은 표현이나 관계 반응을 기계적으로 반복한 흐름은 확인되지 않았어요.",
           };
     const rawReasons = {
-        primary_genre: normalizeReason(parsed.primary_genre_reason),
-        genre_expression: normalizeReason(parsed.genre_expression_reason),
-        support_texture: normalizeReason(parsed.support_texture_reason),
-        scene_density: normalizeReason(parsed.scene_density_reason),
-        character_consistency: normalizeReason(parsed.character_consistency_reason),
-        character_interpretation: normalizeReason(parsed.character_interpretation_reason),
-        char_agency: normalizeReason(parsed.char_agency_reason),
-        relationship: normalizeReason(parsed.relationship_reason),
-        continuity: normalizeReason(parsed.continuity_reason),
-        repetition: normalizeReason(parsed.repetition_reason),
+        primary_genre: normalizeAuditReason(parsed.primary_genre_reason, outputLanguage),
+        genre_expression: normalizeAuditReason(parsed.genre_expression_reason, outputLanguage),
+        support_texture: normalizeAuditReason(parsed.support_texture_reason, outputLanguage),
+        scene_density: normalizeAuditReason(parsed.scene_density_reason, outputLanguage),
+        character_consistency: normalizeAuditReason(parsed.character_consistency_reason, outputLanguage),
+        character_interpretation: normalizeAuditReason(parsed.character_interpretation_reason, outputLanguage),
+        char_agency: normalizeAuditReason(parsed.char_agency_reason, outputLanguage),
+        relationship: normalizeAuditReason(parsed.relationship_reason, outputLanguage),
+        continuity: normalizeAuditReason(parsed.continuity_reason, outputLanguage),
+        repetition: normalizeAuditReason(parsed.repetition_reason, outputLanguage),
     };
     const rawRatings = {
         primary_genre: parsed.primary_genre,
@@ -3328,8 +3368,16 @@ async function runGenreDriftAudit(
         connectionSnapshot = await resolveBackgroundConnectionSnapshot(
             selectedProfileId
         );
-        const auditPrompt = buildGenreAuditPrompt(selection, scope);
-        const auditJsonSchema = buildGenreAuditJsonSchema(scope);
+        const auditOutputLanguage = ensureModuleSettings().outputLanguage;
+        const auditPrompt = buildGenreAuditPrompt(
+            selection,
+            scope,
+            auditOutputLanguage
+        );
+        const auditJsonSchema = buildGenreAuditJsonSchema(
+            scope,
+            auditOutputLanguage
+        );
         const auditResponseLength = scope === "combined" ? 2400 : 1600;
         let result = await generateStructuredAnalysis({
             prompt: auditPrompt,
@@ -3345,7 +3393,7 @@ async function runGenreDriftAudit(
                 Boolean(selection.supportGenre),
                 reviewedResponses,
                 scope,
-                ensureModuleSettings().outputLanguage
+                auditOutputLanguage
             );
         } catch (error) {
             if (error?.code !== "STORYBOOSTER_INCOMPLETE_RATINGS") {
@@ -3377,7 +3425,7 @@ async function runGenreDriftAudit(
                 Boolean(selection.supportGenre),
                 reviewedResponses,
                 scope,
-                ensureModuleSettings().outputLanguage
+                auditOutputLanguage
             );
         }
         const {
