@@ -1614,6 +1614,16 @@ function normalizeGeneratedText(value) {
             .join("\n")
             .trim();
     }
+    // ConnectionManagerRequestService parses structured Chat Completion
+    // responses before returning them. Preserve that object as JSON instead of
+    // falling through to a model's reasoning text.
+    if (value && typeof value === "object") {
+        try {
+            return JSON.stringify(value);
+        } catch {
+            return "";
+        }
+    }
     return "";
 }
 
@@ -1755,6 +1765,7 @@ function createBackgroundConnectionSnapshot(profile = null) {
             profileId: "",
             profileName: "현재 채팅 연결",
             model: "",
+            apiType: "",
         });
     }
     return Object.freeze({
@@ -1762,6 +1773,7 @@ function createBackgroundConnectionSnapshot(profile = null) {
         profileId: String(profile.id),
         profileName: String(profile.name || "이름 없는 프로필"),
         model: String(profile.model || ""),
+        apiType: String(profile.apiType || ""),
     });
 }
 
@@ -1795,13 +1807,21 @@ async function resolveBackgroundConnectionSnapshot(
         error.code = "STORYBOOSTER_PROFILE_NOT_FOUND";
         throw error;
     }
-    return createBackgroundConnectionSnapshot(profile);
+    const selectedApi =
+        typeof service.validateProfile === "function"
+            ? service.validateProfile(profile)?.selected
+            : getContext()?.CONNECT_API_MAP?.[profile.api]?.selected;
+    return createBackgroundConnectionSnapshot({
+        ...profile,
+        apiType: selectedApi,
+    });
 }
 
 async function generateWithBackgroundProfile({
     prompt,
     transcript,
     responseLength,
+    jsonSchema,
     connectionSnapshot,
 }) {
     if (connectionSnapshot?.source !== "profile") return null;
@@ -1835,7 +1855,10 @@ async function generateWithBackgroundProfile({
                 includePreset: true,
                 includeInstruct: true,
                 signal: requestController.signal,
-            }
+            },
+            jsonSchema && connectionSnapshot.apiType === "openai"
+                ? { json_schema: jsonSchema }
+                : {}
         ),
         "선택한 연결 프로필의 응답이 3분 안에 완료되지 않았습니다. 연결 상태를 확인해 주세요.",
         BACKGROUND_REQUEST_TIMEOUT_MS,
@@ -1877,6 +1900,7 @@ async function generateStructuredAnalysis({
             ].join("\n"),
             transcript,
             responseLength,
+            jsonSchema,
             connectionSnapshot: stableConnection,
         });
         if (profileResult !== null) return profileResult;
@@ -2779,7 +2803,26 @@ function parseGenreAuditResult(
             "repetition_evidence",
         ].every((key) => Array.isArray(parsed[key]));
     if (!valid) {
-        throw new Error("Story audit returned incomplete ratings.");
+        const expectedKeys =
+            scope === "genre"
+                ? Object.keys(genreDefaults)
+                : scope === "character"
+                  ? Object.keys(characterDefaults)
+                  : [
+                        ...Object.keys(genreDefaults),
+                        ...Object.keys(characterDefaults),
+                    ];
+        const missingFields = expectedKeys.filter(
+            (key) => !Object.hasOwn(extracted, key)
+        );
+        const error = new Error(
+            missingFields.length
+                ? `진단 결과에서 필수 항목이 누락되었습니다: ${missingFields.join(", ")}`
+                : "진단 결과의 상태값 또는 자료 형식이 올바르지 않습니다."
+        );
+        error.code = "STORYBOOSTER_INCOMPLETE_RATINGS";
+        error.missingFields = missingFields;
+        throw error;
     }
 
     const reviewedResponses = Math.max(
@@ -3285,20 +3328,58 @@ async function runGenreDriftAudit(
         connectionSnapshot = await resolveBackgroundConnectionSnapshot(
             selectedProfileId
         );
-        const result = await generateStructuredAnalysis({
-            prompt: buildGenreAuditPrompt(selection, scope),
+        const auditPrompt = buildGenreAuditPrompt(selection, scope);
+        const auditJsonSchema = buildGenreAuditJsonSchema(scope);
+        const auditResponseLength = scope === "combined" ? 2400 : 1600;
+        let result = await generateStructuredAnalysis({
+            prompt: auditPrompt,
             transcript: auditTranscript,
-            jsonSchema: buildGenreAuditJsonSchema(scope),
-            responseLength: scope === "combined" ? 2400 : 1600,
+            jsonSchema: auditJsonSchema,
+            responseLength: auditResponseLength,
             connectionSnapshot,
         });
-        const auditResult = parseGenreAuditResult(
-            result,
-            Boolean(selection.supportGenre),
-            reviewedResponses,
-            scope,
-            ensureModuleSettings().outputLanguage
-        );
+        let auditResult;
+        try {
+            auditResult = parseGenreAuditResult(
+                result,
+                Boolean(selection.supportGenre),
+                reviewedResponses,
+                scope,
+                ensureModuleSettings().outputLanguage
+            );
+        } catch (error) {
+            if (error?.code !== "STORYBOOSTER_INCOMPLETE_RATINGS") {
+                throw error;
+            }
+            console.warn(
+                `[${MODULE_NAME}] ${auditLabel} 진단 형식이 불완전해 한 번 다시 요청합니다.`,
+                error?.missingFields || []
+            );
+            if (getCurrentChatId() === chatId) {
+                showGenreAuditToast(
+                    "info",
+                    `🔄 ${auditLabel} 진단 형식을 보정해 한 번 다시 확인하고 있어요…`
+                );
+            }
+            result = await generateStructuredAnalysis({
+                prompt: [
+                    auditPrompt,
+                    "RETRY REQUIREMENT: The previous result omitted or mistyped one or more required JSON fields. Do not write a prose analysis or place the result only in reasoning. Emit the complete required JSON object in the final answer immediately, with every exact key and type.",
+                ].join("\n"),
+                transcript: auditTranscript,
+                jsonSchema: auditJsonSchema,
+                responseLength: Math.max(3200, auditResponseLength),
+                retryOnLength: false,
+                connectionSnapshot,
+            });
+            auditResult = parseGenreAuditResult(
+                result,
+                Boolean(selection.supportGenre),
+                reviewedResponses,
+                scope,
+                ensureModuleSettings().outputLanguage
+            );
+        }
         const {
             ratings,
             correctionCodes,
