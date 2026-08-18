@@ -644,7 +644,7 @@ function ensureModuleSettings() {
                 plot: true,
             },
             characterBaselines: {},
-            settingsSchemaVersion: 17,
+            settingsSchemaVersion: 18,
         };
     }
     if (!extension_settings[MODULE_NAME].chats) {
@@ -777,6 +777,23 @@ function ensureModuleSettings() {
             extension_settings[MODULE_NAME].characterBaselines[key] = normalized;
         }
         extension_settings[MODULE_NAME].settingsSchemaVersion = 17;
+        saveSettingsDebounced();
+    }
+    if (previousSchemaVersion < 18) {
+        for (const state of Object.values(
+            extension_settings[MODULE_NAME].chats
+        )) {
+            if (
+                !state?.characterBoost ||
+                typeof state.characterBoost !== "object"
+            ) {
+                continue;
+            }
+            // This legacy flag was superseded by the global feature toggle and
+            // current anchor readiness. It no longer controls any behavior.
+            delete state.characterBoost.enabled;
+        }
+        extension_settings[MODULE_NAME].settingsSchemaVersion = 18;
         saveSettingsDebounced();
     }
     if (
@@ -1047,9 +1064,8 @@ function ensureChatState(chatId = getCurrentChatId()) {
 
 function ensureCharacterBoostState(state) {
     if (!state.characterBoost || typeof state.characterBoost !== "object") {
-        state.characterBoost = { enabled: false };
+        state.characterBoost = {};
     }
-    state.characterBoost.enabled = state.characterBoost.enabled === true;
     return state.characterBoost;
 }
 
@@ -1461,6 +1477,11 @@ const GENRE_AUDIT_CODES = Object.freeze([
 const AUDIT_REASON_MAX_CHARS_KO = 80;
 const AUDIT_REASON_MAX_CHARS_EN = 140;
 const AUDIT_REASON_MAX_SENTENCES = 1;
+// Keep the requested reason concise, but let structured-output providers
+// finish the sentence instead of clipping it at the exact target length.
+const AUDIT_REASON_SCHEMA_MAX_CHARS_KO = 240;
+const AUDIT_REASON_SCHEMA_MAX_CHARS_EN = 320;
+const AUDIT_REASON_DISPLAY_HARD_LIMIT = 600;
 const AUDIT_RESPONSE_LENGTHS = Object.freeze({
     genre: 2200,
     character: 4000,
@@ -1500,13 +1521,26 @@ function getAuditReasonMaxChars(outputLanguage = "ko") {
         : AUDIT_REASON_MAX_CHARS_KO;
 }
 
+function getAuditReasonSchemaMaxChars(outputLanguage = "ko") {
+    return outputLanguage === "en"
+        ? AUDIT_REASON_SCHEMA_MAX_CHARS_EN
+        : AUDIT_REASON_SCHEMA_MAX_CHARS_KO;
+}
+
 function normalizeAuditReason(value, outputLanguage = "ko") {
-    const maxChars = getAuditReasonMaxChars(outputLanguage);
     let text = String(value || "")
         .replace(/\[?CHAR_RESPONSE_?\d+\]?/gi, "최근 응답")
-        .replace(/\b(?:response|reply)\s*#?\d+\b/gi, "recent response")
+        .replace(
+            /\b(?:responses?|repl(?:y|ies))\s*#?\d+(?:\s*[,·ㆍ、/&-]\s*#?\d+)*\b/gi,
+            "recent responses"
+        )
+        .replace(
+            /\d+(?:\s*[·ㆍ,，、/&-]\s*\d+)+\s*번(?:째)?/g,
+            "최근 응답"
+        )
         .replace(/(?:응답|메시지)\s*#?\d+\s*번?/g, "최근 응답")
         .replace(/\d+\s*번(?:째)?\s*(?:응답|메시지)/g, "최근 응답")
+        .replace(/\d+\s*번(?:째)?/g, "최근 응답")
         .replace(/\s+/g, " ")
         .trim();
     if (!text) return "";
@@ -1517,13 +1551,16 @@ function normalizeAuditReason(value, outputLanguage = "ko") {
         .join(" ")
         .replace(/\s+/g, " ")
         .trim();
-    if (text.length <= maxChars) return text;
+    if (text.length <= AUDIT_REASON_DISPLAY_HARD_LIMIT) return text;
 
-    const clipped = text.slice(0, maxChars - 1).trimEnd();
+    const clipped = text
+        .slice(0, AUDIT_REASON_DISPLAY_HARD_LIMIT - 1)
+        .trimEnd();
     const lastSpace = clipped.lastIndexOf(" ");
-    const safeCut = lastSpace >= Math.floor(maxChars * 0.65)
-        ? clipped.slice(0, lastSpace)
-        : clipped;
+    const safeCut =
+        lastSpace >= Math.floor(AUDIT_REASON_DISPLAY_HARD_LIMIT * 0.8)
+            ? clipped.slice(0, lastSpace)
+            : clipped;
     return `${safeCut.replace(/[.!?。！？,;:]+$/u, "")}…`;
 }
 
@@ -2546,7 +2583,7 @@ function buildGenreAuditPrompt(
 }
 
 function buildGenreAuditJsonSchema(scope = "combined", outputLanguage = "ko") {
-    const reasonMaxChars = getAuditReasonMaxChars(outputLanguage);
+    const reasonMaxChars = getAuditReasonSchemaMaxChars(outputLanguage);
     const properties = {
         primary_genre: { type: "string", enum: ["present", "weak", "na"] },
         primary_genre_evidence: {
@@ -7351,6 +7388,8 @@ function changeBoosterFeature(feature, enabled) {
     saveSettingsDebounced();
 }
 
+const GENRE_RECOMMENDATION_NO_SUPPORT_ID = "none";
+
 function buildGenreRecommendationPrompt(
     availableGenres = getAvailableGenres(),
     outputLanguage = ensureModuleSettings().outputLanguage
@@ -7379,8 +7418,8 @@ function buildGenreRecommendationPrompt(
         "GENRE CATALOG:",
         genreCatalog,
         outputLanguage === "en"
-            ? 'Return JSON only: {"primaryId":"catalog_id","supportId":"catalog_id_or_empty_string","reason":"A concise recommendation reason in natural English, 2–3 sentences"}.'
-            : 'Return JSON only: {"primaryId":"catalog_id","supportId":"catalog_id_or_empty_string","reason":"자연스러운 한국어로 간결한 추천 이유 2~3문장"}. Do not write the reason in English except for established proper nouns.',
+            ? 'Return JSON only: {"primaryId":"catalog_id","supportId":"catalog_id_or_none","reason":"A concise recommendation reason in natural English, 2–3 sentences"}. Use "none" when no supporting genre is appropriate.'
+            : 'Return JSON only: {"primaryId":"catalog_id","supportId":"catalog_id_or_none","reason":"자연스러운 한국어로 간결한 추천 이유 2~3문장"}. 보조 장르가 필요하지 않으면 supportId에 "none"을 사용하세요. Do not write the reason in English except for established proper nouns.',
         "The JSON must be the final answer, not reasoning or thinking.",
     ].join("\n");
 }
@@ -7399,11 +7438,13 @@ function parseGenreRecommendationResult(
         throw new Error("Recommended primary genre is not in the catalog.");
     }
 
+    const rawSupportId =
+        typeof parsed.supportId === "string" ? parsed.supportId.trim() : "";
     const supportId =
-        typeof parsed.supportId === "string" &&
-        availableIds.has(parsed.supportId) &&
-        parsed.supportId !== parsed.primaryId
-            ? parsed.supportId
+        rawSupportId !== GENRE_RECOMMENDATION_NO_SUPPORT_ID &&
+        availableIds.has(rawSupportId) &&
+        rawSupportId !== parsed.primaryId
+            ? rawSupportId
             : "";
 
     return {
@@ -7458,7 +7499,10 @@ async function generateGenreRecommendation() {
                         },
                         supportId: {
                             type: "string",
-                            enum: ["", ...availableGenreIds],
+                            enum: [
+                                GENRE_RECOMMENDATION_NO_SUPPORT_ID,
+                                ...availableGenreIds,
+                            ],
                         },
                         reason: {
                             type: "string",
