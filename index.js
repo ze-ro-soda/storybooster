@@ -28,6 +28,7 @@ import {
 } from "../../../../script.js";
 
 const MODULE_NAME = "rp-genre-plot-booster";
+const STORYBOOSTER_VERSION = "1.1.0";
 const GENRE_PROMPT_KEY = "rp_genre_boost";
 const PLOT_PROMPT_KEY = "rp_plot_trigger";
 const DEFAULT_AUDIT_INTERVAL = 10;
@@ -71,8 +72,14 @@ const PLOT_MESSAGE_MAX_CHARS = 4500;
 const GENRE_RECOMMENDATION_MESSAGE_LIMIT = 10;
 const GENRE_RECOMMENDATION_MESSAGE_MAX_CHARS = 3500;
 const BACKGROUND_REQUEST_TIMEOUT_MS = 180000;
+const ERROR_LOG_STORAGE_KEY = `${MODULE_NAME}:error-diagnostic-log`;
+const MAX_ERROR_LOG_ENTRIES = 3;
 
 let activeBoosterPopupRoot = null;
+let currentStoryInjectionText = "";
+let currentPlotInjectionText = "";
+const recordedErrorObjects = new WeakSet();
+let lastErrorLogHintAt = 0;
 
 function getActiveBoosterPopupRoot() {
     if (activeBoosterPopupRoot?.isConnected) return activeBoosterPopupRoot;
@@ -87,6 +94,562 @@ function getBoosterElement(id) {
 
 function getBoosterElements(selector) {
     return getActiveBoosterPopupRoot()?.querySelectorAll(selector) || [];
+}
+
+function getDiagnosticSessionStorage() {
+    try {
+        return globalThis.sessionStorage || null;
+    } catch {
+        return null;
+    }
+}
+
+function sanitizeDiagnosticText(value, maxChars = 500) {
+    return String(value ?? "")
+        .replace(
+            /<(character_card|character_baseline|roleplay_transcript|plot_event|display_anchor)[^>]*>[\s\S]*?<\/\1>/gi,
+            "<$1>[내용 제거]</$1>"
+        )
+        .replace(
+            /"(?:content|prompt|transcript|characterCard|character_card|rawResponse|raw_response)"\s*:\s*"(?:\\.|[^"\\])*"/gi,
+            '"[원문 필드]":"[내용 제거]"'
+        )
+        .replace(
+            /(?:["']?(?:content|prompt|transcript|characterCard|character_card|rawResponse|raw_response)["']?)\s*:\s*'(?:\\.|[^'\\])*'/gi,
+            '"[원문 필드]":"[내용 제거]"'
+        )
+        .replace(
+            /(?:["']?(?:content|prompt|transcript|characterCard|character_card|rawResponse|raw_response)["']?)\s*:\s*`[\s\S]*?`/gi,
+            '"[원문 필드]":"[내용 제거]"'
+        )
+        .replace(/\bAIza[A-Za-z0-9_-]{20,}\b/g, "[인증 정보 제거]")
+        .replace(
+            /\b(?:sk|gsk|xai)[-_][A-Za-z0-9_-]{8,}\b/g,
+            "[인증 정보 제거]"
+        )
+        .replace(
+            /\b(?:hf_|ghp_|github_pat_)[A-Za-z0-9_-]{12,}\b/g,
+            "[인증 정보 제거]"
+        )
+        .replace(/\bBearer\s+[A-Za-z0-9._~+\/-]+=*/gi, "Bearer [인증 정보 제거]")
+        .replace(
+            /(authorization|api[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token|secret|password)\s*[:=]\s*[^\s,;]+/gi,
+            "$1=[인증 정보 제거]"
+        )
+        .replace(
+            /\b[A-Z]:\\(?:[^\\/:*?"<>|\r\n]+\\)*[^\\/:*?"<>|\r\n]*/gi,
+            "[로컬 경로 제거]"
+        )
+        .replace(/\/(?:home|Users|data\/data)\/[^\s"'<>]+/g, "[로컬 경로 제거]")
+        .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[이메일 제거]")
+        .replace(/https?:\/\/[^\s"')]+/gi, "[접속 주소 제거]")
+        .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, " ")
+        .trim()
+        .slice(0, maxChars);
+}
+
+function getSillyTavernDiagnosticVersion() {
+    let context = null;
+    try {
+        context = getContext?.();
+    } catch {
+        context = null;
+    }
+    return sanitizeDiagnosticText(
+        context?.version ||
+            globalThis.SillyTavern?.version ||
+            globalThis.power_user?.version ||
+            "확인 불가",
+        80
+    );
+}
+
+function getErrorDiagnosticStage(error, fallback = "unknown") {
+    const code = String(error?.code || "").toUpperCase();
+    if (code.includes("TIMEOUT")) return "request_timeout";
+    if (code.includes("PROFILE")) return "connection_profile";
+    if (code.includes("TRUNCATED") || code.includes("INCOMPLETE_JSON")) {
+        return "response_completion";
+    }
+    if (
+        code.includes("INCOMPLETE_RATINGS") ||
+        code.includes("BASELINE_INCOMPLETE")
+    ) {
+        return "required_field_validation";
+    }
+    if (code.includes("PARSE") || error instanceof SyntaxError) return "json_parsing";
+    return fallback;
+}
+
+function getErrorDiagnosticLocation(error) {
+    const stack = String(error?.stack || "");
+    const matches = [...stack.matchAll(/(?:index\.js|storybooster[^\s/\\]*\.js):(\d+):(\d+)/gi)]
+        .slice(0, 3)
+        .map((match) => `index.js:${match[1]}:${match[2]}`);
+    return [...new Set(matches)].join(", ");
+}
+
+function describeDiagnosticValue(value, prefix = "", depth = 0) {
+    if (!value || typeof value !== "object" || depth > 1) return [];
+    const entries = [];
+    for (const [key, child] of Object.entries(value).slice(0, 40)) {
+        const safeKey = /^[A-Za-z0-9_.-]{1,80}$/.test(key)
+            ? key
+            : "[비표준 필드]";
+        const path = prefix ? `${prefix}.${safeKey}` : safeKey;
+        if (Array.isArray(child)) {
+            entries.push(`${path}:array(${child.length})`);
+        } else if (child && typeof child === "object") {
+            entries.push(`${path}:object`);
+            entries.push(...describeDiagnosticValue(child, path, depth + 1));
+        } else if (typeof child === "string") {
+            entries.push(`${path}:string(${child.length})`);
+        } else {
+            entries.push(`${path}:${typeof child}`);
+        }
+    }
+    return entries;
+}
+
+function getGenerationFinishReason(data) {
+    return sanitizeDiagnosticText(
+        data?.finish_reason ||
+            data?.finishReason ||
+            data?.choices?.[0]?.finish_reason ||
+            data?.choices?.[0]?.finishReason ||
+            data?.candidates?.[0]?.finishReason ||
+            "",
+        80
+    );
+}
+
+function createOperationDiagnostic({
+    task = "unknown",
+    responseLength = 0,
+    connectionMode = "main",
+} = {}) {
+    return {
+        operationId: `SB-${Date.now().toString(36)}-${Math.random()
+            .toString(36)
+            .slice(2, 6)}`.toUpperCase(),
+        task: sanitizeDiagnosticText(task, 80) || "unknown",
+        startedAt: Date.now(),
+        responseLength: Number(responseLength) || 0,
+        connectionMode: connectionMode === "profile" ? "별도 연결" : "현재 채팅 연결",
+        model: "",
+        apiType: "",
+        method: "",
+        requestCount: 0,
+        retryCount: 0,
+        responseChars: 0,
+        responseFormat: "",
+        finishReason: "",
+        returnedFields: [],
+    };
+}
+
+function updateOperationDiagnosticConnection(diagnostic, connectionSnapshot) {
+    if (!diagnostic) return;
+    let context = null;
+    try {
+        context = getContext?.();
+    } catch {
+        context = null;
+    }
+    diagnostic.connectionMode =
+        connectionSnapshot?.source === "profile" ? "별도 연결" : "현재 채팅 연결";
+    diagnostic.model = sanitizeDiagnosticText(
+        connectionSnapshot?.model ||
+            context?.chatCompletionSettings?.model ||
+            context?.chatCompletionSettings?.openai_model ||
+            globalThis.oai_settings?.openai_model ||
+            globalThis.textgenerationwebui_settings?.custom_model ||
+            "",
+        120
+    );
+    diagnostic.apiType = sanitizeDiagnosticText(
+        connectionSnapshot?.apiType ||
+            context?.mainApi ||
+            globalThis.main_api ||
+            "",
+        80
+    );
+}
+
+function captureOperationResponseDiagnostic(diagnostic, data, text, method) {
+    if (!diagnostic) return;
+    diagnostic.method = sanitizeDiagnosticText(method || "", 80);
+    diagnostic.responseChars = String(text || "").length;
+    diagnostic.finishReason = getGenerationFinishReason(data);
+    const direct = String(text || "").trim();
+    diagnostic.responseFormat = direct.startsWith("{")
+        ? "json-like"
+        : direct.startsWith("```")
+          ? "markdown-fence"
+          : typeof data === "object" && data !== null
+            ? "provider-object"
+            : typeof data;
+    try {
+        const parsed = extractJsonObject(text, "");
+        diagnostic.returnedFields = describeDiagnosticValue(parsed);
+    } catch {
+        diagnostic.returnedFields = [];
+    }
+}
+
+function readStoryBoosterErrorLog() {
+    const storage = getDiagnosticSessionStorage();
+    if (!storage) return [];
+    try {
+        const parsed = JSON.parse(storage.getItem(ERROR_LOG_STORAGE_KEY) || "[]");
+        return Array.isArray(parsed) ? parsed.slice(0, MAX_ERROR_LOG_ENTRIES) : [];
+    } catch {
+        return [];
+    }
+}
+
+function writeStoryBoosterErrorLog(entries) {
+    const storage = getDiagnosticSessionStorage();
+    if (!storage) return;
+    try {
+        storage.setItem(
+            ERROR_LOG_STORAGE_KEY,
+            JSON.stringify(entries.slice(0, MAX_ERROR_LOG_ENTRIES))
+        );
+    } catch (error) {
+        console.warn(`[${MODULE_NAME}] could not store error diagnostic log`, error);
+    }
+}
+
+function refreshStoryBoosterErrorLogBadge() {
+    const badge = document.getElementById("rp-error-log-count");
+    if (!badge) return;
+    const count = readStoryBoosterErrorLog().length;
+    badge.textContent = String(count);
+    badge.hidden = count === 0;
+}
+
+function recordStoryBoosterError(error, details = {}) {
+    if (error && typeof error === "object") {
+        if (recordedErrorObjects.has(error)) return null;
+        recordedErrorObjects.add(error);
+    }
+    const diagnostic = details.diagnostic || {};
+    const missingFields = [
+        ...(Array.isArray(details.missingFields) ? details.missingFields : []),
+        ...(Array.isArray(error?.missingFields) ? error.missingFields : []),
+    ]
+        .map((item) => sanitizeDiagnosticText(item, 100))
+        .filter(Boolean);
+    const invalidFields = [
+        ...(Array.isArray(details.invalidFields) ? details.invalidFields : []),
+        ...(Array.isArray(error?.invalidFields) ? error.invalidFields : []),
+    ]
+        .map((item) => sanitizeDiagnosticText(item, 100))
+        .filter(Boolean);
+    const errorMessage = sanitizeDiagnosticText(
+        error?.message || details.message || String(error || "알 수 없는 오류"),
+        700
+    );
+    const task = sanitizeDiagnosticText(details.task || diagnostic.task || "unknown", 80);
+    const stage = sanitizeDiagnosticText(
+        details.stage || getErrorDiagnosticStage(error, "unknown"),
+        80
+    );
+    const code = sanitizeDiagnosticText(error?.code || details.code || "", 100);
+    const fingerprint = [task, stage, code, errorMessage].join("|");
+    const now = Date.now();
+    const entry = {
+        id:
+            diagnostic.operationId ||
+            `SB-${now.toString(36)}-${Math.random().toString(36).slice(2, 6)}`.toUpperCase(),
+        firstOccurredAt: now,
+        lastOccurredAt: now,
+        count: 1,
+        storyBoosterVersion: STORYBOOSTER_VERSION,
+        sillyTavernVersion: getSillyTavernDiagnosticVersion(),
+        task,
+        stage,
+        connectionMode: sanitizeDiagnosticText(
+            details.connectionMode || diagnostic.connectionMode || "확인 불가",
+            40
+        ),
+        model: sanitizeDiagnosticText(details.model || diagnostic.model || "확인 불가", 120),
+        apiType: sanitizeDiagnosticText(details.apiType || diagnostic.apiType || "확인 불가", 80),
+        method: sanitizeDiagnosticText(details.method || diagnostic.method || "확인 불가", 80),
+        responseLength: Number(details.responseLength || diagnostic.responseLength) || 0,
+        timeoutMs: Number(details.timeoutMs || BACKGROUND_REQUEST_TIMEOUT_MS) || 0,
+        requestCount: Number(details.requestCount || diagnostic.requestCount) || 0,
+        retryCount: Number(details.retryCount || diagnostic.retryCount) || 0,
+        httpStatus: sanitizeDiagnosticText(
+            error?.status || error?.statusCode || details.httpStatus || "",
+            40
+        ),
+        finishReason: sanitizeDiagnosticText(
+            details.finishReason || diagnostic.finishReason || "",
+            80
+        ),
+        errorCode: code,
+        errorMessage,
+        responseChars: Number(details.responseChars || diagnostic.responseChars) || 0,
+        responseFormat: sanitizeDiagnosticText(
+            details.responseFormat || diagnostic.responseFormat || "",
+            80
+        ),
+        returnedFields: [
+            ...(Array.isArray(details.returnedFields) ? details.returnedFields : []),
+            ...(Array.isArray(diagnostic.returnedFields)
+                ? diagnostic.returnedFields
+                : []),
+        ]
+            .map((item) => sanitizeDiagnosticText(item, 120))
+            .filter(Boolean)
+            .slice(0, 40),
+        missingFields: [...new Set(missingFields)].slice(0, 30),
+        invalidFields: [...new Set(invalidFields)].slice(0, 30),
+        location: getErrorDiagnosticLocation(error),
+        fingerprint,
+    };
+    const entries = readStoryBoosterErrorLog();
+    const existingIndex = entries.findIndex((item) => item?.fingerprint === fingerprint);
+    if (existingIndex >= 0) {
+        const existing = entries.splice(existingIndex, 1)[0];
+        if (existing.id === entry.id) {
+            entries.unshift(existing);
+            writeStoryBoosterErrorLog(entries);
+            refreshStoryBoosterErrorLogBadge();
+            return existing;
+        }
+        entry.firstOccurredAt = Number(existing.firstOccurredAt) || now;
+        entry.count = Math.max(1, Number(existing.count) || 1) + 1;
+    }
+    entries.unshift(entry);
+    writeStoryBoosterErrorLog(entries);
+    refreshStoryBoosterErrorLogBadge();
+    if (details.notify !== false && Date.now() - lastErrorLogHintAt > 2500) {
+        lastErrorLogHintAt = Date.now();
+        toastr?.info?.(
+            "문제가 발생하면 오류 진단 로그를 복사해 문의해 주세요."
+        );
+    }
+    return entry;
+}
+
+function clearStoryBoosterErrorLog() {
+    writeStoryBoosterErrorLog([]);
+    refreshStoryBoosterErrorLogBadge();
+}
+
+function formatStoryBoosterErrorEntry(entry, index) {
+    const lines = [
+        `[오류 진단 로그 ${index + 1}]`,
+        `발생: ${new Date(entry.lastOccurredAt).toLocaleString("ko-KR")}`,
+        `동일 오류 발생: ${entry.count || 1}회`,
+        `스토리부스터: ${entry.storyBoosterVersion || "확인 불가"}`,
+        `SillyTavern: ${entry.sillyTavernVersion || "확인 불가"}`,
+        `작업: ${entry.task || "확인 불가"}`,
+        `실패 단계: ${entry.stage || "확인 불가"}`,
+        `연결: ${entry.connectionMode || "확인 불가"}`,
+        `모델/API: ${entry.model || "확인 불가"} / ${entry.apiType || "확인 불가"}`,
+        `요청 방식: ${entry.method || "확인 불가"}`,
+        `출력 한도: ${entry.responseLength || "확인 불가"}`,
+        `요청/재시도: ${entry.requestCount || 0}회 / ${entry.retryCount || 0}회`,
+        `HTTP/종료 사유: ${entry.httpStatus || "없음"} / ${entry.finishReason || "없음"}`,
+        `오류 코드: ${entry.errorCode || "없음"}`,
+        `오류 메시지: ${entry.errorMessage || "없음"}`,
+        `응답 구조: ${entry.responseFormat || "확인 불가"} · ${entry.responseChars || 0}자`,
+        `반환 필드: ${entry.returnedFields?.join(", ") || "확인 불가"}`,
+        `누락 필드: ${entry.missingFields?.join(", ") || "없음"}`,
+        `잘못된 필드: ${entry.invalidFields?.join(", ") || "없음"}`,
+        `오류 위치: ${entry.location || "확인 불가"}`,
+        `식별번호: ${entry.id || "없음"}`,
+    ];
+    return lines.join("\n");
+}
+
+function buildStoryBoosterErrorReport(entries = readStoryBoosterErrorLog()) {
+    if (!entries.length) return "저장된 오류 진단 로그가 없습니다.";
+    return [
+        "[STORYBOOSTER ERROR DIAGNOSTIC REPORT]",
+        ...entries.flatMap((entry, index) => [
+            formatStoryBoosterErrorEntry(entry, index),
+            "",
+        ]),
+    ].join("\n").trim();
+}
+
+async function copyStoryBoosterText(text) {
+    const value = String(text || "");
+    if (globalThis.navigator?.clipboard?.writeText) {
+        await globalThis.navigator.clipboard.writeText(value);
+        return;
+    }
+    const textarea = document.createElement("textarea");
+    textarea.value = value;
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand("copy");
+    textarea.remove();
+}
+
+function callStoryBoosterToolPopup(html) {
+    const context = getContext();
+    if (typeof context?.callGenericPopup === "function") {
+        context.callGenericPopup(html, context.POPUP_TYPE.TEXT, "", {
+            wide: true,
+            large: false,
+        });
+        return true;
+    }
+    if (typeof globalThis.callPopup === "function") {
+        globalThis.callPopup(html, "text");
+        return true;
+    }
+    return false;
+}
+
+function wireStoryBoosterToolPopup(popupId, callback, attempt = 0) {
+    const root = document.getElementById(popupId);
+    if (root) {
+        callback(root);
+        return;
+    }
+    if (attempt < 20) {
+        setTimeout(
+            () => wireStoryBoosterToolPopup(popupId, callback, attempt + 1),
+            50
+        );
+        return;
+    }
+    const error = new Error("StoryBooster tool popup DOM was not found after opening");
+    error.code = "STORYBOOSTER_TOOL_POPUP_DOM_MISSING";
+    recordStoryBoosterError(error, {
+        task: "settings_tool_popup",
+        stage: "popup_dom_binding",
+    });
+    toastr?.error?.("도구 창을 불러오지 못했습니다. 다시 시도해 주세요.");
+}
+
+function openStoryBoosterErrorLog() {
+    const report = buildStoryBoosterErrorReport();
+    const popupId = `rp-error-log-popup-${Date.now()}`;
+    const html = `
+        <div id="${popupId}" class="rp-tool-popup">
+            <h3>🐞 오류 진단 로그</h3>
+            <p class="rp-tool-popup-help">문제가 발생하면 오류 진단 로그를 복사해 문의해 주세요.</p>
+            <div class="rp-tool-popup-actions">
+                <button type="button" class="menu_button rp-error-log-copy">로그 복사</button>
+                <button type="button" class="menu_button rp-error-log-clear">로그 비우기</button>
+            </div>
+            <textarea class="rp-tool-popup-text" readonly>${escapeHtml(report)}</textarea>
+        </div>
+    `;
+    if (!callStoryBoosterToolPopup(html)) {
+        toastr?.error?.("오류 진단 로그 창을 열 수 없습니다.");
+        return;
+    }
+    wireStoryBoosterToolPopup(popupId, (root) => {
+        const textarea = root?.querySelector(".rp-tool-popup-text");
+        root?.querySelector(".rp-error-log-copy")?.addEventListener("click", async () => {
+            try {
+                await copyStoryBoosterText(textarea?.value || report);
+                toastr?.success?.("오류 진단 로그를 복사했어요.");
+            } catch {
+                toastr?.error?.("오류 진단 로그를 복사하지 못했습니다.");
+            }
+        });
+        root?.querySelector(".rp-error-log-clear")?.addEventListener("click", () => {
+            clearStoryBoosterErrorLog();
+            if (textarea) textarea.value = "저장된 오류 진단 로그가 없습니다.";
+            toastr?.success?.("오류 진단 로그를 비웠어요.");
+        });
+    });
+}
+
+function estimatePromptTokens(text) {
+    const value = String(text || "");
+    let ascii = 0;
+    let nonAscii = 0;
+    for (const character of value) {
+        if (character.charCodeAt(0) <= 0x7f) ascii += 1;
+        else nonAscii += 1;
+    }
+    return Math.max(0, Math.ceil(ascii / 4 + nonAscii / 1.6));
+}
+
+async function countPromptTokens(text) {
+    const value = String(text || "");
+    if (!value) return { count: 0, estimated: false };
+    const context = getContext();
+    const counter = context?.getTokenCountAsync || context?.getTokenCount;
+    if (typeof counter === "function") {
+        try {
+            const result = await counter.call(context, value);
+            const count = Number(result?.count ?? result);
+            if (Number.isFinite(count) && count >= 0) {
+                return { count: Math.round(count), estimated: false };
+            }
+        } catch (error) {
+            console.info(`[${MODULE_NAME}] SillyTavern token counter unavailable`, error);
+        }
+    }
+    return { count: estimatePromptTokens(value), estimated: true };
+}
+
+function getCurrentInjectionPromptSnapshot() {
+    const storyPrompt = currentStoryInjectionText;
+    const plotPrompt = plotPending ? currentPlotInjectionText : "";
+    return {
+        storyPrompt,
+        plotPrompt,
+        combinedPrompt: [storyPrompt, plotPrompt].filter(Boolean).join("\n\n"),
+    };
+}
+
+async function openCurrentInjectionPromptViewer() {
+    const snapshot = getCurrentInjectionPromptSnapshot();
+    const tokenInfo = await countPromptTokens(snapshot.combinedPrompt);
+    const popupId = `rp-injection-popup-${Date.now()}`;
+    const displayText = [
+        snapshot.storyPrompt
+            ? `[장르·캐릭터 부스터 · 깊이 1]\n${snapshot.storyPrompt}`
+            : "",
+        snapshot.plotPrompt
+            ? `[플롯 1회 주입 · 깊이 0]\n${snapshot.plotPrompt}`
+            : "",
+    ]
+        .filter(Boolean)
+        .join("\n\n") || "현재 채팅방에 주입 중인 프롬프트가 없습니다.";
+    const html = `
+        <div id="${popupId}" class="rp-tool-popup">
+            <h3>📄 주입 프롬프트</h3>
+            <p class="rp-tool-popup-help">현재 채팅방의 다음 응답에 적용되는 스토리부스터 프롬프트예요. 대괄호 안의 구분 표시는 확인창에만 표시됩니다.</p>
+            <div class="rp-tool-popup-stats">
+                <span>${snapshot.combinedPrompt.length.toLocaleString("ko-KR")}자</span>
+                <span>${tokenInfo.estimated ? "예상 " : ""}${tokenInfo.count.toLocaleString("ko-KR")}토큰</span>
+            </div>
+            <div class="rp-tool-popup-actions">
+                <button type="button" class="menu_button rp-injection-copy">프롬프트 복사</button>
+            </div>
+            <textarea class="rp-tool-popup-text" readonly>${escapeHtml(displayText)}</textarea>
+        </div>
+    `;
+    if (!callStoryBoosterToolPopup(html)) {
+        toastr?.error?.("주입 프롬프트 창을 열 수 없습니다.");
+        return;
+    }
+    wireStoryBoosterToolPopup(popupId, (root) => {
+        root?.querySelector(".rp-injection-copy")?.addEventListener("click", async () => {
+            try {
+                await copyStoryBoosterText(snapshot.combinedPrompt);
+                toastr?.success?.("주입 프롬프트를 복사했어요.");
+            } catch {
+                toastr?.error?.("주입 프롬프트를 복사하지 못했습니다.");
+            }
+        });
+    });
 }
 
 function withRequestTimeout(
@@ -1969,9 +2532,21 @@ async function generateStructuredAnalysis({
     responseLength = 1200,
     retryOnLength = true,
     connectionSnapshot = null,
+    task = "structured_analysis",
+    diagnostic = null,
 }) {
+    const operationDiagnostic =
+        diagnostic ||
+        createOperationDiagnostic({
+            task,
+            responseLength,
+            connectionMode:
+                connectionSnapshot?.source === "profile" ? "profile" : "main",
+        });
+    operationDiagnostic.responseLength = Number(responseLength) || 0;
     const stableConnection =
         connectionSnapshot || (await resolveBackgroundConnectionSnapshot());
+    updateOperationDiagnosticConnection(operationDiagnostic, stableConnection);
     const compatibleJsonSchema = normalizeSillyTavernJsonSchema(jsonSchema);
     try {
         const context = getContext();
@@ -1984,6 +2559,10 @@ async function generateStructuredAnalysis({
             { role: "system", content: systemInstruction },
             { role: "user", content: transcript },
         ];
+        if (stableConnection?.source === "profile") {
+            operationDiagnostic.method = "connection_profile";
+            operationDiagnostic.requestCount += 1;
+        }
         const profileResult = await generateWithBackgroundProfile({
             prompt: [
                 prompt,
@@ -1994,11 +2573,21 @@ async function generateStructuredAnalysis({
             jsonSchema,
             connectionSnapshot: stableConnection,
         });
-        if (profileResult !== null) return profileResult;
+        if (profileResult !== null) {
+            captureOperationResponseDiagnostic(
+                operationDiagnostic,
+                profileResult,
+                profileResult,
+                "connection_profile"
+            );
+            return profileResult;
+        }
 
         // Recent SillyTavern versions may return native provider data. Read
         // OpenAI-style choices as well as Gemini-style candidates.
         if (typeof context?.generateRawData === "function") {
+            operationDiagnostic.method = "generateRawData";
+            operationDiagnostic.requestCount += 1;
             const rawData = await withRequestTimeout(
                 context.generateRawData({
                     prompt: rawPrompt,
@@ -2008,6 +2597,12 @@ async function generateStructuredAnalysis({
                 "현재 채팅 연결의 백그라운드 요청이 3분 안에 완료되지 않았습니다."
             );
             const rawText = extractTextFromGenerationData(rawData);
+            captureOperationResponseDiagnostic(
+                operationDiagnostic,
+                rawData,
+                rawText,
+                "generateRawData"
+            );
             if (!rawText) throw new Error(THINKING_OUTPUT_ERROR);
             throwIfStructuredResultWasTruncated(rawData, rawText);
             throwIfStructuredJsonIsIncomplete(rawText);
@@ -2017,6 +2612,8 @@ async function generateStructuredAnalysis({
         // generateRaw predates generateRawData and still lets older
         // SillyTavern builds receive the exact same explicit transcript.
         if (typeof context?.generateRaw === "function") {
+            operationDiagnostic.method = "generateRaw";
+            operationDiagnostic.requestCount += 1;
             const rawResult = await withRequestTimeout(
                 context.generateRaw({
                     prompt: rawPrompt,
@@ -2026,6 +2623,12 @@ async function generateStructuredAnalysis({
                 "현재 채팅 연결의 백그라운드 요청이 3분 안에 완료되지 않았습니다."
             );
             const rawText = extractTextFromGenerationData(rawResult);
+            captureOperationResponseDiagnostic(
+                operationDiagnostic,
+                rawResult,
+                rawText,
+                "generateRaw"
+            );
             if (!rawText || rawText === "{}") {
                 throw new Error(THINKING_OUTPUT_ERROR);
             }
@@ -2045,6 +2648,8 @@ async function generateStructuredAnalysis({
             "IMPORTANT: Put the required JSON in the visible final answer/content field, not only in reasoning or thinking.",
             "Do not output Markdown fences or prose outside the JSON.",
         ].join("\n");
+        operationDiagnostic.method = "generateQuietPrompt";
+        operationDiagnostic.requestCount += 1;
         const result = await withRequestTimeout(
             context.generateQuietPrompt({
                 quietPrompt,
@@ -2056,6 +2661,12 @@ async function generateStructuredAnalysis({
             "현재 채팅 연결의 백그라운드 요청이 3분 안에 완료되지 않았습니다."
         );
         const text = extractTextFromGenerationData(result);
+        captureOperationResponseDiagnostic(
+            operationDiagnostic,
+            result,
+            text,
+            "generateQuietPrompt"
+        );
         if (!text || text === "{}") throw new Error(THINKING_OUTPUT_ERROR);
         throwIfStructuredResultWasTruncated(result, text);
         throwIfStructuredJsonIsIncomplete(text);
@@ -2068,6 +2679,7 @@ async function generateStructuredAnalysis({
                 "STORYBOOSTER_INCOMPLETE_JSON",
             ].includes(error?.code)
         ) {
+            operationDiagnostic.retryCount += 1;
             return generateStructuredAnalysis({
                 prompt: [
                     prompt,
@@ -2078,8 +2690,14 @@ async function generateStructuredAnalysis({
                 responseLength: Math.max(4800, responseLength * 2),
                 retryOnLength: false,
                 connectionSnapshot: stableConnection,
+                task,
+                diagnostic: operationDiagnostic,
             });
         }
+        recordStoryBoosterError(error, {
+            task,
+            diagnostic: operationDiagnostic,
+        });
         throw error;
     }
 }
@@ -2346,6 +2964,7 @@ function updateGenrePrompt() {
 
     if (!selection) {
         setExtensionPrompt(GENRE_PROMPT_KEY, "", extension_prompt_types.IN_CHAT, 1);
+        currentStoryInjectionText = "";
         console.log(`[${MODULE_NAME}] story prompt cleared (no active booster)`);
         return;
     }
@@ -2353,6 +2972,7 @@ function updateGenrePrompt() {
     const text = buildGenrePromptText(selection);
     if (!text) {
         setExtensionPrompt(GENRE_PROMPT_KEY, "", extension_prompt_types.IN_CHAT, 1);
+        currentStoryInjectionText = "";
         console.log(`[${MODULE_NAME}] story prompt cleared (no active prompt content)`);
         return;
     }
@@ -2364,6 +2984,7 @@ function updateGenrePrompt() {
         false, // scan
         extension_prompt_roles.SYSTEM
     );
+    currentStoryInjectionText = text;
     console.debug(`[${MODULE_NAME}] story prompt set (${text.length} chars)`);
 }
 
@@ -2376,6 +2997,10 @@ function safelyUpdateGenrePrompt(contextLabel = "UI 갱신") {
             `[${MODULE_NAME}] story prompt refresh failed (${contextLabel}):`,
             error
         );
+        recordStoryBoosterError(error, {
+            task: "injection_prompt_refresh",
+            stage: "prompt_injection",
+        });
         return false;
     }
 }
@@ -2389,6 +3014,10 @@ function safelyUpdateGenreAnchorPanel(contextLabel = "UI 갱신") {
             `[${MODULE_NAME}] booster panel refresh failed (${contextLabel}):`,
             error
         );
+        recordStoryBoosterError(error, {
+            task: "booster_panel_refresh",
+            stage: "ui_refresh",
+        });
         return false;
     }
 }
@@ -2402,6 +3031,10 @@ function safelyUpdateCharacterBoosterPanel(contextLabel = "UI 갱신") {
             `[${MODULE_NAME}] character panel refresh failed (${contextLabel}):`,
             error
         );
+        recordStoryBoosterError(error, {
+            task: "character_panel_refresh",
+            stage: "ui_refresh",
+        });
         return false;
     }
 }
@@ -3402,6 +4035,15 @@ async function runGenreDriftAudit(
               name: "선택한 프로필(확인 불가)",
           })
         : createBackgroundConnectionSnapshot();
+    const auditDiagnostic = createOperationDiagnostic({
+        task:
+            scope === "genre"
+                ? "genre_audit"
+                : scope === "character"
+                  ? "character_audit"
+                  : "combined_audit",
+        connectionMode: selectedProfileId ? "profile" : "main",
+    });
     updateGenreAnchorPanel();
     if (getCurrentChatId() === chatId) {
         showGenreAuditToast(
@@ -3428,12 +4070,16 @@ async function runGenreDriftAudit(
         );
         const auditResponseLength =
             AUDIT_RESPONSE_LENGTHS[scope] || AUDIT_RESPONSE_LENGTHS.combined;
+        auditDiagnostic.responseLength = auditResponseLength;
+        updateOperationDiagnosticConnection(auditDiagnostic, connectionSnapshot);
         let result = await generateStructuredAnalysis({
             prompt: auditPrompt,
             transcript: auditTranscript,
             jsonSchema: auditJsonSchema,
             responseLength: auditResponseLength,
             connectionSnapshot,
+            task: auditDiagnostic.task,
+            diagnostic: auditDiagnostic,
         });
         let auditResult;
         try {
@@ -3458,6 +4104,7 @@ async function runGenreDriftAudit(
                     `🔄 ${auditLabel} 진단 형식을 보정해 한 번 다시 확인하고 있어요…`
                 );
             }
+            auditDiagnostic.retryCount += 1;
             result = await generateStructuredAnalysis({
                 prompt: [
                     auditPrompt,
@@ -3468,6 +4115,8 @@ async function runGenreDriftAudit(
                 responseLength: Math.max(3200, auditResponseLength),
                 retryOnLength: false,
                 connectionSnapshot,
+                task: auditDiagnostic.task,
+                diagnostic: auditDiagnostic,
             });
             auditResult = parseGenreAuditResult(
                 result,
@@ -3618,6 +4267,10 @@ async function runGenreDriftAudit(
         }
     } catch (err) {
         console.error(`[${MODULE_NAME}] genre drift audit failed:`, err);
+        recordStoryBoosterError(err, {
+            task: auditDiagnostic.task,
+            diagnostic: auditDiagnostic,
+        });
         const chatState = ensureModuleSettings().chats[chatId];
         let staleSelection = false;
         if (chatState) {
@@ -3789,6 +4442,81 @@ function buildCharacterBaselinePrompt(
     ].join("\n");
 }
 
+function normalizeCharacterBaselineGenerationPayload(value, targetFields) {
+    const parsed = value && typeof value === "object" ? value : {};
+    const roots = [
+        parsed,
+        parsed.character_baseline,
+        parsed.characterBaseline,
+        parsed.baseline,
+        parsed.result,
+    ].filter((entry) => entry && typeof entry === "object");
+    const fieldContainers = roots
+        .flatMap((entry) => [entry.fields, entry])
+        .filter((entry) => entry && typeof entry === "object");
+    const fields = {};
+
+    for (const definition of targetFields) {
+        let rawValue;
+        for (const container of fieldContainers) {
+            rawValue = container[definition.id] ?? container[definition.label];
+            if (rawValue !== undefined && rawValue !== null) break;
+        }
+        if (rawValue && typeof rawValue === "object") {
+            rawValue = rawValue.text ?? rawValue.value ?? rawValue.summary ?? "";
+        }
+        fields[definition.id] = String(rawValue ?? "").trim();
+    }
+
+    const readRootValue = (...keys) => {
+        for (const root of roots) {
+            for (const key of keys) {
+                if (root[key] !== undefined && root[key] !== null) {
+                    return root[key];
+                }
+            }
+        }
+        return "";
+    };
+
+    return {
+        fields,
+        boost_anchor: String(
+            readRootValue("boost_anchor", "boostAnchor") || ""
+        ).trim(),
+        boost_anchor_display: String(
+            readRootValue("boost_anchor_display", "boostAnchorDisplay") || ""
+        ).trim(),
+    };
+}
+
+function getCharacterBaselineGenerationIssues(
+    parsed,
+    targetFields,
+    { includeBoostAnchor = true, outputLanguage = "ko" } = {}
+) {
+    const issues = targetFields
+        .filter(
+            (definition) =>
+                String(parsed?.fields?.[definition.id] || "").trim().length < 10
+        )
+        .map((definition) => definition.label);
+    if (
+        includeBoostAnchor &&
+        String(parsed?.boost_anchor || "").trim().length < 30
+    ) {
+        issues.push("영문 캐릭터 앵커");
+    }
+    if (
+        includeBoostAnchor &&
+        outputLanguage === "ko" &&
+        String(parsed?.boost_anchor_display || "").trim().length < 15
+    ) {
+        issues.push("한국어 표시용 캐릭터 앵커");
+    }
+    return issues;
+}
+
 async function generateCharacterBaseline(fieldId = null) {
     if (!isBoosterFeatureEnabled("character")) {
         toastr?.info?.("전역 설정에서 캐릭터 부스터를 켜 주세요.");
@@ -3842,25 +4570,32 @@ async function generateCharacterBaseline(fieldId = null) {
         ensureModuleSettings().analysisProfileId || ""
     );
     const outputLanguage = ensureModuleSettings().outputLanguage;
+    const baselineDiagnostic = createOperationDiagnostic({
+        task: requestedField
+            ? `character_baseline_field_${requestedField.id}`
+            : "character_baseline_all",
+        responseLength: requestedField ? 1200 : 3600,
+        connectionMode: selectedProfileId ? "profile" : "main",
+    });
     try {
         const connectionSnapshot = await resolveBackgroundConnectionSnapshot(
             selectedProfileId
         );
+        updateOperationDiagnosticConnection(baselineDiagnostic, connectionSnapshot);
         const schemaProperties = Object.fromEntries(
             targetFields.map((field) => [field.id, { type: "string" }])
         );
-        const result = await generateStructuredAnalysis({
-            prompt: buildCharacterBaselinePrompt(
-                targetFields,
-                contextFields,
-                outputLanguage,
-                !requestedField
-            ),
-            transcript: `<character_card>\n${identity.source.slice(
+        const baselinePrompt = buildCharacterBaselinePrompt(
+            targetFields,
+            contextFields,
+            outputLanguage,
+            !requestedField
+        );
+        const baselineTranscript = `<character_card>\n${identity.source.slice(
                 0,
                 CHARACTER_CARD_INPUT_MAX_CHARS
-            )}\n</character_card>`,
-            jsonSchema: {
+            )}\n</character_card>`;
+        const baselineJsonSchema = {
                 name: "storybooster_character_baseline",
                 strict: true,
                 schema: {
@@ -3896,22 +4631,81 @@ async function generateCharacterBaseline(fieldId = null) {
                           ],
                     additionalProperties: false,
                 },
-            },
-            responseLength: requestedField ? 1000 : 2800,
-            connectionSnapshot,
-        });
+            };
+        const baselineResponseLength = requestedField ? 1200 : 3600;
+        const requestBaseline = (prompt, retryOnLength = true) =>
+            generateStructuredAnalysis({
+                prompt,
+                transcript: baselineTranscript,
+                jsonSchema: baselineJsonSchema,
+                responseLength: baselineResponseLength,
+                retryOnLength,
+                connectionSnapshot,
+                task: baselineDiagnostic.task,
+                diagnostic: baselineDiagnostic,
+            });
+
+        let result = await requestBaseline(baselinePrompt);
+        let parsed = normalizeCharacterBaselineGenerationPayload(
+            extractJsonObject(
+                result,
+                "Character baseline returned no JSON object."
+            ),
+            targetFields
+        );
+        let formatIssues = getCharacterBaselineGenerationIssues(
+            parsed,
+            targetFields,
+            {
+                includeBoostAnchor: !requestedField,
+                outputLanguage,
+            }
+        );
+        if (formatIssues.length) {
+            toastr?.info?.(
+                "캐릭터 기준 형식이 불완전해 한 번 다시 요청하고 있어요…"
+            );
+            baselineDiagnostic.retryCount += 1;
+            result = await requestBaseline(
+                [
+                    baselinePrompt,
+                    `FORMAT RETRY: The previous response omitted or shortened these required items: ${formatIssues.join(
+                        ", "
+                    )}. Return the complete exact JSON shape now. Put every requested character field inside the fields object and include every required anchor field. Do not omit, rename, or abbreviate any key.`,
+                ].join("\n"),
+                false
+            );
+            parsed = normalizeCharacterBaselineGenerationPayload(
+                extractJsonObject(
+                    result,
+                    "Character baseline returned no JSON object."
+                ),
+                targetFields
+            );
+            formatIssues = getCharacterBaselineGenerationIssues(
+                parsed,
+                targetFields,
+                {
+                    includeBoostAnchor: !requestedField,
+                    outputLanguage,
+                }
+            );
+        }
+        if (formatIssues.length) {
+            const formatError = new Error(
+                `캐릭터 기준 응답에 필수 항목이 누락되었습니다: ${formatIssues.join(
+                    ", "
+                )}`
+            );
+            formatError.code = "STORYBOOSTER_CHARACTER_BASELINE_INCOMPLETE";
+            formatError.missingFields = [...formatIssues];
+            throw formatError;
+        }
         if (!isBoosterFeatureEnabled("character")) {
             toastr?.info?.(
                 "캐릭터 부스터가 꺼져 있어 생성 결과를 저장하지 않았어요."
             );
             return;
-        }
-        const parsed = extractJsonObject(
-            result,
-            "Character baseline returned no JSON object."
-        );
-        if (!parsed.fields || typeof parsed.fields !== "object") {
-            throw new Error("캐릭터 기준 항목이 누락되었습니다.");
         }
         const boostAnchor = requestedField
             ? ""
@@ -3993,6 +4787,10 @@ async function generateCharacterBaseline(fieldId = null) {
         );
     } catch (error) {
         console.error(`[${MODULE_NAME}] character baseline failed:`, error);
+        recordStoryBoosterError(error, {
+            task: baselineDiagnostic.task,
+            diagnostic: baselineDiagnostic,
+        });
         toastr?.error?.(
             `캐릭터 기준을 만들지 못했습니다: ${error?.message || "연결 상태를 확인해 주세요."}`
         );
@@ -4148,6 +4946,10 @@ function toggleCharacterFieldEditing(fieldId, sourceButton = null) {
             if (!saved) throw new Error("저장할 캐릭터를 찾지 못했습니다.");
         } catch (error) {
             console.error(`[${MODULE_NAME}] character field save failed:`, error);
+            recordStoryBoosterError(error, {
+                task: "character_baseline_field_save",
+                stage: "settings_save",
+            });
             toastr?.error?.(
                 `캐릭터 기준 저장에 실패했습니다: ${error?.message || "화면을 다시 열어 주세요."}`
             );
@@ -4203,8 +5005,19 @@ function saveCharacterBoostAnchor(
 }
 
 async function convertCharacterAnchorDisplayToEnglish(displayText) {
+    const anchorConversionDiagnostic = createOperationDiagnostic({
+        task: "character_anchor_translation",
+        responseLength: 900,
+        connectionMode: ensureModuleSettings().analysisProfileId
+            ? "profile"
+            : "main",
+    });
     const connectionSnapshot = await resolveBackgroundConnectionSnapshot(
         String(ensureModuleSettings().analysisProfileId || "")
+    );
+    updateOperationDiagnosticConnection(
+        anchorConversionDiagnostic,
+        connectionSnapshot
     );
     const result = await generateStructuredAnalysis({
         prompt: [
@@ -4229,6 +5042,8 @@ async function convertCharacterAnchorDisplayToEnglish(displayText) {
         },
         responseLength: 900,
         connectionSnapshot,
+        task: anchorConversionDiagnostic.task,
+        diagnostic: anchorConversionDiagnostic,
     });
     const parsed = extractJsonObject(
         result,
@@ -4327,6 +5142,9 @@ async function saveEditedCharacterBoostAnchor() {
         );
     } catch (error) {
         console.error(`[${MODULE_NAME}] character anchor save failed:`, error);
+        recordStoryBoosterError(error, {
+            task: "character_anchor_save",
+        });
         toastr?.error?.(
             `캐릭터 앵커 저장에 실패했습니다: ${error?.message || "연결 상태를 확인해 주세요."}`
         );
@@ -4367,10 +5185,18 @@ async function regenerateCharacterBoostAnchor() {
     if (characterBaselinePendingTasks.has(identity.key)) return;
     characterBaselinePendingTasks.set(identity.key, "anchor");
     safelyUpdateCharacterBoosterPanel("캐릭터 앵커 생성 시작");
+    const anchorDiagnostic = createOperationDiagnostic({
+        task: "character_anchor_regeneration",
+        responseLength: 900,
+        connectionMode: ensureModuleSettings().analysisProfileId
+            ? "profile"
+            : "main",
+    });
     try {
         const connectionSnapshot = await resolveBackgroundConnectionSnapshot(
             String(ensureModuleSettings().analysisProfileId || "")
         );
+        updateOperationDiagnosticConnection(anchorDiagnostic, connectionSnapshot);
         const result = await generateStructuredAnalysis({
             prompt: [
                 `Create a compact persistent roleplay anchor for ${identity.name}.`,
@@ -4407,6 +5233,8 @@ async function regenerateCharacterBoostAnchor() {
             },
             responseLength: 900,
             connectionSnapshot,
+            task: anchorDiagnostic.task,
+            diagnostic: anchorDiagnostic,
         });
         if (!isBoosterFeatureEnabled("character")) {
             toastr?.info?.(
@@ -4455,6 +5283,10 @@ async function regenerateCharacterBoostAnchor() {
         toastr?.success?.("캐릭터 전용 상시 앵커를 갱신했어요.");
     } catch (error) {
         console.error(`[${MODULE_NAME}] character boost anchor failed:`, error);
+        recordStoryBoosterError(error, {
+            task: anchorDiagnostic.task,
+            diagnostic: anchorDiagnostic,
+        });
         toastr?.error?.(
             `상시 앵커를 만들지 못했습니다: ${error?.message || "연결 상태를 확인해 주세요."}`
         );
@@ -5321,6 +6153,7 @@ function triggerPlotEvent(eventText) {
         extension_prompt_roles.SYSTEM
     );
 
+    currentPlotInjectionText = text;
     plotPending = true;
 }
 
@@ -5328,10 +6161,15 @@ function clearPlotPromptIfPending() {
     if (!plotPending) return;
     try {
         setExtensionPrompt(PLOT_PROMPT_KEY, "", extension_prompt_types.IN_CHAT, 0);
+        currentPlotInjectionText = "";
+        plotPending = false;
     } catch (err) {
         console.error(`[${MODULE_NAME}] failed to clear plot prompt:`, err);
+        recordStoryBoosterError(err, {
+            task: "plot_injection_clear",
+            stage: "prompt_injection",
+        });
     }
-    plotPending = false;
 }
 
 function renderPlotCategoryCards() {
@@ -5918,6 +6756,11 @@ async function generateEventCandidate(operation = "generate") {
         operation,
         startedAt: Date.now(),
     };
+    const plotDiagnostic = createOperationDiagnostic({
+        task: `plot_${operation}`,
+        responseLength: plotTokenBudget,
+        connectionMode: selectedProfileId ? "profile" : "main",
+    });
     eventGenerationPendingTasks.set(taskChatId, task);
     updatePlotGenerationPendingUi(taskChatId);
     showPlotGenerationToast(
@@ -5955,6 +6798,7 @@ async function generateEventCandidate(operation = "generate") {
         const connectionSnapshot = await resolveBackgroundConnectionSnapshot(
             selectedProfileId
         );
+        updateOperationDiagnosticConnection(plotDiagnostic, connectionSnapshot);
         const plotJsonSchema = {
             name: "storybooster_plot_event",
             strict: true,
@@ -5980,6 +6824,8 @@ async function generateEventCandidate(operation = "generate") {
                 // length truncation receives one larger automatic retry.
                 responseLength: plotTokenBudget,
                 connectionSnapshot,
+                task: plotDiagnostic.task,
+                diagnostic: plotDiagnostic,
             });
 
         let result = await requestPlotCandidate();
@@ -5995,6 +6841,7 @@ async function generateEventCandidate(operation = "generate") {
         if (isRoleplayLikePlotCandidate(eventText)) {
             status.textContent =
                 "다음 플롯 자체가 바로 보이도록 형식을 다시 정리하고 있어요…";
+            plotDiagnostic.retryCount += 1;
             result = await requestPlotCandidate(
                 [
                     "FORMAT CORRECTION: The previous attempt resembled a performed roleplay response, a completed scene, or a meta description of an episode or scene.",
@@ -6024,6 +6871,7 @@ async function generateEventCandidate(operation = "generate") {
             )
         ) {
             status.textContent = "설정한 출력 언어로 다시 맞추고 있어요…";
+            plotDiagnostic.retryCount += 1;
             result = await requestPlotCandidate(
                 `${getPlotOutputInstruction(plotOutputLanguage)} The previous attempt used the wrong output language. Follow this language requirement without exception.`
             );
@@ -6096,6 +6944,10 @@ async function generateEventCandidate(operation = "generate") {
         liveResultField.focus();
     } catch (err) {
         console.error(`[${MODULE_NAME}] event generation failed:`, err);
+        recordStoryBoosterError(err, {
+            task: plotDiagnostic.task,
+            diagnostic: plotDiagnostic,
+        });
         const liveStatus =
             String(getCurrentChatId()) === taskChatId
                 ? getBoosterElement("rp-event-status") || status
@@ -6212,6 +7064,10 @@ async function injectEventAndGenerateReply() {
         triggerPlotEvent(eventText);
     } catch (error) {
         console.error(`[${MODULE_NAME}] plot injection failed:`, error);
+        recordStoryBoosterError(error, {
+            task: "plot_injection",
+            stage: "prompt_injection",
+        });
         toastr?.error?.(
             `플롯을 주입하지 못했습니다: ${error?.message || "SillyTavern 연결 상태를 확인해 주세요."}`
         );
@@ -6240,6 +7096,11 @@ async function injectEventAndGenerateReply() {
         );
     } catch (err) {
         console.error(`[${MODULE_NAME}] reply generation failed:`, err);
+        recordStoryBoosterError(err, {
+            task: "roleplay_reply_generation",
+            stage: "reply_generation",
+            timeoutMs: 600000,
+        });
         toastr?.error?.("사건을 주입했지만 AI 응답 생성에 실패했습니다.");
     } finally {
         // MESSAGE_RECEIVED normally clears this first. The finally block also
@@ -7471,6 +8332,13 @@ async function generateGenreRecommendation() {
     const chatSnapshot = snapshotCurrentChatMessages();
     const availableGenres = getAvailableGenres();
     const outputLanguage = ensureModuleSettings().outputLanguage;
+    const recommendationDiagnostic = createOperationDiagnostic({
+        task: "genre_recommendation",
+        responseLength: 2400,
+        connectionMode: ensureModuleSettings().analysisProfileId
+            ? "profile"
+            : "main",
+    });
     genreRecommendationPendingChats.add(chatId);
     renderGenreRecommendation();
 
@@ -7513,6 +8381,8 @@ async function generateGenreRecommendation() {
                 },
             },
             responseLength: 2400,
+            task: recommendationDiagnostic.task,
+            diagnostic: recommendationDiagnostic,
         });
         const recommendation = parseGenreRecommendationResult(
             result,
@@ -7545,6 +8415,10 @@ async function generateGenreRecommendation() {
         if (getCurrentChatId() === chatId) renderGenreRecommendation();
     } catch (err) {
         console.error(`[${MODULE_NAME}] genre recommendation failed:`, err);
+        recordStoryBoosterError(err, {
+            task: recommendationDiagnostic.task,
+            diagnostic: recommendationDiagnostic,
+        });
         toastr?.error?.(`장르 추천 실패: ${err?.message || err}`);
     } finally {
         genreRecommendationPendingChats.delete(chatId);
@@ -7974,6 +8848,10 @@ function openBoosterPopup() {
         context = getContext();
     } catch (err) {
         console.error(`[${MODULE_NAME}] getContext() threw:`, err);
+        recordStoryBoosterError(err, {
+            task: "booster_popup_open",
+            stage: "context_access",
+        });
         alert("getContext() 실패 — 콘솔을 확인하세요.");
         return;
     }
@@ -7986,22 +8864,51 @@ function openBoosterPopup() {
         .slice(2, 9)}`;
     notifyCharacterCardChangeIfNeeded();
     const html = renderBoosterPopupHtml(popupInstanceId);
+    let popupLifecycle = null;
 
     try {
         if (context.callGenericPopup) {
-            context.callGenericPopup(html, context.POPUP_TYPE.TEXT, "", { wide: true, large: false });
+            popupLifecycle = context.callGenericPopup(
+                html,
+                context.POPUP_TYPE.TEXT,
+                "",
+                { wide: true, large: false }
+            );
         } else if (window.callPopup) {
-            window.callPopup(html, "text");
+            popupLifecycle = window.callPopup(html, "text");
         } else {
             console.error(`[${MODULE_NAME}] no popup API found on context or window`);
+            recordStoryBoosterError(new Error("SillyTavern popup API not found"), {
+                task: "booster_popup_open",
+                stage: "popup_api",
+            });
             alert("팝업 API를 찾을 수 없습니다. ST 버전을 확인하세요.");
             return;
         }
         console.log(`[${MODULE_NAME}] popup call issued`);
     } catch (err) {
         console.error(`[${MODULE_NAME}] popup call threw:`, err);
+        recordStoryBoosterError(err, {
+            task: "booster_popup_open",
+            stage: "popup_call",
+        });
         alert("팝업 호출 중 오류 발생 — 콘솔을 확인하세요.");
         return;
+    }
+
+    const releasePopupReference = () => {
+        if (
+            activeBoosterPopupRoot?.dataset?.storyboosterPopupInstance ===
+            popupInstanceId
+        ) {
+            activeBoosterPopupRoot = null;
+        }
+    };
+    if (popupLifecycle && typeof popupLifecycle.then === "function") {
+        Promise.resolve(popupLifecycle).then(
+            releasePopupReference,
+            releasePopupReference
+        );
     }
 
     // Some mobile builds attach the popup DOM asynchronously. Retry briefly
@@ -8016,6 +8923,13 @@ function openBoosterPopup() {
                 return;
             }
             console.error(`[${MODULE_NAME}] #rp-booster-popup not found after popup call`);
+            recordStoryBoosterError(
+                new Error("StoryBooster popup DOM was not found after opening"),
+                {
+                    task: "booster_popup_open",
+                    stage: "popup_dom_binding",
+                }
+            );
             return;
         }
         activeBoosterPopupRoot = popupRoot;
@@ -8510,6 +9424,18 @@ function addExtensionSettingsPanel() {
                             <small class="rp-settings-help">플롯 후보, 장르 추천 이유, 캐릭터 기준 생성에 적용합니다. 내부 명령은 영어로 유지됩니다.</small>
                         </div>
                     </section>
+
+                    <section class="rp-settings-card">
+                        <div class="rp-settings-card-title">기타</div>
+                        <div class="rp-settings-tool-grid">
+                            <button id="rp-view-injection-prompt" type="button" class="menu_button">📄 주입 프롬프트</button>
+                            <button id="rp-view-error-log" type="button" class="menu_button">
+                                🐞 오류 진단 로그
+                                <span id="rp-error-log-count" class="rp-settings-count-badge" hidden>0</span>
+                            </button>
+                        </div>
+                        <small class="rp-settings-help">문제가 발생하면 오류 진단 로그를 복사해 문의해 주세요.</small>
+                    </section>
                 </div>
             </div>
         </div>
@@ -8581,8 +9507,15 @@ function addExtensionSettingsPanel() {
                 "저장된 캐릭터 기준과 앵커는 자동 번역하지 않습니다. 다시 요약하거나 갱신하면 현재 출력 언어로 표시돼요."
             );
         });
+    panel
+        .querySelector("#rp-view-injection-prompt")
+        ?.addEventListener("click", openCurrentInjectionPromptViewer);
+    panel
+        .querySelector("#rp-view-error-log")
+        ?.addEventListener("click", openStoryBoosterErrorLog);
 
     refreshConnectionProfileSelects();
+    refreshStoryBoosterErrorLogBadge();
     return true;
 }
 
@@ -8635,6 +9568,10 @@ jQuery(async () => {
                 handleGenreResponseReceived(messageId);
             } catch (err) {
                 console.error(`[${MODULE_NAME}] error in MESSAGE_RECEIVED handler:`, err);
+                recordStoryBoosterError(err, {
+                    task: "message_received_handler",
+                    stage: "event_handler",
+                });
             }
         });
 
@@ -8674,8 +9611,25 @@ jQuery(async () => {
         // when the user switches chats, reload state for the NEW chat and
         // discard any leftover one-shot plot injection from the previous chat
         eventSource.on(event_types.CHAT_CHANGED, () => {
-            plotPending = false;
-            setExtensionPrompt(PLOT_PROMPT_KEY, "", extension_prompt_types.IN_CHAT, 0);
+            try {
+                setExtensionPrompt(
+                    PLOT_PROMPT_KEY,
+                    "",
+                    extension_prompt_types.IN_CHAT,
+                    0
+                );
+                plotPending = false;
+                currentPlotInjectionText = "";
+            } catch (err) {
+                console.error(
+                    `[${MODULE_NAME}] failed to clear plot prompt after chat change:`,
+                    err
+                );
+                recordStoryBoosterError(err, {
+                    task: "plot_injection_clear",
+                    stage: "chat_change_prompt_clear",
+                });
+            }
             closeCharacterEditorsForChatChange();
             updateGenrePrompt();
             resyncLastCountedMessageId();
@@ -8692,5 +9646,9 @@ jQuery(async () => {
         console.log(`[${MODULE_NAME}] initialized successfully`);
     } catch (err) {
         console.error(`[${MODULE_NAME}] failed to initialize:`, err);
+        recordStoryBoosterError(err, {
+            task: "extension_initialization",
+            stage: "initialization",
+        });
     }
 });

@@ -1241,9 +1241,113 @@
     line-height: 1.4;
 }
 
+#rp-storybooster-settings .rp-settings-tool-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+
+#rp-storybooster-settings .rp-settings-tool-grid .menu_button {
+    position: relative;
+    width: 100%;
+    min-width: 0;
+    margin: 0;
+    padding: 9px 10px;
+    border-color: rgba(120, 167, 232, 0.48);
+    background: rgba(255, 255, 255, 0.46);
+    color: inherit;
+}
+
+#rp-storybooster-settings .rp-settings-count-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 19px;
+    height: 19px;
+    margin-left: 4px;
+    padding: 0 5px;
+    border-radius: 999px;
+    background: #6f94d1;
+    color: #fff;
+    font-size: 0.76em;
+    font-weight: 750;
+    line-height: 1;
+}
+
+#rp-storybooster-settings .rp-settings-count-badge[hidden] {
+    display: none !important;
+}
+
+.rp-tool-popup {
+    display: grid;
+    gap: 10px;
+    width: min(760px, 100%);
+    max-width: 100%;
+    color: var(--SmartThemeBodyColor, inherit);
+}
+
+.rp-tool-popup h3,
+.rp-tool-popup p {
+    margin: 0;
+}
+
+.rp-tool-popup .rp-tool-popup-help {
+    opacity: 0.72;
+    line-height: 1.45;
+}
+
+.rp-tool-popup .rp-tool-popup-stats,
+.rp-tool-popup .rp-tool-popup-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.rp-tool-popup .rp-tool-popup-stats span {
+    padding: 5px 9px;
+    border: 1px solid rgba(120, 167, 232, 0.42);
+    border-radius: 999px;
+    background: rgba(226, 238, 255, 0.3);
+    color: inherit;
+    font-size: 0.9em;
+}
+
+.rp-tool-popup .rp-tool-popup-actions .menu_button {
+    min-width: 120px;
+    margin: 0;
+}
+
+.rp-tool-popup .rp-tool-popup-text {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 320px;
+    max-height: 56vh;
+    padding: 12px;
+    resize: vertical;
+    overflow: auto;
+    border: 1px solid rgba(120, 167, 232, 0.52);
+    border-radius: 10px;
+    background: rgba(234, 243, 255, 0.2);
+    color: inherit;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 0.88em;
+    line-height: 1.5;
+    white-space: pre-wrap;
+}
+
 @media (max-width: 700px) {
     #rp-storybooster-settings .rp-feature-toggle-grid {
         grid-template-columns: 1fr;
+    }
+
+    #rp-storybooster-settings .rp-settings-tool-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .rp-tool-popup .rp-tool-popup-text {
+        min-height: 260px;
+        max-height: 50vh;
     }
 }
 
