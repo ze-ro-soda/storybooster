@@ -187,7 +187,8 @@
 #rp-booster-popup .rp-plot-history-drawer[hidden],
 #rp-booster-popup .rp-character-tool-button[hidden],
 #rp-booster-popup .rp-character-card-change-notice[hidden],
-#rp-booster-popup .rp-character-language-status[hidden] {
+#rp-booster-popup .rp-character-language-status[hidden],
+#rp-booster-popup .rp-plot-secret-tools[hidden] {
     display: none !important;
 }
 
@@ -997,6 +998,172 @@
     font-weight: 800;
 }
 
+#rp-booster-popup .rp-plot-category-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin: 10px 0 6px;
+}
+
+#rp-booster-popup .rp-plot-category-heading .rp-plot-section-title {
+    margin: 0;
+}
+
+#rp-booster-popup .rp-plot-secret-switch {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex: 0 0 auto;
+    margin: 0;
+    cursor: pointer;
+    font-size: 0.74em;
+    font-weight: 700;
+    line-height: 1;
+    white-space: nowrap;
+}
+
+#rp-booster-popup .rp-plot-secret-switch input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+}
+
+#rp-booster-popup .rp-plot-secret-label {
+    opacity: 0.72;
+}
+
+#rp-booster-popup .rp-plot-secret-track {
+    position: relative;
+    display: block;
+    width: 34px;
+    height: 20px;
+    border: 1px solid var(--sb-blue-border);
+    border-radius: 999px;
+    background: rgba(141, 160, 184, 0.3);
+    transition: background 0.18s ease, border-color 0.18s ease;
+}
+
+#rp-booster-popup .rp-plot-secret-track::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 4px rgba(28, 55, 91, 0.25);
+    transition: transform 0.18s ease;
+}
+
+#rp-booster-popup .rp-plot-secret-switch input:checked + .rp-plot-secret-track {
+    border-color: var(--sb-blue-strong);
+    background: var(--sb-blue-strong);
+}
+
+#rp-booster-popup .rp-plot-secret-switch input:checked + .rp-plot-secret-track::after {
+    transform: translateX(14px);
+}
+
+#rp-booster-popup .rp-plot-secret-switch input:focus-visible + .rp-plot-secret-track {
+    outline: 2px solid var(--sb-blue);
+    outline-offset: 2px;
+}
+
+#rp-booster-popup .rp-plot-secret-switch:hover .rp-plot-secret-label {
+    color: var(--sb-blue-text);
+    opacity: 1;
+}
+
+#rp-booster-popup .rp-plot-secret-tools {
+    margin-top: 10px;
+    padding-top: 2px;
+}
+
+#rp-booster-popup .rp-plot-secret-action-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 7px;
+    width: 100%;
+}
+
+#rp-booster-popup .rp-secret-action {
+    display: flex !important;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 8px;
+    box-sizing: border-box;
+    width: 100% !important;
+    max-width: none !important;
+    min-width: 0 !important;
+    min-height: 58px;
+    margin: 0 !important;
+    padding: 8px 9px;
+    border-color: var(--sb-blue-border);
+    background: rgba(120, 167, 232, 0.07);
+    color: inherit;
+    text-align: left !important;
+    white-space: normal !important;
+    writing-mode: horizontal-tb !important;
+    word-break: keep-all;
+}
+
+#rp-booster-popup .rp-secret-action:hover {
+    border-color: var(--sb-blue-strong);
+    background: var(--sb-blue-hover);
+}
+
+#rp-booster-popup .rp-secret-action.is-selected {
+    border-color: var(--sb-blue-strong);
+    background: var(--sb-blue-selected);
+    color: var(--sb-blue-text);
+    box-shadow: 0 2px 7px var(--sb-blue-shadow);
+}
+
+#rp-booster-popup.has-secret-plot-action .rp-plot-category-grid {
+    opacity: 0.58;
+}
+
+#rp-booster-popup .rp-secret-action-icon {
+    flex: 0 0 auto;
+    font-size: 1.2em;
+}
+
+#rp-booster-popup .rp-secret-action > span:last-child {
+    display: grid;
+    min-width: 0;
+    gap: 2px;
+}
+
+#rp-booster-popup .rp-secret-action strong,
+#rp-booster-popup .rp-secret-action small {
+    display: block;
+    writing-mode: horizontal-tb !important;
+    overflow-wrap: anywhere;
+}
+
+#rp-booster-popup .rp-secret-action small {
+    opacity: 0.68;
+    font-size: 0.72em;
+    line-height: 1.25;
+}
+
+#rp-booster-popup .rp-plot-history-mode {
+    width: fit-content;
+    margin: 3px 0 5px;
+    padding: 3px 7px;
+    border: 1px solid var(--sb-blue-border);
+    border-radius: 999px;
+    background: var(--sb-blue-selected);
+    color: var(--sb-blue-text);
+    font-size: 0.72em;
+    font-weight: 700;
+}
+
 #rp-booster-popup .rp-plot-category-grid {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1366,6 +1533,14 @@
 
     #rp-booster-popup .rp-event-actions .rp-event-clear-action {
         grid-column: auto;
+    }
+
+    #rp-booster-popup .rp-plot-secret-action-grid {
+        grid-template-columns: 1fr;
+    }
+
+    #rp-booster-popup .rp-secret-action {
+        min-height: 52px;
     }
 }
 

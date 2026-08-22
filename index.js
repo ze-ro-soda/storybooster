@@ -28,7 +28,7 @@ import {
 } from "../../../../script.js";
 
 const MODULE_NAME = "rp-genre-plot-booster";
-const STORYBOOSTER_VERSION = "1.1.0";
+const STORYBOOSTER_VERSION = "1.2.0";
 const GENRE_PROMPT_KEY = "rp_genre_boost";
 const PLOT_PROMPT_KEY = "rp_plot_trigger";
 const DEFAULT_AUDIT_INTERVAL = 10;
@@ -610,14 +610,19 @@ function getCurrentInjectionPromptSnapshot() {
 
 async function openCurrentInjectionPromptViewer() {
     const snapshot = getCurrentInjectionPromptSnapshot();
-    const tokenInfo = await countPromptTokens(snapshot.combinedPrompt);
+    const displayStoryPrompt = resolveRoleMacrosForDisplay(snapshot.storyPrompt);
+    const displayPlotPrompt = resolveRoleMacrosForDisplay(snapshot.plotPrompt);
+    const displayCombinedPrompt = [displayStoryPrompt, displayPlotPrompt]
+        .filter(Boolean)
+        .join("\n\n");
+    const tokenInfo = await countPromptTokens(displayCombinedPrompt);
     const popupId = `rp-injection-popup-${Date.now()}`;
     const displayText = [
-        snapshot.storyPrompt
-            ? `[장르·캐릭터 부스터 · 깊이 1]\n${snapshot.storyPrompt}`
+        displayStoryPrompt
+            ? `[장르·캐릭터 부스터 · 깊이 1]\n${displayStoryPrompt}`
             : "",
-        snapshot.plotPrompt
-            ? `[플롯 1회 주입 · 깊이 0]\n${snapshot.plotPrompt}`
+        displayPlotPrompt
+            ? `[플롯 1회 주입 · 깊이 0]\n${displayPlotPrompt}`
             : "",
     ]
         .filter(Boolean)
@@ -627,7 +632,7 @@ async function openCurrentInjectionPromptViewer() {
             <h3>📄 주입 프롬프트</h3>
             <p class="rp-tool-popup-help">현재 채팅방의 다음 응답에 적용되는 스토리부스터 프롬프트예요. 대괄호 안의 구분 표시는 확인창에만 표시됩니다.</p>
             <div class="rp-tool-popup-stats">
-                <span>${snapshot.combinedPrompt.length.toLocaleString("ko-KR")}자</span>
+                <span>${displayCombinedPrompt.length.toLocaleString("ko-KR")}자</span>
                 <span>${tokenInfo.estimated ? "예상 " : ""}${tokenInfo.count.toLocaleString("ko-KR")}토큰</span>
             </div>
             <div class="rp-tool-popup-actions">
@@ -643,7 +648,7 @@ async function openCurrentInjectionPromptViewer() {
     wireStoryBoosterToolPopup(popupId, (root) => {
         root?.querySelector(".rp-injection-copy")?.addEventListener("click", async () => {
             try {
-                await copyStoryBoosterText(snapshot.combinedPrompt);
+                await copyStoryBoosterText(displayCombinedPrompt);
                 toastr?.success?.("주입 프롬프트를 복사했어요.");
             } catch {
                 toastr?.error?.("주입 프롬프트를 복사하지 못했습니다.");
@@ -1188,6 +1193,30 @@ function getCurrentChatId() {
     return context?.chatId || "no-chat-open";
 }
 
+function getCurrentRoleDisplayNames() {
+    let context = null;
+    try {
+        context = getContext();
+    } catch {
+        context = null;
+    }
+    const userName = String(context?.name1 || "").trim() || "펠소";
+    const characterName =
+        context?.groupId == null
+            ? String(
+                  getCurrentCharacterIdentity()?.name || context?.name2 || ""
+              ).trim() || "캐릭터"
+            : "캐릭터";
+    return { characterName, userName };
+}
+
+function resolveRoleMacrosForDisplay(value) {
+    const { characterName, userName } = getCurrentRoleDisplayNames();
+    return String(value || "")
+        .replace(/\{\{char\}\}/gi, characterName)
+        .replace(/\{\{user\}\}/gi, userName);
+}
+
 function ensureModuleSettings() {
     if (!extension_settings[MODULE_NAME]) {
         extension_settings[MODULE_NAME] = {
@@ -1207,7 +1236,7 @@ function ensureModuleSettings() {
                 plot: true,
             },
             characterBaselines: {},
-            settingsSchemaVersion: 18,
+            settingsSchemaVersion: 19,
         };
     }
     if (!extension_settings[MODULE_NAME].chats) {
@@ -1359,6 +1388,17 @@ function ensureModuleSettings() {
         extension_settings[MODULE_NAME].settingsSchemaVersion = 18;
         saveSettingsDebounced();
     }
+    if (previousSchemaVersion < 19) {
+        for (const state of Object.values(
+            extension_settings[MODULE_NAME].chats
+        )) {
+            if (!state || typeof state !== "object") continue;
+            // Secret mode is deliberately opt-in for every existing chat.
+            state.plotSecretMode = false;
+        }
+        extension_settings[MODULE_NAME].settingsSchemaVersion = 19;
+        saveSettingsDebounced();
+    }
     if (
         !Number.isSafeInteger(extension_settings[MODULE_NAME].plotMaxTokens) ||
         extension_settings[MODULE_NAME].plotMaxTokens < MIN_PLOT_MAX_TOKENS
@@ -1502,6 +1542,12 @@ function getSelectedPlotCategory() {
     );
 }
 
+function getRandomPlotCategory() {
+    const categories = getAvailablePlotCategories();
+    if (!categories.length) return null;
+    return categories[Math.floor(Math.random() * categories.length)] || null;
+}
+
 function normalizeGenreSelection(state) {
     const availableIds = new Set(getAvailableGenres().map((genre) => genre.id));
 
@@ -1570,6 +1616,11 @@ function normalizePlotHistory(state) {
                 typeof entry.userIdea === "string"
                     ? entry.userIdea.slice(0, 2000)
                     : "",
+            surpriseType: ["secret", "random", "crazy"].includes(
+                entry.surpriseType
+            )
+                ? entry.surpriseType
+                : "",
         }))
         .sort((a, b) => b.createdAt - a.createdAt)
         .slice(0, MAX_PLOT_HISTORY);
@@ -1588,9 +1639,8 @@ function ensureChatState(chatId = getCurrentChatId()) {
                 supportIds: [],
             },
             plotHistory: [],
-            characterBoost: {
-                enabled: false,
-            },
+            plotSecretMode: false,
+            characterBoost: {},
             genreAnchor: {
                 responseCount: 0,
                 correctionCodes: [],
@@ -1619,6 +1669,9 @@ function ensureChatState(chatId = getCurrentChatId()) {
     }
     normalizeGenreSelection(state);
     normalizePlotHistory(state);
+    if (typeof state.plotSecretMode !== "boolean") {
+        state.plotSecretMode = false;
+    }
     ensureCharacterBoostState(state);
     ensureGenreAnchorState(state);
 
@@ -6074,6 +6127,136 @@ let plotPending = false;
 const eventGenerationPendingTasks = new Map();
 const plotModeDraftsByChat = new Map();
 
+function isPlotSecretMode(chatId = getCurrentChatId()) {
+    return ensureChatState(chatId).plotSecretMode === true;
+}
+
+function getSelectedSecretPlotAction() {
+    const action = String(
+        getActiveBoosterPopupRoot()?.dataset.secretPlotAction || ""
+    );
+    return ["random", "crazy", "character_question"].includes(action)
+        ? action
+        : "";
+}
+
+function getPlotGenerateButtonLabel(mode, secretMode, secretAction = "") {
+    if (mode === "guided") return "✨ 내 아이디어로 플롯 작성";
+    if (!secretMode) return "🎲 사건 생성";
+    if (secretAction === "random") return "🎁 랜덤박스 열기";
+    if (secretAction === "crazy") return "💥 미친 랜덤박스 열기";
+    if (secretAction === "character_question") {
+        return `❓ ${getCurrentRoleDisplayNames().characterName}의 질문 생성`;
+    }
+    return "🎲 사건 생성";
+}
+
+function selectSecretPlotAction(type = "") {
+    const popupRoot = getActiveBoosterPopupRoot();
+    if (!popupRoot || !isPlotSecretMode()) return;
+    const normalizedType = ["random", "crazy", "character_question"].includes(
+        type
+    )
+        ? type
+        : "";
+    popupRoot.dataset.secretPlotAction =
+        getSelectedSecretPlotAction() === normalizedType ? "" : normalizedType;
+    const selectedAction = getSelectedSecretPlotAction();
+    popupRoot.classList.toggle("has-secret-plot-action", Boolean(selectedAction));
+    popupRoot.querySelectorAll(".rp-secret-action").forEach((button) => {
+        const selected = button.dataset.secretAction === selectedAction;
+        button.classList.toggle("is-selected", selected);
+        button.setAttribute("aria-pressed", String(selected));
+    });
+    const status = getBoosterElement("rp-event-status");
+    if (status) {
+        status.textContent = selectedAction
+            ? "깜짝 전개를 선택했어요. 아래 생성 버튼을 눌러 실행해 주세요."
+            : "선택한 카테고리에 맞는 사건을 플롯 공개 없이 바로 전개합니다.";
+    }
+    updatePlotGenerationPendingUi();
+}
+
+function clearSecretPlotAction() {
+    const popupRoot = getActiveBoosterPopupRoot();
+    if (!popupRoot) return;
+    popupRoot.dataset.secretPlotAction = "";
+    popupRoot.classList.remove("has-secret-plot-action");
+    popupRoot.querySelectorAll(".rp-secret-action").forEach((button) => {
+        button.classList.remove("is-selected");
+        button.setAttribute("aria-pressed", "false");
+    });
+}
+
+function updatePlotSecretModeUi(chatId = getCurrentChatId()) {
+    if (String(chatId) !== String(getCurrentChatId())) return;
+    const popupRoot = getActiveBoosterPopupRoot();
+    if (!popupRoot) return;
+    const enabled = isPlotSecretMode(chatId);
+    const toggle = getBoosterElement("rp-plot-secret-toggle");
+    const panel = getBoosterElement("rp-plot-secret-tools");
+    const resultWrap = getBoosterElement("rp-event-result-wrap");
+    const mode = popupRoot.dataset.plotMode || "free";
+
+    popupRoot.classList.toggle("is-plot-secret-mode", enabled);
+    if (toggle) {
+        toggle.checked = enabled;
+        toggle.setAttribute("aria-checked", String(enabled));
+    }
+    if (panel) panel.hidden = !enabled || mode !== "free";
+    if (resultWrap && mode === "free") {
+        const draft = getPlotModeDrafts(chatId).free;
+        resultWrap.hidden = enabled || !String(draft?.text || "").trim();
+    }
+    updatePlotGenerationPendingUi(chatId);
+}
+
+function setPlotSecretMode(enabled) {
+    const state = ensureChatState();
+    state.plotSecretMode = Boolean(enabled);
+    if (!state.plotSecretMode) clearSecretPlotAction();
+    saveSettingsDebounced();
+    updatePlotSecretModeUi();
+    const status = getBoosterElement("rp-event-status");
+    if (status) {
+        status.textContent = state.plotSecretMode
+            ? "선택한 카테고리에 맞는 사건을 플롯 공개 없이 바로 전개합니다."
+            : "비밀모드를 껐어요. 생성 결과는 아래에 표시됩니다.";
+    }
+}
+
+function launchSecretSurprise(type) {
+    if (!isPlotSecretMode()) {
+        toastr?.info?.("비밀모드를 먼저 켜 주세요.");
+        return;
+    }
+    if (type === "crazy") {
+        const confirmed = window.confirm(
+            "현재 흐름과 무관한 엉뚱한 전개가 발생할 수 있어요. 미친 랜덤박스를 열까요?"
+        );
+        if (!confirmed) return;
+    }
+    generateEventCandidate("generate", { surpriseType: type });
+}
+
+function runSelectedPlotGenerationAction() {
+    const popupRoot = getActiveBoosterPopupRoot();
+    const mode = popupRoot?.dataset.plotMode || "free";
+    const selectedAction =
+        mode === "free" && isPlotSecretMode()
+            ? getSelectedSecretPlotAction()
+            : "";
+    if (selectedAction === "random" || selectedAction === "crazy") {
+        launchSecretSurprise(selectedAction);
+        return;
+    }
+    if (selectedAction === "character_question") {
+        generateCharacterQuestionReply();
+        return;
+    }
+    generateEventCandidate("generate");
+}
+
 function showPlotGenerationToast(kind, message) {
     toastr?.[kind]?.(message, "스토리부스터", {
         timeOut: 2400,
@@ -6104,6 +6287,9 @@ function updatePlotGenerationPendingUi(chatId = getCurrentChatId()) {
     const featureEnabled = isBoosterFeatureEnabled("plot");
     const popupRoot = getActiveBoosterPopupRoot();
     const mode = popupRoot?.dataset.plotMode || "free";
+    const secretMode = isPlotSecretMode(chatId);
+    const secretAction =
+        mode === "free" && secretMode ? getSelectedSecretPlotAction() : "";
     const generateButton = getBoosterElement("rp-event-generate-btn");
     const status = getBoosterElement("rp-event-status");
 
@@ -6111,15 +6297,18 @@ function updatePlotGenerationPendingUi(chatId = getCurrentChatId()) {
         generateButton.disabled = pending || !featureEnabled;
         generateButton.textContent = pending
             ? "⏳ 플롯 생성 중…"
-            : mode === "guided"
-              ? "✨ 내 아이디어로 플롯 작성"
-              : "🎲 자유 사건 생성";
+            : getPlotGenerateButtonLabel(mode, secretMode, secretAction);
     }
     getBoosterElements(".rp-plot-mode-button, .rp-event-result-action").forEach(
         (button) => {
             button.disabled = pending || !featureEnabled;
         }
     );
+    getBoosterElements(
+        ".rp-plot-category-card, .rp-secret-action, #rp-plot-secret-toggle"
+    ).forEach((control) => {
+        control.disabled = pending || !featureEnabled || plotPending;
+    });
     if (status && pending) {
         status.textContent = "";
     }
@@ -6144,17 +6333,42 @@ function triggerPlotEvent(eventText) {
         "Begin directly with the roleplay. Preserve established characterization, point of view, formatting, language, continuity, and relationship dynamics.",
     ].join("\n");
 
+    registerOneShotRoleplayInstruction(text);
+}
+
+function registerOneShotRoleplayInstruction(text) {
+    const instruction = String(text || "").trim();
+    if (!instruction) return;
+
     setExtensionPrompt(
         PLOT_PROMPT_KEY,
-        text,
+        instruction,
         extension_prompt_types.IN_CHAT,
         0, // depth 0 = right before the next reply
         false,
         extension_prompt_roles.SYSTEM
     );
 
-    currentPlotInjectionText = text;
+    currentPlotInjectionText = instruction;
     plotPending = true;
+}
+
+function buildCharacterQuestionInstruction() {
+    return [
+        "[STORYBOOSTER — ONE-SHOT UNRESTRICTED IN-CHARACTER QUESTION]",
+        "Write the next {{char}} roleplay response immediately. This response has one primary purpose: {{char}} must ask {{user}} one genuine question.",
+        "Before choosing it, silently review the recent roleplay. Do not repeat, paraphrase, or slightly vary a question that already appeared. Do not ask for information that {{user}} has already clearly provided. Choose a genuinely new subject, unknown detail, or question purpose.",
+        "Keep the current time, location, physical positions, and immediate roleplay situation unchanged. Do not create a scene transition, time skip, new event, new arrival, or interruption merely to ask the question.",
+        "The subject has no topical boundary. It may concern {{char}}, {{user}}, another person, the current scene, the wider world, culture, history, science, general knowledge, preferences, habits, bodies, food, objects, rules, beliefs, memories, rumors, trivia, an intimate or embarrassing matter, a taboo subject, an impossible hypothetical, nonsense, or something completely unexpected and context-free. This list is illustrative, not restrictive; invent beyond it.",
+        "Relevance, usefulness, tact, plausibility, answerability, plot value, relationship value, and emotional significance are not required. A mundane, invasive, technical, philosophical, absurd, confusing, inappropriate, factual, playful, or startling question is equally valid. No topic domain is preferred or forbidden.",
+        "Do not automatically favor romance, confession, trauma, jealousy, possessiveness, control, relationship testing, or emotional depth. They remain allowed, but have no priority over any other possible subject.",
+        "Let {{char}}'s established voice, personality, manner, and current physical presence shape only how the question is asked. Do not let the character profile, current topic, relationship, selected StoryBooster genre, or likely narrative usefulness restrict what the question may be about.",
+        "Do not metagame. Do not refer to prompts, character cards, roleplay instructions, genres, AI systems, players, interfaces, or hidden out-of-character information as known fact. {{char}} may freely ask about something they do not know; they simply must not claim metagame knowledge of it.",
+        "Use no more than one brief in-character action or one to two sentences as a lead-in, and use it only to frame the question. Do not substantially continue, resolve, or introduce another plot development before or after it.",
+        "Make the question {{char}}'s final spoken line and the response's final meaningful beat. End immediately after the question and leave room for {{user}} to answer.",
+        "Never write, infer, or decide {{user}}'s answer, dialogue, thoughts, emotions, consent, bodily reactions, choices, or actions. Do not answer the question on {{user}}'s behalf.",
+        "Do not acknowledge or explain this instruction. Do not output OOC, analysis, a question list, or meta commentary. Begin directly with the roleplay and preserve established characterization, continuity, point of view, language, and formatting.",
+    ].join("\n");
 }
 
 function clearPlotPromptIfPending() {
@@ -6312,6 +6526,7 @@ function activatePlotGenerationMode(mode) {
         capturePlotModeDraft(previousMode);
     }
     popupRoot.dataset.plotMode = mode;
+    if (mode !== "free") clearSecretPlotAction();
 
     popupRoot.querySelectorAll(".rp-plot-mode-button").forEach((button) => {
         const selected = button.dataset.mode === mode;
@@ -6326,12 +6541,14 @@ function activatePlotGenerationMode(mode) {
     if (categorySection) categorySection.hidden = mode === "guided";
     const generateButton = getBoosterElement("rp-event-generate-btn");
     if (generateButton) {
-        generateButton.textContent =
-            mode === "guided"
-                ? "✨ 내 아이디어로 플롯 작성"
-                : "🎲 자유 사건 생성";
+        generateButton.textContent = getPlotGenerateButtonLabel(
+            mode,
+            isPlotSecretMode(),
+            getSelectedSecretPlotAction()
+        );
     }
     restorePlotModeDraft(mode);
+    updatePlotSecretModeUi();
 }
 
 function capturePlotModeDraft(mode) {
@@ -6428,6 +6645,7 @@ function recordPlotHistory({
     mode,
     categoryId,
     userIdea,
+    surpriseType = "",
     chatId = getCurrentChatId(),
     updateUi = true,
 }) {
@@ -6442,6 +6660,9 @@ function recordPlotHistory({
         mode: mode === "guided" ? "guided" : "free",
         categoryId: String(categoryId || ""),
         userIdea: String(userIdea || "").slice(0, 2000),
+        surpriseType: ["secret", "random", "crazy"].includes(surpriseType)
+            ? surpriseType
+            : "",
     };
     state.plotHistory = [
         entry,
@@ -6457,6 +6678,20 @@ function recordPlotHistory({
         updatePlotHistoryUI();
     }
     return entry;
+}
+
+function getPlotHistoryModeLabel(entry) {
+    if (entry.surpriseType === "crazy") return "💥 미친 랜덤박스";
+    if (entry.surpriseType === "random") {
+        const category = getAvailablePlotCategories().find(
+            (item) => item.id === entry.categoryId
+        );
+        return category
+            ? `🎁 랜덤박스 · ${category.emoji} ${category.label}`
+            : "🎁 랜덤박스";
+    }
+    if (entry.surpriseType === "secret") return "🔒 비밀모드";
+    return "";
 }
 
 function renderPlotHistoryCards() {
@@ -6488,6 +6723,13 @@ function renderPlotHistoryCards() {
                         title="삭제"
                     >×</button>
                 </div>
+                ${
+                    getPlotHistoryModeLabel(entry)
+                        ? `<div class="rp-plot-history-mode">${escapeHtml(
+                              getPlotHistoryModeLabel(entry)
+                          )}</div>`
+                        : ""
+                }
                 <p>${escapeHtml(entry.text)}</p>
                 <button
                     type="button"
@@ -6595,12 +6837,16 @@ function buildEventGenerationPrompt(
         userIdea = "",
         characterBoostAnchor = "",
         outputLanguage = ensureModuleSettings().outputLanguage,
+        surpriseType = "",
     } = {}
 ) {
+    const isCrazyRandom = surpriseType === "crazy";
     const compactCharacterAnchor = String(characterBoostAnchor || "")
         .trim()
         .slice(0, CHARACTER_BOOST_ANCHOR_MAX_CHARS);
-    const characterContinuityLines = compactCharacterAnchor
+    const characterContinuityLines = isCrazyRandom
+        ? []
+        : compactCharacterAnchor
         ? [
               "CHARACTER CONTINUITY FOR PLOT PLANNING:",
               `<character_boost_anchor>\n${compactCharacterAnchor}\n</character_boost_anchor>`,
@@ -6610,14 +6856,23 @@ function buildEventGenerationPrompt(
         : [
               "No compact character-booster anchor is available. Infer characterization conservatively from the supplied transcript and do not invent a stock personality or relationship trope to create drama.",
           ];
-    const ideaLine = userIdea
+    const ideaLine = isCrazyRandom
+        ? "Invent the occurrence independently. Do not optimize it for coherence, plausibility, genre fit, usefulness, emotional relevance, continuity, tasteful storytelling, or smooth integration. Impossible, absurd, disproportionate, tonally disruptive, or inexplicable results are welcome."
+        : userIdea
         ? [
               "The user supplied a rough plot idea. Preserve its central intent and refine it into a coherent, context-aware event. Add only details needed for causality, specificity, and integration with the roleplay.",
               `<user_plot_idea>${userIdea}</user_plot_idea>`,
           ].join("\n")
         : "Create the event freely within the selected category.";
 
-    const categoryLines = category
+    const categoryLines = isCrazyRandom
+        ? [
+              "CHAOS MODE: Ignore the current roleplay, selected genre, plot categories, character anchor, relationship direction, tone, world rules, causality, and prior suggestions when inventing the occurrence.",
+              "Generate three maximally different possibilities silently. Discard the easiest one to explain and the most conventional one. Return only the strangest remaining possibility.",
+              "The result must be genuinely unpredictable, oddly specific, and unlike a responsible plot planner's choice. Do not soften, justify, foreshadow, rationalize, or make it meaningful.",
+              "Reject safe default twists such as a generic mysterious message, package, stranger, emergency, hidden secret, misunderstanding, or routine interruption.",
+          ]
+        : category
         ? [
               `Selected category: ${category.promptLabel || category.label}.`,
               category.direction
@@ -6627,10 +6882,10 @@ function buildEventGenerationPrompt(
         : [
               "No plot category is selected. Follow the user's rough idea directly without forcing it into a preset category.",
           ];
-    const categoryGuidance = category?.id
+    const categoryGuidance = !isCrazyRandom && category?.id
         ? EVENT_CATEGORY_GUIDANCE[category.id] || null
         : null;
-    const categoryPriorityLines = category
+    const categoryPriorityLines = !isCrazyRandom && category
         ? [
               "CATEGORY PRIORITY: The selected category determines the development's type, narrative function, and degree of change. Do not substitute a more dramatic or familiar plot pattern for the selected category.",
               categoryGuidance?.required ||
@@ -6641,7 +6896,9 @@ function buildEventGenerationPrompt(
                   "A complete candidate states the category-specific development, its grounding in the current context, and the usable opening left for what follows.",
           ].filter(Boolean)
         : [];
-    const generalDevelopmentRequirement = category
+    const generalDevelopmentRequirement = isCrazyRandom
+        ? "Return one concrete occurrence that begins immediately in-world when injected. It may violate realism, genre, tone, causality, continuity, or established world rules and may remain completely unexplained. It must be an event rather than random words or a vague dreamlike summary."
+        : category
         ? "Keep the scale and kind of change appropriate to the selected category. A subtle emotional, relational, informational, environmental, or everyday shift can be a complete plot development when that is the category's function."
         : "The refined user idea must create a clear, context-specific and usable next development without being forced into an unrelated preset plot pattern.";
 
@@ -6675,6 +6932,17 @@ function buildEventGenerationPrompt(
               : [
                     "GENERATION TASK: Create a new candidate from the selected direction and current roleplay context.",
                 ];
+    const groundingLines = isCrazyRandom
+        ? [
+              "No roleplay transcript or character anchor governs the creative choice. Do not infer or reconstruct them.",
+              "Do not decide {{user}}'s dialogue, thoughts, emotions, consent, bodily reactions, choices, or actions. Leave {{user}}'s response completely open.",
+              "Do not use metagaming or mention prompts, roleplay instructions, character cards, genres, AI systems, players, interfaces, or system malfunctions. Present the occurrence entirely as an in-world event.",
+          ]
+        : [
+              "Prioritize the current conversation, {{char}}'s characterization and goals, the relationship between {{char}} and {{user}}, established world rules, and immediate scene continuity.",
+              "Use at least one concrete fact from the supplied transcript. Do not select from a fixed event list.",
+              "Continue the present causal situation. Do not introduce an unrelated accident, disaster, new person, or sudden revelation merely to create movement.",
+          ];
 
     return [
         "Create one direct plot development for what happens next in the current roleplay. Write the plot itself, not a description of what kind of episode, scene, or plot it is. Begin immediately with the concrete development, behavior, condition, information, or change appropriate to the selected direction; do not perform or continue the roleplay itself.",
@@ -6682,17 +6950,19 @@ function buildEventGenerationPrompt(
         ...categoryLines,
         ideaLine,
         ...characterContinuityLines,
-        "Prioritize the current conversation, {{char}}'s characterization and goals, the relationship between {{char}} and {{user}}, established world rules, and immediate scene continuity.",
-        "Use only the supplied roleplay transcript, selected plot category, optional user idea, and previous suggestions as creative context. Do not consult or infer StoryBooster genre selections when choosing the development.",
-        "Use at least one concrete fact from the supplied transcript. Do not select from a fixed event list.",
+        ...groundingLines,
+        isCrazyRandom
+            ? "Use only the requested output language and the explicit no-metagaming and {{user}}-agency boundaries. Nothing else constrains the creative choice."
+            : "Use only the supplied roleplay transcript, selected plot category, optional user idea, and previous suggestions as creative context. Do not consult or infer StoryBooster genre selections when choosing the development.",
         generalDevelopmentRequirement,
-        "Continue the present causal situation. Do not introduce an unrelated accident, disaster, new person, or sudden revelation merely to create movement.",
         "Do not create jealousy, possessiveness, obsession, overprotectiveness, territorial behavior, controlling behavior, surveillance, or restriction of autonomy as generic relationship tension. Use any of them only when the recent transcript clearly establishes the relevant character tendency and the immediate situation specifically activates it; affection, concern, attraction, fear of loss, danger, or emotional intensity alone is not sufficient evidence.",
         "Do not fully resolve the development; leave meaningful room for the next roleplay response and what follows.",
         ...categoryPriorityLines,
         "Use prospective or planning language, but state the development directly. Do not introduce, label, summarize, or evaluate it with phrases such as 'This episode...', 'This scene...', 'The plot...', '이 에피소드는', '이 장면은', '~한 에피소드입니다', or '~한 장면입니다'. Do not write direct dialogue, quoted speech, internal monologue, first-person narration, character-roleplay prose, or a completed scene. The result must still require a separate roleplay generation to become a scene.",
         "Treat these as planning instructions, never as an OOC request to acknowledge, promise future compliance, or explain how the plot should be used.",
-        "Before returning the candidate, silently verify that its central development belongs more clearly to the selected category than to any other built-in category, is grounded in the supplied roleplay, and leaves a usable next step. If another category fits better, rewrite the candidate instead of relabeling it. Output only the candidate, not the check.",
+        isCrazyRandom
+            ? "Before returning the candidate, silently ask whether it feels coherent, useful, tasteful, foreshadowed, or like a familiar plot device. If so, discard it and choose something stranger. Verify only that it is a concrete in-world occurrence, contains no metagaming, and leaves {{user}}'s response open. Output only the candidate, not the check."
+            : "Before returning the candidate, silently verify that its central development belongs more clearly to the selected category than to any other built-in category, is grounded in the supplied roleplay, and leaves a usable next step. If another category fits better, rewrite the candidate instead of relabeling it. Output only the candidate, not the check.",
         getPlotOutputInstruction(outputLanguage),
         'Return exactly one JSON object: {"event":"event text"}.',
         "Do not output a title, number, category label, Markdown fence, or commentary outside the JSON.",
@@ -6701,13 +6971,17 @@ function buildEventGenerationPrompt(
         .join("\n");
 }
 
-async function generateEventCandidate(operation = "generate") {
+async function generateEventCandidate(operation = "generate", options = {}) {
     if (!isBoosterFeatureEnabled("plot")) {
         toastr?.info?.("전역 설정에서 플롯 부스터를 켜 주세요.");
         return;
     }
 
     const taskChatId = String(getCurrentChatId());
+    if (plotPending) {
+        toastr?.info?.("현재 일회성 전개를 적용하고 있어요.");
+        return;
+    }
     if (eventGenerationPendingTasks.has(taskChatId)) {
         updatePlotGenerationPendingUi(taskChatId);
         toastr?.info?.("이 채팅의 플롯을 이미 생성하고 있어요.");
@@ -6739,6 +7013,16 @@ async function generateEventCandidate(operation = "generate") {
     }
 
     const mode = popupRoot.dataset.plotMode || "free";
+    const requestedSurpriseType = ["random", "crazy"].includes(
+        options.surpriseType
+    )
+        ? options.surpriseType
+        : "";
+    const surpriseType =
+        operation === "generate" && mode === "free"
+            ? requestedSurpriseType || (isPlotSecretMode(taskChatId) ? "secret" : "")
+            : "";
+    const autoInject = Boolean(surpriseType);
     const userIdea = mode === "guided" ? String(ideaInput?.value || "").trim() : "";
     const currentEvent = resultField.value.trim();
     if (operation === "generate" && mode === "guided" && !userIdea) {
@@ -6750,14 +7034,25 @@ async function generateEventCandidate(operation = "generate") {
         status.textContent = "먼저 플롯 추천을 생성하거나 기존 추천을 불러와 주세요.";
         return;
     }
-    const category = mode === "guided" ? null : getSelectedPlotCategory();
+    const category =
+        mode === "guided" || surpriseType === "crazy"
+            ? null
+            : surpriseType === "random"
+              ? getRandomPlotCategory()
+              : getSelectedPlotCategory();
+    if (surpriseType === "random" && !category) {
+        status.textContent = "랜덤박스에서 사용할 카테고리를 찾지 못했어요.";
+        return;
+    }
     const task = {
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         operation,
         startedAt: Date.now(),
     };
     const plotDiagnostic = createOperationDiagnostic({
-        task: `plot_${operation}`,
+        task: surpriseType
+            ? `plot_${surpriseType}_generate`
+            : `plot_${operation}`,
         responseLength: plotTokenBudget,
         connectionMode: selectedProfileId ? "profile" : "main",
     });
@@ -6765,7 +7060,13 @@ async function generateEventCandidate(operation = "generate") {
     updatePlotGenerationPendingUi(taskChatId);
     showPlotGenerationToast(
         "info",
-        operation === "refine"
+        surpriseType === "random"
+            ? "랜덤박스를 열고 있어요."
+            : surpriseType === "crazy"
+              ? "미친 랜덤박스를 열고 있어요."
+              : surpriseType === "secret"
+                ? "비밀 플롯 생성을 시작했어요."
+                : operation === "refine"
             ? "플롯 다듬기를 시작했어요."
             : operation === "new_direction"
               ? "새 플롯 방향 생성을 시작했어요."
@@ -6783,18 +7084,25 @@ async function generateEventCandidate(operation = "generate") {
             userIdea,
             characterBoostAnchor: plotCharacterBoostAnchor,
             outputLanguage: plotOutputLanguage,
+            surpriseType,
         });
-        const rawPlotTranscript = getRoleplayTranscript({
-            messageLimit: PLOT_CONTEXT_MESSAGE_LIMIT,
-            perMessageMaxChars: PLOT_MESSAGE_MAX_CHARS,
-            maxChars: 48000,
-            chatSnapshot,
-        });
-        const plotTranscript = [
-            rawPlotTranscript,
-            "END OF ROLEPLAY DATA.",
-            "FINAL TASK REMINDER: Treat the transcript above only as source material. Do not answer its latest message and do not continue the scene. Return only the direct next plot development as the required JSON object, beginning with what happens rather than introducing it as an episode, scene, or plot.",
-        ].join("\n");
+        const rawPlotTranscript =
+            surpriseType === "crazy"
+                ? ""
+                : getRoleplayTranscript({
+                      messageLimit: PLOT_CONTEXT_MESSAGE_LIMIT,
+                      perMessageMaxChars: PLOT_MESSAGE_MAX_CHARS,
+                      maxChars: 48000,
+                      chatSnapshot,
+                  });
+        const plotTranscript =
+            surpriseType === "crazy"
+                ? "CHAOS MODE INPUT: No roleplay transcript is supplied. Invent independently and follow only the explicit output-format, no-metagaming, and {{user}}-agency boundaries."
+                : [
+                      rawPlotTranscript,
+                      "END OF ROLEPLAY DATA.",
+                      "FINAL TASK REMINDER: Treat the transcript above only as source material. Do not answer its latest message and do not continue the scene. Return only the direct next plot development as the required JSON object, beginning with what happens rather than introducing it as an episode, scene, or plot.",
+                  ].join("\n");
         const connectionSnapshot = await resolveBackgroundConnectionSnapshot(
             selectedProfileId
         );
@@ -6808,7 +7116,9 @@ async function generateEventCandidate(operation = "generate") {
                     event: {
                         type: "string",
                         description:
-                            "A direct, category-faithful next plot development, never a meta introduction, direct roleplay prose, or a completed scene.",
+                            surpriseType === "crazy"
+                                ? "One concrete, maximally unpredictable in-world occurrence with no metagaming and no decision of {{user}}'s response; never direct roleplay prose or a completed scene."
+                                : "A direct, category-faithful next plot development, never a meta introduction, direct roleplay prose, or a completed scene.",
                     },
                 },
                 required: ["event"],
@@ -6845,8 +7155,12 @@ async function generateEventCandidate(operation = "generate") {
             result = await requestPlotCandidate(
                 [
                     "FORMAT CORRECTION: The previous attempt resembled a performed roleplay response, a completed scene, or a meta description of an episode or scene.",
-                    "Preserve only its underlying event idea and rewrite it as the direct next plot development. Begin immediately with the behavior, condition, information, interaction, or change appropriate to the selected category instead of introducing or labeling the output.",
-                    "Use prospective or planning language. State the category-specific development, its effect on the current situation, and the unresolved opening it creates.",
+                    surpriseType === "crazy"
+                        ? "Preserve only the strange underlying occurrence. Rewrite it as a direct, concrete event that begins immediately when injected. Do not make it more coherent, plausible, useful, contextual, or character-driven."
+                        : "Preserve only its underlying event idea and rewrite it as the direct next plot development. Begin immediately with the behavior, condition, information, interaction, or change appropriate to the selected category instead of introducing or labeling the output.",
+                    surpriseType === "crazy"
+                        ? "Keep the result context-free, inexplicable, and maximally unpredictable while preserving the no-metagaming and {{user}}-agency boundaries."
+                        : "Use prospective or planning language. State the category-specific development, its effect on the current situation, and the unresolved opening it creates.",
                     "Do not use framing such as 'This episode...', 'This scene...', 'The plot...', '이 에피소드는', '이 장면은', '~한 에피소드입니다', or '~한 장면입니다'.",
                     "Do not include direct dialogue, quoted speech, internal monologue, first-person narration, roleplay actions, or scene prose.",
                     `<invalid_scene_output>${eventText}</invalid_scene_output>`,
@@ -6911,18 +7225,44 @@ async function generateEventCandidate(operation = "generate") {
             mode,
             categoryId: category?.id || "",
             userIdea,
+            surpriseType,
             chatId: taskChatId,
             updateUi: getCurrentChatId() === taskChatId,
         });
         showPlotGenerationToast(
             "success",
-            operation === "refine"
+            surpriseType === "random"
+                ? "랜덤박스 플롯을 준비했어요."
+                : surpriseType === "crazy"
+                  ? "미친 랜덤박스 플롯을 준비했어요."
+                  : surpriseType === "secret"
+                    ? "비밀 플롯을 준비했어요."
+                    : operation === "refine"
                 ? "플롯 다듬기가 완료됐어요."
                 : operation === "new_direction"
                   ? "새 플롯 방향이 완성됐어요."
                   : "플롯 생성이 완료됐어요."
         );
         if (String(getCurrentChatId()) !== taskChatId) {
+            return;
+        }
+        if (autoInject) {
+            const liveResultField =
+                getBoosterElement("rp-event-result") || resultField;
+            const liveResultWrap =
+                getBoosterElement("rp-event-result-wrap") || resultWrap;
+            liveResultField.value = eventText;
+            if (historyEntry?.id) {
+                liveResultField.dataset.historyId = historyEntry.id;
+            }
+            liveResultWrap.hidden = true;
+            getPlotModeDrafts(taskChatId).free = {
+                text: eventText,
+                historyId: historyEntry?.id || "",
+            };
+            await injectEventAndGenerateReply(eventText, {
+                source: surpriseType,
+            });
             return;
         }
         getPlotModeDrafts(taskChatId)[mode] = {
@@ -7042,18 +7382,19 @@ function insertEventIntoComposer() {
     toastr?.success?.("사건을 채팅 입력창에 넣었습니다.");
 }
 
-async function injectEventAndGenerateReply() {
+async function injectEventAndGenerateReply(eventTextOverride = "", options = {}) {
     if (!isBoosterFeatureEnabled("plot")) {
         toastr?.info?.("전역 설정에서 플롯 부스터를 켜 주세요.");
         return;
     }
-    const eventText = getGeneratedEventText();
-    if (!eventText) {
+    const eventText = String(eventTextOverride || getGeneratedEventText()).trim();
+    const instructionText = String(options.instructionText || "").trim();
+    if (!eventText && !instructionText) {
         toastr?.warning?.("먼저 사건 후보를 생성하세요.");
         return;
     }
 
-    const chatId = getCurrentChatId();
+    const chatId = String(getCurrentChatId());
     const context = getContext();
     if (typeof context?.generate !== "function") {
         toastr?.error?.("이 SillyTavern 버전에서는 즉시 응답 생성 API를 찾을 수 없습니다.");
@@ -7061,11 +7402,18 @@ async function injectEventAndGenerateReply() {
     }
 
     try {
-        triggerPlotEvent(eventText);
+        if (instructionText) {
+            registerOneShotRoleplayInstruction(instructionText);
+        } else {
+            triggerPlotEvent(eventText);
+        }
     } catch (error) {
         console.error(`[${MODULE_NAME}] plot injection failed:`, error);
         recordStoryBoosterError(error, {
-            task: "plot_injection",
+            task:
+                options.source === "character_question"
+                    ? "character_question_injection"
+                    : "plot_injection",
             stage: "prompt_injection",
         });
         toastr?.error?.(
@@ -7074,13 +7422,17 @@ async function injectEventAndGenerateReply() {
         return;
     }
     const popupRoot = closeBoosterPopup();
-    toastr?.info?.("플롯을 주입하고 현재 채팅 연결로 응답 생성을 시작합니다.");
+    toastr?.info?.(
+        options.source === "character_question"
+            ? "캐릭터의 질문을 현재 채팅 연결로 생성합니다."
+            : "플롯을 주입하고 현재 채팅 연결로 응답 생성을 시작합니다."
+    );
 
     // Wait for the active popup rather than a fixed delay. Some mobile themes
     // use a longer close animation and can otherwise block normal generation.
     await waitForBoosterPopupToClose(popupRoot);
 
-    if (getCurrentChatId() !== chatId) {
+    if (String(getCurrentChatId()) !== chatId) {
         clearPlotPromptIfPending();
         toastr?.warning?.(
             "채팅이 변경되어 플롯 주입과 응답 생성을 취소했습니다."
@@ -7097,16 +7449,44 @@ async function injectEventAndGenerateReply() {
     } catch (err) {
         console.error(`[${MODULE_NAME}] reply generation failed:`, err);
         recordStoryBoosterError(err, {
-            task: "roleplay_reply_generation",
+            task:
+                options.source === "character_question"
+                    ? "character_question_reply_generation"
+                    : "roleplay_reply_generation",
             stage: "reply_generation",
             timeoutMs: 600000,
         });
-        toastr?.error?.("사건을 주입했지만 AI 응답 생성에 실패했습니다.");
+        toastr?.error?.(
+            options.source === "character_question"
+                ? "질문 지침을 주입했지만 AI 응답 생성에 실패했습니다."
+                : "사건을 주입했지만 AI 응답 생성에 실패했습니다."
+        );
     } finally {
         // MESSAGE_RECEIVED normally clears this first. The finally block also
         // covers cancellation and failed generations so no stale event remains.
         clearPlotPromptIfPending();
     }
+}
+
+async function generateCharacterQuestionReply() {
+    if (!isBoosterFeatureEnabled("plot")) {
+        toastr?.info?.("전역 설정에서 플롯 부스터를 켜 주세요.");
+        return;
+    }
+    const chatId = String(getCurrentChatId());
+    if (plotPending || eventGenerationPendingTasks.has(chatId)) {
+        toastr?.info?.("현재 다른 전개를 생성하거나 적용하고 있어요.");
+        return;
+    }
+    const { characterName } = getCurrentRoleDisplayNames();
+    showPlotGenerationToast(
+        "info",
+        `${characterName}의 새로운 질문을 준비해요.`
+    );
+    await injectEventAndGenerateReply("", {
+        source: "character_question",
+        instructionText: buildCharacterQuestionInstruction(),
+    });
 }
 
 // ----------------------------------------------------------------------
@@ -7466,10 +7846,18 @@ function renderAuditStatusGrid(grid, audit, items, scope) {
     if (audit?.ratings) {
         items.forEach((item) => {
             const status = getGenreAuditDisplayStatus(audit, item.code);
+            const displayTitle =
+                scope === "character" && item.code === "relationship"
+                    ? (() => {
+                          const { characterName, userName } =
+                              getCurrentRoleDisplayNames();
+                          return `${characterName}-${userName} 관계 반응`;
+                      })()
+                    : item.title;
             const row = document.createElement("button");
             row.type = "button";
             row.className = "rp-audit-status-item";
-            row.title = item.title;
+            row.title = displayTitle;
             row.dataset.auditScope = scope;
             row.dataset.auditCode = item.code;
             row.setAttribute("aria-expanded", selectedCode === item.code ? "true" : "false");
@@ -8544,6 +8932,8 @@ function renderBoosterPopupHtml(popupInstanceId = "") {
     const genreFeatureEnabled = isBoosterFeatureEnabled("genre");
     const characterFeatureEnabled = isBoosterFeatureEnabled("character");
     const plotFeatureEnabled = isBoosterFeatureEnabled("plot");
+    const plotSecretMode = s.plotSecretMode === true;
+    const { characterName, userName } = getCurrentRoleDisplayNames();
     const characterBaselineState = getCurrentCharacterBaseline();
     const characterReadiness = getCharacterBoosterReadiness(
         characterBaselineState
@@ -8790,11 +9180,20 @@ function renderBoosterPopupHtml(popupInstanceId = "") {
         </div>
 
         <div id="rp-plot-category-section">
-            <div class="rp-plot-section-title">카테고리</div>
-            <p id="rp-plot-category-description" class="rp-plot-category-description"></p>
+            <div class="rp-plot-category-heading">
+                <div class="rp-plot-section-title">카테고리</div>
+                <label class="rp-plot-secret-switch" title="비밀모드 켜기 또는 끄기">
+                    <span class="rp-plot-secret-label">🔒 비밀</span>
+                    <input id="rp-plot-secret-toggle" type="checkbox" ${
+                        plotSecretMode ? "checked" : ""
+                    } aria-checked="${plotSecretMode}">
+                    <span class="rp-plot-secret-track" aria-hidden="true"></span>
+                </label>
+            </div>
             <div id="rp-plot-category-grid" class="rp-plot-category-grid">
                 ${renderPlotCategoryCards()}
             </div>
+            <p id="rp-plot-category-description" class="rp-plot-category-description"></p>
 
             <details id="rp-custom-plot-editor">
                 <summary>➕ 플롯 카테고리 직접 추가</summary>
@@ -8814,15 +9213,45 @@ function renderBoosterPopupHtml(popupInstanceId = "") {
                 <button id="rp-custom-plot-add-btn" type="button" class="menu_button">카테고리 추가</button>
                 <p id="rp-custom-plot-status" aria-live="polite"></p>
             </details>
+
+            <div id="rp-plot-secret-tools" class="rp-plot-secret-tools" ${
+                plotSecretMode ? "" : "hidden"
+            }>
+                <div class="rp-plot-section-title">깜짝 전개</div>
+                <div class="rp-plot-secret-action-grid">
+                    <button type="button" id="rp-plot-random-box" class="menu_button rp-secret-action" data-secret-action="random" aria-pressed="false">
+                        <span class="rp-secret-action-icon">🎁</span>
+                        <span><strong>랜덤박스</strong><small>카테고리와 결과를 숨긴 채 무작위 사건을 전개합니다</small></span>
+                    </button>
+                    <button type="button" id="rp-plot-crazy-box" class="menu_button rp-secret-action" data-secret-action="crazy" aria-pressed="false">
+                        <span class="rp-secret-action-icon">💥</span>
+                        <span><strong>미친 랜덤박스</strong><small>현재 흐름과 개연성을 벗어난 예상 밖의 전개까지 허용합니다</small></span>
+                    </button>
+                    <button type="button" id="rp-character-question" class="menu_button rp-secret-action" data-secret-action="character_question" aria-pressed="false">
+                        <span class="rp-secret-action-icon">❓</span>
+                        <span><strong>${escapeHtml(characterName)}의 질문</strong><small>${escapeHtml(
+                            characterName
+                        )}가 ${escapeHtml(userName)}에게 무작위 질문을 던집니다</small></span>
+                    </button>
+                </div>
+            </div>
         </div>
 
         <div id="rp-plot-idea-wrap" hidden>
             <label for="rp-plot-idea">원하는 플롯의 키워드나 대략적인 내용</label>
-            <textarea id="rp-plot-idea" rows="4" maxlength="2000" placeholder="예: 캐릭터가 펠소에게 숨기던 사실을 털어놓으려 하지만 예상치 못한 방해가 생긴다. 핵심 의도와 현재 관계를 유지해 자연스럽게 다듬어 줘."></textarea>
+            <textarea id="rp-plot-idea" rows="4" maxlength="2000" placeholder="예: ${escapeHtml(
+                characterName
+            )}이 ${escapeHtml(
+                userName
+            )}에게 숨기던 사실을 털어놓으려 하지만 예상치 못한 방해가 생긴다. 핵심 의도와 현재 관계를 유지해 자연스럽게 다듬어 줘."></textarea>
         </div>
 
-        <button id="rp-event-generate-btn" type="button" class="menu_button">🎲 자유 사건 생성</button>
-        <p id="rp-event-status" aria-live="polite">결과는 아래에 표시됩니다.</p>
+        <button id="rp-event-generate-btn" type="button" class="menu_button">🎲 사건 생성</button>
+        <p id="rp-event-status" aria-live="polite">${
+            plotSecretMode
+                ? "선택한 카테고리에 맞는 사건을 플롯 공개 없이 바로 전개합니다."
+                : "결과는 아래에 표시됩니다."
+        }</p>
 
         <div id="rp-event-result-wrap" hidden>
             <label for="rp-event-result">플롯 결과 <small>(직접 수정 가능)</small></label>
@@ -9126,7 +9555,11 @@ function openBoosterPopup() {
             const categoryButton = event.target.closest(
                 ".rp-plot-category-card"
             );
-            if (categoryButton) selectPlotCategory(categoryButton.dataset.id);
+            if (categoryButton) {
+                selectPlotCategory(categoryButton.dataset.id);
+                clearSecretPlotAction();
+                updatePlotGenerationPendingUi();
+            }
         });
         popupRoot.addEventListener("input", (event) => {
             const textarea = event.target.closest(".rp-character-field-text");
@@ -9146,10 +9579,24 @@ function openBoosterPopup() {
             .querySelector("#rp-custom-plot-add-btn")
             ?.addEventListener("click", addCustomPlotCategory);
         popupRoot
-            .querySelector("#rp-event-generate-btn")
-            ?.addEventListener("click", () =>
-                generateEventCandidate("generate")
+            .querySelector("#rp-plot-secret-toggle")
+            ?.addEventListener("change", (event) =>
+                setPlotSecretMode(event.currentTarget.checked)
             );
+        popupRoot
+            .querySelector("#rp-plot-random-box")
+            ?.addEventListener("click", () => selectSecretPlotAction("random"));
+        popupRoot
+            .querySelector("#rp-plot-crazy-box")
+            ?.addEventListener("click", () => selectSecretPlotAction("crazy"));
+        popupRoot
+            .querySelector("#rp-character-question")
+            ?.addEventListener("click", () =>
+                selectSecretPlotAction("character_question")
+            );
+        popupRoot
+            .querySelector("#rp-event-generate-btn")
+            ?.addEventListener("click", runSelectedPlotGenerationAction);
         popupRoot
             .querySelector("#rp-event-refine-btn")
             ?.addEventListener("click", () => generateEventCandidate("refine"));
@@ -9163,7 +9610,7 @@ function openBoosterPopup() {
             ?.addEventListener("click", insertEventIntoComposer);
         popupRoot
             .querySelector("#rp-event-inject-btn")
-            ?.addEventListener("click", injectEventAndGenerateReply);
+            ?.addEventListener("click", () => injectEventAndGenerateReply());
         popupRoot
             .querySelector("#rp-event-clear-btn")
             ?.addEventListener("click", clearGeneratedEventResult);
