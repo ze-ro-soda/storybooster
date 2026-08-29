@@ -28,7 +28,7 @@ import {
 } from "../../../../script.js";
 
 const MODULE_NAME = "rp-genre-plot-booster";
-const STORYBOOSTER_VERSION = "1.2.0";
+const STORYBOOSTER_VERSION = "1.3.1";
 const GENRE_PROMPT_KEY = "rp_genre_boost";
 const PLOT_PROMPT_KEY = "rp_plot_trigger";
 const DEFAULT_AUDIT_INTERVAL = 10;
@@ -79,6 +79,12 @@ let activeBoosterPopupRoot = null;
 let currentStoryInjectionText = "";
 let currentPlotInjectionText = "";
 const recordedErrorObjects = new WeakSet();
+// Settings migrations and full collection normalization are load-time work.
+// Keep a weak reference to each prepared settings object so ordinary getters
+// stay cheap while still re-preparing if SillyTavern replaces the object.
+const preparedModuleSettings = new WeakSet();
+const preparedChatStates = new WeakSet();
+const preparedGenreAnchors = new WeakSet();
 let lastErrorLogHintAt = 0;
 
 function getActiveBoosterPopupRoot() {
@@ -241,11 +247,31 @@ function createOperationDiagnostic({
         method: "",
         requestCount: 0,
         retryCount: 0,
+        promptChars: 0,
+        transcriptChars: 0,
+        inputChars: 0,
+        contextItems: 0,
         responseChars: 0,
         responseFormat: "",
         finishReason: "",
         returnedFields: [],
     };
+}
+
+function updateOperationDiagnosticInput(diagnostic, prompt, transcript) {
+    if (!diagnostic) return;
+    const promptText = String(prompt || "");
+    const transcriptText = String(transcript || "");
+    const numberedResponses = (
+        transcriptText.match(/\[CHAR_RESPONSE_\d+:/g) || []
+    ).length;
+    const roleBlocks = (
+        transcriptText.match(/\[(?:USER_CONTEXT|CHAR|USER):/g) || []
+    ).length;
+    diagnostic.promptChars = promptText.length;
+    diagnostic.transcriptChars = transcriptText.length;
+    diagnostic.inputChars = promptText.length + transcriptText.length;
+    diagnostic.contextItems = Math.max(numberedResponses, roleBlocks);
 }
 
 function updateOperationDiagnosticConnection(diagnostic, connectionSnapshot) {
@@ -381,6 +407,18 @@ function recordStoryBoosterError(error, details = {}) {
         timeoutMs: Number(details.timeoutMs || BACKGROUND_REQUEST_TIMEOUT_MS) || 0,
         requestCount: Number(details.requestCount || diagnostic.requestCount) || 0,
         retryCount: Number(details.retryCount || diagnostic.retryCount) || 0,
+        promptChars: Number(details.promptChars || diagnostic.promptChars) || 0,
+        transcriptChars:
+            Number(details.transcriptChars || diagnostic.transcriptChars) || 0,
+        inputChars: Number(details.inputChars || diagnostic.inputChars) || 0,
+        contextItems: Number(details.contextItems || diagnostic.contextItems) || 0,
+        elapsedMs: Math.max(
+            0,
+            Number(details.elapsedMs) ||
+                (Number(diagnostic.startedAt)
+                    ? Date.now() - Number(diagnostic.startedAt)
+                    : 0)
+        ),
         httpStatus: sanitizeDiagnosticText(
             error?.status || error?.statusCode || details.httpStatus || "",
             40
@@ -453,6 +491,9 @@ function formatStoryBoosterErrorEntry(entry, index) {
         `모델/API: ${entry.model || "확인 불가"} / ${entry.apiType || "확인 불가"}`,
         `요청 방식: ${entry.method || "확인 불가"}`,
         `출력 한도: ${entry.responseLength || "확인 불가"}`,
+        `입력 규모: ${entry.inputChars || 0}자 · 맥락 ${entry.contextItems || 0}개`,
+        `프롬프트/대화: ${entry.promptChars || 0}자 / ${entry.transcriptChars || 0}자`,
+        `소요 시간: ${entry.elapsedMs ? `${Math.round(entry.elapsedMs / 100) / 10}초` : "확인 불가"}`,
         `요청/재시도: ${entry.requestCount || 0}회 / ${entry.retryCount || 0}회`,
         `HTTP/종료 사유: ${entry.httpStatus || "없음"} / ${entry.finishReason || "없음"}`,
         `오류 코드: ${entry.errorCode || "없음"}`,
@@ -685,37 +726,37 @@ const CHARACTER_BASELINE_FIELDS = Object.freeze([
     {
         id: "core_identity",
         label: "핵심 정체성",
-        prompt: "The character's defining identity, central disposition, and the most important tension or contrast that makes them recognizable.",
+        prompt: "The defining identity, central disposition, and enduring tension or contrast that makes the character recognizable across situations. Exclude biography or plot role unless it directly governs behavior.",
     },
     {
         id: "personality_traits",
         label: "성격·특성",
-        prompt: "Major personality traits, coexisting or contradictory tendencies, and meaningful context-dependent differences.",
+        prompt: "Major traits, coexisting or contradictory tendencies, and the conditions that bring each tendency forward. Preserve deliberate simplicity instead of inventing complexity.",
     },
     {
         id: "values_boundaries",
         label: "가치관·경계",
-        prompt: "Values, priorities, taboos, personal boundaries, and lines the character rarely crosses.",
+        prompt: "Values, priorities, taboos, personal boundaries, and the supported conditions under which the character defends, bends, or crosses them.",
     },
     {
         id: "goals_motives",
         label: "목표·동기",
-        prompt: "What the character pursues or avoids, their durable motives, and what can move them to act.",
+        prompt: "Durable wants and avoidances, what is at stake for the character, and the supported triggers that can move them to choose or act.",
     },
     {
         id: "behavior_decisions",
         label: "행동·의사결정",
-        prompt: "Decision style, problem-solving and action patterns, initiative, practical abilities or limits, and behavior they often or rarely choose.",
+        prompt: "Decision style, problem-solving, initiative, practical abilities or limits, and behavior the character tends to choose or avoid. Distinguish consequential choice from mere activity.",
     },
     {
         id: "speech_emotion",
         label: "대사·감정 표현",
-        prompt: "Speech rhythm, vocabulary, dialogue habits, and how the character reveals, hides, redirects, or defends emotion.",
+        prompt: "Speech rhythm, vocabulary, dialogue habits, and how the character reveals, hides, redirects, or defends emotion. Separate distinctive voice from incidental wording.",
     },
     {
         id: "relationship_response",
         label: "관계 반응",
-        prompt: "How trust, distance, attachment, conflict, power, and boundaries change the character's responses to the persona and other people.",
+        prompt: "How shared history, trust, distance, attachment, conflict, power, and boundaries change the character's responses to the persona and other people, including relationship-specific differences.",
     },
 ]);
 const CHARACTER_BASELINE_FIELD_IDS = Object.freeze(
@@ -805,12 +846,12 @@ const GENRE_PROFILES = Object.freeze({
         guard: "Do not reduce romance to generic affection, instant intimacy, or a fixed trope detached from characterization.",
     },
     romcom: {
-        identity: "Make romantic attraction and relationship progression the central throughline, while character-driven comic friction repeatedly changes how the pair approach, misread, and understand each other.",
+        identity: "Keep romantic progression central while character-driven comic friction changes how the pair approach, misread, and understand each other.",
         ui: "로맨스의 관계 진전을 중심에 두고, 캐릭터다운 엇갈림과 타이밍이 웃음과 친밀감의 변화를 함께 만듭니다.",
-        signals: "Use sharp banter, awkward proximity, mismatched intentions, social embarrassment, comic reversals, callbacks, and complications that expose genuine attraction or vulnerability.",
-        effects: "Let {{char}} actively pursue a relational want, commit to a flawed or overconfident choice, and turn the comic consequence into a real change in trust, intimacy, or emotional distance.",
-        texture: "Keep the rhythm buoyant and responsive, balancing economical comic timing with sincere pauses, charged gestures, and emotionally specific aftereffects.",
-        guard: "Do not become generic comedy with a decorative romance, generic romance with occasional jokes, random slapstick, humiliation without relational meaning, or constant quipping that erases sincere stakes.",
+        signals: "Use banter, awkward proximity, mismatched intentions, embarrassment, reversals, and callbacks that expose attraction or vulnerability.",
+        effects: "Let {{char}} pursue a relational want through a flawed choice whose comic consequence changes trust, intimacy, or distance.",
+        texture: "Balance buoyant comic timing with sincere pauses, charged gestures, and specific emotional aftereffects.",
+        guard: "Do not become generic comedy, decorative romance, random slapstick, humiliating spectacle, or constant quipping that erases sincere stakes.",
     },
     drama: {
         identity: "Drive the scene through incompatible desires and the emotional or practical cost of choosing.",
@@ -829,12 +870,12 @@ const GENRE_PROFILES = Object.freeze({
         guard: "Do not break characterization, acknowledge the audience, or turn every line into a joke.",
     },
     angst: {
-        identity: "Make sustained emotional pain, longing, guilt, fear, grief, or an unresolved wound exert concrete pressure on choices and relationships without predetermining a tragic ending.",
+        identity: "Let sustained pain, longing, guilt, fear, grief, or an unresolved wound press on choices and relationships without predetermining tragedy.",
         ui: "상실·죄책감·두려움·그리움 같은 지속적인 정서적 고통이 선택과 관계에 구체적인 압력을 줍니다.",
-        signals: "Use painful restraint, avoidance, failed attempts to connect, defensive choices, charged silence, remembered hurt, difficult admissions, and consequences that reopen or deepen an established wound.",
-        effects: "Let {{char}} protect, reject, reach for, conceal from, or withdraw from someone in character-specific ways, so pain changes trust, distance, boundaries, or the cost of the next choice.",
-        texture: "Favor emotionally precise subtext, restrained heaviness, negative space, bodily tension, and concrete reminders of what is feared, lost, or still wanted.",
-        guard: "Do not confuse angst with tragedy, melancholy, generic sadness, repetitive crying, arbitrary suffering, forced miscommunication, or passive misery without character choice and causal pressure.",
+        signals: "Use painful restraint, avoidance, failed connection, defensive choices, charged silence, remembered hurt, and difficult admissions.",
+        effects: "Let {{char}} protect, reject, reach for, conceal, or withdraw in character-specific ways that change trust, distance, boundaries, or the next choice.",
+        texture: "Favor precise subtext, restrained heaviness, negative space, bodily tension, and concrete reminders of what is feared, lost, or wanted.",
+        guard: "Do not confuse angst with tragedy, melancholy, generic sadness, repetitive crying, arbitrary suffering, forced misunderstanding, or passive misery.",
     },
     mystery: {
         identity: "Organize attention around an unresolved question that can be investigated through information and inference.",
@@ -861,12 +902,12 @@ const GENRE_PROFILES = Object.freeze({
         guard: "Do not equate darkness with contextless cruelty, gore, or universal hopelessness.",
     },
     dead_dove: {
-        identity: "Treat the disturbing, transgressive, morally compromised, or harmful premise already established in the character card, scenario, tags, or roleplay exactly as consequentially as presented, without sanitizing it into safer sentiment or supplying automatic moral absolution.",
+        identity: "Treat established disturbing, transgressive, morally compromised, or harmful material without sanitizing it or granting automatic absolution.",
         ui: "이미 설정된 불편하거나 금기적인 소재를 순화·미화·자동 면죄하지 않고, 명시된 그대로의 무게와 결과를 유지합니다.",
-        signals: "When already present and relevant, render power imbalance, coercion, obsession, cruelty, complicity, taboo, bodily or psychological harm, and compromised choices with concrete behavioral, relational, material, and emotional consequences.",
-        effects: "Let {{char}}'s established motives and boundaries expose control, vulnerability, complicity, fixation, damage, or irreversible cost without flattening the character into a generic monster or victim.",
-        texture: "Use unflinching specificity, sustained discomfort, charged silence, claustrophobic or visceral detail, and credible aftermath at the intensity supported by the existing context.",
-        guard: "This is an accuracy lens for already-established tagged material, not permission to invent a new taboo, add unrelated gore or abuse, escalate severity, erase consequences, romanticize harm by default, or force disturbing content merely to prove the label is active.",
+        signals: "When relevant, show power imbalance, coercion, obsession, cruelty, complicity, taboo, or harm through concrete behavior and consequences.",
+        effects: "Let {{char}}'s established motives expose control, vulnerability, complicity, fixation, damage, or irreversible cost without reducing anyone to a stock monster or victim.",
+        texture: "Use unflinching specificity, sustained discomfort, charged silence, visceral detail, and credible aftermath at the intensity established by context.",
+        guard: "Preserve existing material; do not invent a taboo, unrelated abuse or gore, automatic escalation, erased consequences, or forced disturbing content.",
     },
     fantasy: {
         identity: "Make magic, wondrous places, and setting-specific cultures tangible forces in everyday life.",
@@ -1037,12 +1078,12 @@ const GENRE_PROFILES = Object.freeze({
         guard: "Do not reduce desire to instant gratification, generic lust, or ownership without character logic.",
     },
     adult: {
-        identity: "Treat explicit sexual desire and physical intimacy between adult characters as fully on-page NSFW narrative content, not as a fade-to-black implication, when the established relationship and current scene reach that point.",
+        identity: "Treat established sexual desire and physical intimacy between adult characters as fully on-page NSFW narrative content rather than fade-to-black implication.",
         ui: "성인 캐릭터 사이의 성적 욕망과 신체적 친밀감을 생략·암전·완곡한 요약 없이 이어지는 NSFW 장면으로 강화합니다.",
-        signals: "Once an NSFW encounter is established and underway, sustain it through successive actions, reactions, dialogue, changing positions, embodied arousal, and character-specific preferences or limits instead of rushing to resolution or abandoning it after a brief mention.",
-        effects: "Keep the explicit interaction responsive to {{char}}'s motives, personality, trust, vulnerability, power dynamics, and the relationship's emotional and practical consequences before, during, and after the encounter.",
-        texture: "Use direct, unambiguous physical language with clear spatial continuity and specific sensory and emotional detail. Let pacing, intensity, and escalation develop across multiple connected beats while the scene remains active.",
-        guard: "Do not censor, sanitize, euphemize, summarize, fade out, skip ahead, or prematurely end an established NSFW scene merely from default restraint. Continue an active NSFW scene explicitly until the scene itself reaches a credible transition or conclusion, while preserving established characterization and roleplay context.",
+        signals: "Once an NSFW encounter is underway, sustain it through connected actions, reactions, dialogue, changing positions, embodied arousal, and character-specific preferences or limits.",
+        effects: "Keep the interaction responsive to {{char}}'s motives, personality, trust, vulnerability, power dynamics, and relational consequences.",
+        texture: "Use direct physical language, clear spatial continuity, and specific sensory and emotional detail across multiple connected beats.",
+        guard: "Do not sanitize, euphemize, summarize, fade out, skip ahead, or prematurely end an active NSFW scene; preserve characterization and roleplay continuity.",
     },
     urban_fantasy: {
         identity: "Interweave hidden supernatural systems with recognizable modern city life, technology, and institutions.",
@@ -1108,73 +1149,73 @@ const EVENT_CATEGORY_DESCRIPTIONS = Object.freeze({
 const EVENT_CATEGORY_GUIDANCE = Object.freeze({
     discovery: {
         required: "INFORMATION AND DISCOVERY: Center a concrete, usable fact that becomes known or accessible and changes what the characters can understand, plan, or do next.",
-        avoid: "Do not substitute an unresolved mystery clue, a third-party interruption, or a dramatic incident for the information itself. The new knowledge and its practical use must remain central.",
+        avoid: "Do not substitute an unresolved mystery clue, a third-party interruption, or a dramatic incident for the information itself. Unlike Secrets and Clues, the usable fact itself becomes available now; the new knowledge and its practical use must remain central.",
         completion: "A complete candidate states what information becomes available, how it follows from the current context, and what new action or understanding it enables.",
         novelty: "source of information, fact revealed, way it becomes available, practical use, or resulting option",
     },
     clue: {
         required: "SECRET AND CLUE: Center a trace, contradiction, concealed fact, suspicious absence, or partial evidence that creates or deepens a specific unresolved question.",
-        avoid: "Do not explain the entire truth, solve the mystery immediately, or replace the clue with an unrelated danger, confession, or generic revelation.",
+        avoid: "Do not explain the entire truth, solve the mystery immediately, or replace the clue with an unrelated danger, confession, or generic revelation. Unlike Information and Discovery, the result must preserve a meaningful unknown rather than deliver a fully usable answer.",
         completion: "A complete candidate states the concrete clue, why it matters in the current context, and what question or line of inquiry remains open.",
         novelty: "clue type, hidden question, source, implicated detail, interpretation, or next line of inquiry",
     },
     npc: {
         required: "THIRD-PARTY INTERVENTION: Center an established or contextually plausible NPC acting from a motive of their own and changing the immediate options, obligations, access, or pressure around {{char}} and {{user}}.",
-        avoid: "Do not use the NPC as a disposable messenger, random stranger, exposition device, or excuse for a disconnected crisis. Their intervention must follow from their role, knowledge, interest, or relationship.",
+        avoid: "Do not use the NPC as a disposable messenger, random stranger, exposition device, or excuse for a disconnected crisis. Their individual motive and action—not a general institution or world rule—must drive the intervention.",
         completion: "A complete candidate identifies who intervenes, what they independently want or do, and how that changes the current situation without deciding {{user}}'s response.",
         novelty: "NPC, motive, intervention method, demand, leverage, relationship, or option changed",
     },
     opportunity: {
         required: "GOAL AND CHOICE: Center a concrete objective, proposal, opening, dilemma, or meaningful option that {{char}} can pursue, reject, negotiate, or prioritize.",
-        avoid: "Do not substitute a crisis, obstacle, revelation, or forced decision for a genuine choice. Do not decide {{user}}'s action, answer, consent, or commitment.",
+        avoid: "Do not substitute a crisis, obstacle, revelation, or forced decision for a genuine choice. Unlike Conflicts and Obstacles, the available objective or branching decision—not the resistance to it—must remain central. Do not decide {{user}}'s action, answer, consent, or commitment.",
         completion: "A complete candidate states the available goal or choice, why it matters now, and what distinct paths or stakes remain open.",
         novelty: "objective, offer, dilemma, available path, stake, resource, or decision owner",
     },
     obstacle: {
         required: "CONFLICT AND OBSTACLE: Center credible resistance, incompatible aims, a practical barrier, or a constraint that directly obstructs something already being attempted or desired.",
-        avoid: "Do not rely on a random accident, arbitrary misunderstanding, unrelated enemy, or instant catastrophe. Do not solve the obstacle in the same candidate.",
+        avoid: "Do not rely on a random accident, arbitrary misunderstanding, unrelated enemy, or instant catastrophe. Unlike Goals and Choices, an existing aim must meet active resistance or constraint. Do not solve the obstacle in the same candidate.",
         completion: "A complete candidate identifies the active aim, the grounded source of resistance, and the unresolved action or compromise the obstacle now requires.",
         novelty: "blocked aim, source of resistance, practical constraint, competing desire, cost, or possible response",
     },
     relationship: {
         required: "RELATIONSHIP SHIFT: Center a concrete change in trust, distance, obligation, status, intimacy, boundaries, dependence, or power between characters who already have an established relationship.",
-        avoid: "Do not add an external incident merely to make the relationship move. Do not use jealousy, possessiveness, obsession, overprotection, or control as generic shorthand for intimacy or intensity.",
+        avoid: "Do not add an external incident merely to make the relationship move. Unlike Emotion in Action, the relationship axis itself must change rather than merely reveal one character's feeling. Do not use jealousy, possessiveness, obsession, overprotection, or control as generic shorthand for intimacy or intensity.",
         completion: "A complete candidate states what interaction or realization alters the relationship axis and what new tension, closeness, boundary, or uncertainty remains.",
         novelty: "relationship axis, initiating interaction, boundary, obligation, trust signal, power balance, or unresolved relational effect",
     },
     emotion: {
         required: "CHARACTER-GROUNDED EMOTION: Center an emotion already supported or immediately activated by the current context, and let {{char}} reveal, suppress, redirect, disguise, or act on it in a way specific to their established personality, motives, boundaries, speech, and relationship history.",
-        avoid: "Do not create a new accident, threat, secret, third party, confession, or major relationship event merely to trigger emotion. Do not default to jealousy, possessiveness, obsession, overprotectiveness, territorial behavior, surveillance, control, or restriction of autonomy unless both the established character tendency and immediate trigger are explicit in the transcript.",
+        avoid: "Do not create a new accident, threat, secret, third party, confession, or major relationship event merely to trigger emotion. Unlike Relationship Shift, an emotion may become visible without changing the relationship's status or direction. Do not default to jealousy, possessiveness, obsession, overprotectiveness, territorial behavior, surveillance, control, or restriction of autonomy unless both the established character tendency and immediate trigger are explicit in the transcript.",
         completion: "A complete candidate identifies the existing emotional trigger, {{char}}'s characteristic mode of expression through behavior, tone, restraint, avoidance, humor, vulnerability, or decision, and the small relational opening or tension left afterward.",
         novelty: "emotion, immediate trigger, mode of expression, degree of restraint, relational subtext, or small interpersonal effect",
     },
     environment: {
         required: "SITUATION SHIFT: Center a change in an immediate condition—place, time, weather, crowd, privacy, access, schedule, visibility, or social setting—that materially changes what can happen in the current scene.",
-        avoid: "Do not treat the condition as decorative background, turn it into a random catastrophe, or let an unrelated character or revelation become the real center of the development.",
+        avoid: "Do not treat the condition as decorative background, turn it into a random catastrophe, or let an unrelated character or revelation become the real center of the development. Unlike Unexpected Variable, the changed situational condition itself—not surprise or reversal—must remain central.",
         completion: "A complete candidate states the changed condition, its concrete effect on the characters' immediate options, and what remains possible or difficult next.",
         novelty: "condition changed, location, timing, access, privacy, crowd, sensory limitation, or option affected",
     },
     consequence: {
         required: "CONSEQUENCE AND AFTERMATH: Center a concrete effect of an earlier choice, action, promise, conflict, omission, or unresolved event returning to shape the present.",
-        avoid: "Do not invent unrelated punishment, coincidence, disaster, or moral retribution. The causal link to something already established must be visible and specific.",
+        avoid: "Do not invent unrelated punishment, coincidence, disaster, moral retribution, or a brand-new conflict and call it a consequence. The prior cause must already exist in the transcript, and the causal link must be visible and specific.",
         completion: "A complete candidate identifies the prior cause, the consequence arriving now, and the unresolved cost, responsibility, adjustment, or next response it creates.",
         novelty: "prior cause, delayed effect, affected person or resource, responsibility, cost, or response now required",
     },
     everyday: {
         required: "EVERYDAY DIRECTION: Center an ordinary activity, practical need, shared routine, minor inconvenience, casual plan, domestic detail, familiar place, or recurring social moment. Let interest come from how these specific characters handle ordinary life together.",
-        avoid: "Do not introduce danger, a major revelation, exceptional coincidence, dramatic confrontation, new antagonist, or sudden escalation. A small change in comfort, habit, understanding, cooperation, or relationship texture is sufficient.",
+        avoid: "Do not introduce danger, a major revelation, exceptional coincidence, dramatic confrontation, new antagonist, or sudden escalation. Do not turn the ordinary occasion into a disguised Relationship Shift or Conflict; a small change in comfort, habit, understanding, cooperation, or relationship texture is sufficient.",
         completion: "A complete candidate states the ordinary occasion, the character-specific interaction or practical adjustment it opens, and what remains available to do next.",
         novelty: "everyday activity, practical need, setting, routine, minor inconvenience, interaction pattern, or small relational effect",
     },
     world: {
         required: "WORLD AND FACTIONS: Center an established or contextually inferable organization, institution, faction, law, custom, economy, technology, or wider world condition actively constraining or enabling the current situation.",
-        avoid: "Do not produce a lore dump, invent a grand new faction solely for spectacle, or let generic worldbuilding replace a concrete effect on the characters' present options.",
+        avoid: "Do not produce a lore dump, invent a grand new faction solely for spectacle, or let generic worldbuilding replace a concrete effect on the characters' present options. Unlike Third-Party Intervention, the system, rule, institution, or collective pressure—not one individual's independent action—must be central.",
         completion: "A complete candidate identifies the relevant world force, how it reaches the current scene, and what practical option, duty, risk, or limitation it creates.",
         novelty: "world force, rule, institution, faction interest, custom, resource system, or practical effect",
     },
     wildcard: {
         required: "UNEXPECTED VARIABLE: Center a surprising but causally plausible variable that reconfigures the immediate options without breaking established characterization, world rules, or scene continuity.",
-        avoid: "Do not use a random disaster, arbitrary betrayal, unrelated stranger, implausible coincidence, or shock twist with no support in the transcript. Surprise must come from an overlooked possibility or converging existing condition.",
+        avoid: "Do not use a random disaster, arbitrary betrayal, unrelated stranger, implausible coincidence, or shock twist with no support in the transcript. Unlike Situation Shift, the overlooked cause or reversal—not merely a changed condition—must create the surprise.",
         completion: "A complete candidate states the unexpected variable, the existing basis that makes it plausible, and how it changes the next available actions without resolving everything.",
         novelty: "overlooked cause, variable introduced, expectation reversed, option changed, participant affected, or immediate consequence",
     },
@@ -1217,59 +1258,43 @@ function resolveRoleMacrosForDisplay(value) {
         .replace(/\{\{user\}\}/gi, userName);
 }
 
-function ensureModuleSettings() {
-    if (!extension_settings[MODULE_NAME]) {
-        extension_settings[MODULE_NAME] = {
-            chats: {},
-            customGenres: [],
-            customPlotCategories: [],
-            plotMaxTokens: DEFAULT_PLOT_MAX_TOKENS,
-            outputLanguage: "ko",
-            characterCardChangeDetection: true,
-            selectedPlotCategoryId: EVENT_CATEGORIES[0].id,
-            analysisProfileId: "",
-            plotProfileId: "",
-            auditInterval: DEFAULT_AUDIT_INTERVAL,
-            enabledFeatures: {
-                genre: true,
-                character: true,
-                plot: true,
-            },
-            characterBaselines: {},
-            settingsSchemaVersion: 19,
-        };
-    }
-    if (!extension_settings[MODULE_NAME].chats) {
-        extension_settings[MODULE_NAME].chats = {};
-    }
-    if (!Array.isArray(extension_settings[MODULE_NAME].customGenres)) {
-        extension_settings[MODULE_NAME].customGenres = [];
-    }
-    if (!Array.isArray(extension_settings[MODULE_NAME].customPlotCategories)) {
-        extension_settings[MODULE_NAME].customPlotCategories = [];
-    }
-    if (
-        !extension_settings[MODULE_NAME].characterBaselines ||
-        typeof extension_settings[MODULE_NAME].characterBaselines !== "object" ||
-        Array.isArray(extension_settings[MODULE_NAME].characterBaselines)
-    ) {
-        extension_settings[MODULE_NAME].characterBaselines = {};
-    }
+function createDefaultModuleSettings() {
+    return {
+        chats: {},
+        customGenres: [],
+        customPlotCategories: [],
+        plotMaxTokens: DEFAULT_PLOT_MAX_TOKENS,
+        outputLanguage: "ko",
+        characterCardChangeDetection: true,
+        selectedPlotCategoryId: EVENT_CATEGORIES[0].id,
+        analysisProfileId: "",
+        plotProfileId: "",
+        auditInterval: DEFAULT_AUDIT_INTERVAL,
+        enabledFeatures: {
+            genre: true,
+            character: true,
+            plot: true,
+        },
+        characterBaselines: {},
+        settingsSchemaVersion: 19,
+    };
+}
+
+function migrateModuleSettings(settings) {
     const previousSchemaVersion = Number.isSafeInteger(
-        extension_settings[MODULE_NAME].settingsSchemaVersion
+        settings.settingsSchemaVersion
     )
-        ? extension_settings[MODULE_NAME].settingsSchemaVersion
+        ? settings.settingsSchemaVersion
         : 0;
+    let migrated = false;
     if (previousSchemaVersion < 10) {
-        if (extension_settings[MODULE_NAME].plotMaxTokens === 800) {
-            extension_settings[MODULE_NAME].plotMaxTokens =
-                DEFAULT_PLOT_MAX_TOKENS;
+        if (settings.plotMaxTokens === 800) {
+            settings.plotMaxTokens = DEFAULT_PLOT_MAX_TOKENS;
         }
+        migrated = true;
     }
     if (previousSchemaVersion < 12) {
-        for (const state of Object.values(
-            extension_settings[MODULE_NAME].chats
-        )) {
+        for (const state of Object.values(settings.chats || {})) {
             if (!state || typeof state !== "object") continue;
             const hadGenre = Boolean(state.genreSelection?.primaryId) ||
                 (Array.isArray(state.genres) &&
@@ -1280,80 +1305,66 @@ function ensureModuleSettings() {
                 state.characterBoost = { enabled: hadGenre };
             }
         }
-        extension_settings[MODULE_NAME].settingsSchemaVersion = 12;
-        saveSettingsDebounced();
+        settings.settingsSchemaVersion = 12;
+        migrated = true;
     }
     if (previousSchemaVersion < 13) {
         for (const [key, entry] of Object.entries(
-            extension_settings[MODULE_NAME].characterBaselines
+            settings.characterBaselines || {}
         )) {
             const normalized = normalizeCharacterBaseline(entry);
-            if (normalized) extension_settings[MODULE_NAME].characterBaselines[key] = normalized;
-            else delete extension_settings[MODULE_NAME].characterBaselines[key];
+            if (normalized) settings.characterBaselines[key] = normalized;
+            else delete settings.characterBaselines[key];
         }
-        extension_settings[MODULE_NAME].settingsSchemaVersion = 13;
-        saveSettingsDebounced();
+        settings.settingsSchemaVersion = 13;
+        migrated = true;
     }
     if (previousSchemaVersion < 14) {
-        const legacyOutputLanguage =
-            extension_settings[MODULE_NAME].plotOutputLanguage;
-        if (!["ko", "en"].includes(extension_settings[MODULE_NAME].outputLanguage)) {
-            extension_settings[MODULE_NAME].outputLanguage = ["ko", "en"].includes(
-                legacyOutputLanguage
-            )
+        const legacyOutputLanguage = settings.plotOutputLanguage;
+        if (!["ko", "en"].includes(settings.outputLanguage)) {
+            settings.outputLanguage = ["ko", "en"].includes(legacyOutputLanguage)
                 ? legacyOutputLanguage
                 : "ko";
         }
-        extension_settings[MODULE_NAME].settingsSchemaVersion = 14;
-        saveSettingsDebounced();
+        settings.settingsSchemaVersion = 14;
+        migrated = true;
     }
     if (previousSchemaVersion < 15) {
         if (
-            !extension_settings[MODULE_NAME].enabledFeatures ||
-            typeof extension_settings[MODULE_NAME].enabledFeatures !== "object"
+            !settings.enabledFeatures ||
+            typeof settings.enabledFeatures !== "object"
         ) {
-            extension_settings[MODULE_NAME].enabledFeatures = {};
+            settings.enabledFeatures = {};
         }
         for (const feature of ["genre", "character", "plot"]) {
-            if (
-                typeof extension_settings[MODULE_NAME].enabledFeatures[feature] !==
-                "boolean"
-            ) {
-                extension_settings[MODULE_NAME].enabledFeatures[feature] = true;
+            if (typeof settings.enabledFeatures[feature] !== "boolean") {
+                settings.enabledFeatures[feature] = true;
             }
         }
-        extension_settings[MODULE_NAME].settingsSchemaVersion = 15;
-        saveSettingsDebounced();
+        settings.settingsSchemaVersion = 15;
+        migrated = true;
     }
     if (previousSchemaVersion < 16) {
         const legacyProfileId =
-            typeof extension_settings[MODULE_NAME].backgroundProfileId ===
-            "string"
-                ? extension_settings[MODULE_NAME].backgroundProfileId
+            typeof settings.backgroundProfileId === "string"
+                ? settings.backgroundProfileId
                 : "";
-        if (
-            typeof extension_settings[MODULE_NAME].analysisProfileId !==
-            "string"
-        ) {
-            extension_settings[MODULE_NAME].analysisProfileId = legacyProfileId;
+        if (typeof settings.analysisProfileId !== "string") {
+            settings.analysisProfileId = legacyProfileId;
         }
-        if (
-            typeof extension_settings[MODULE_NAME].plotProfileId !== "string"
-        ) {
-            extension_settings[MODULE_NAME].plotProfileId = legacyProfileId;
+        if (typeof settings.plotProfileId !== "string") {
+            settings.plotProfileId = legacyProfileId;
         }
-        extension_settings[MODULE_NAME].settingsSchemaVersion = 16;
-        saveSettingsDebounced();
+        settings.settingsSchemaVersion = 16;
+        migrated = true;
     }
     if (previousSchemaVersion < 17) {
-        const legacyLanguage = ["ko", "en"].includes(
-            extension_settings[MODULE_NAME].outputLanguage
-        )
-            ? extension_settings[MODULE_NAME].outputLanguage
+        const legacyLanguage = ["ko", "en"].includes(settings.outputLanguage)
+            ? settings.outputLanguage
             : "ko";
-        extension_settings[MODULE_NAME].characterCardChangeDetection = true;
+        settings.characterCardChangeDetection = true;
         for (const [key, entry] of Object.entries(
-            extension_settings[MODULE_NAME].characterBaselines
+            settings.characterBaselines || {}
         )) {
             const normalized = normalizeCharacterBaseline(entry);
             if (!normalized) continue;
@@ -1366,15 +1377,13 @@ function ensureModuleSettings() {
                 normalized.boostAnchorUpdatedAt ||=
                     normalized.updatedAt || Date.now();
             }
-            extension_settings[MODULE_NAME].characterBaselines[key] = normalized;
+            settings.characterBaselines[key] = normalized;
         }
-        extension_settings[MODULE_NAME].settingsSchemaVersion = 17;
-        saveSettingsDebounced();
+        settings.settingsSchemaVersion = 17;
+        migrated = true;
     }
     if (previousSchemaVersion < 18) {
-        for (const state of Object.values(
-            extension_settings[MODULE_NAME].chats
-        )) {
+        for (const state of Object.values(settings.chats || {})) {
             if (
                 !state?.characterBoost ||
                 typeof state.characterBoost !== "object"
@@ -1385,70 +1394,74 @@ function ensureModuleSettings() {
             // current anchor readiness. It no longer controls any behavior.
             delete state.characterBoost.enabled;
         }
-        extension_settings[MODULE_NAME].settingsSchemaVersion = 18;
-        saveSettingsDebounced();
+        settings.settingsSchemaVersion = 18;
+        migrated = true;
     }
     if (previousSchemaVersion < 19) {
-        for (const state of Object.values(
-            extension_settings[MODULE_NAME].chats
-        )) {
+        for (const state of Object.values(settings.chats || {})) {
             if (!state || typeof state !== "object") continue;
             // Secret mode is deliberately opt-in for every existing chat.
             state.plotSecretMode = false;
         }
-        extension_settings[MODULE_NAME].settingsSchemaVersion = 19;
-        saveSettingsDebounced();
+        settings.settingsSchemaVersion = 19;
+        migrated = true;
+    }
+
+    return migrated;
+}
+
+function normalizeModuleSettings(settings) {
+    if (!settings.chats || typeof settings.chats !== "object" || Array.isArray(settings.chats)) {
+        settings.chats = {};
+    }
+    if (!Array.isArray(settings.customGenres)) settings.customGenres = [];
+    if (!Array.isArray(settings.customPlotCategories)) {
+        settings.customPlotCategories = [];
     }
     if (
-        !Number.isSafeInteger(extension_settings[MODULE_NAME].plotMaxTokens) ||
-        extension_settings[MODULE_NAME].plotMaxTokens < MIN_PLOT_MAX_TOKENS
+        !settings.characterBaselines ||
+        typeof settings.characterBaselines !== "object" ||
+        Array.isArray(settings.characterBaselines)
     ) {
-        extension_settings[MODULE_NAME].plotMaxTokens = DEFAULT_PLOT_MAX_TOKENS;
-    }
-    if (typeof extension_settings[MODULE_NAME].analysisProfileId !== "string") {
-        extension_settings[MODULE_NAME].analysisProfileId = "";
-    }
-    if (typeof extension_settings[MODULE_NAME].plotProfileId !== "string") {
-        extension_settings[MODULE_NAME].plotProfileId = "";
-    }
-    if (!["ko", "en"].includes(extension_settings[MODULE_NAME].outputLanguage)) {
-        extension_settings[MODULE_NAME].outputLanguage = "ko";
+        settings.characterBaselines = {};
     }
     if (
-        typeof extension_settings[MODULE_NAME].characterCardChangeDetection !==
-        "boolean"
+        !Number.isSafeInteger(settings.plotMaxTokens) ||
+        settings.plotMaxTokens < MIN_PLOT_MAX_TOKENS
     ) {
-        extension_settings[MODULE_NAME].characterCardChangeDetection = true;
+        settings.plotMaxTokens = DEFAULT_PLOT_MAX_TOKENS;
+    }
+    if (typeof settings.analysisProfileId !== "string") settings.analysisProfileId = "";
+    if (typeof settings.plotProfileId !== "string") settings.plotProfileId = "";
+    if (!["ko", "en"].includes(settings.outputLanguage)) settings.outputLanguage = "ko";
+    if (typeof settings.characterCardChangeDetection !== "boolean") {
+        settings.characterCardChangeDetection = true;
     }
     if (
-        !extension_settings[MODULE_NAME].enabledFeatures ||
-        typeof extension_settings[MODULE_NAME].enabledFeatures !== "object"
+        !settings.enabledFeatures ||
+        typeof settings.enabledFeatures !== "object"
     ) {
-        extension_settings[MODULE_NAME].enabledFeatures = {};
+        settings.enabledFeatures = {};
     }
     for (const feature of ["genre", "character", "plot"]) {
-        if (typeof extension_settings[MODULE_NAME].enabledFeatures[feature] !== "boolean") {
-            extension_settings[MODULE_NAME].enabledFeatures[feature] = true;
+        if (typeof settings.enabledFeatures[feature] !== "boolean") {
+            settings.enabledFeatures[feature] = true;
         }
     }
     const currentChatAuditInterval =
-        extension_settings[MODULE_NAME].chats[getCurrentChatId()]?.genreAnchor
-            ?.auditInterval;
-    const configuredAuditInterval = extension_settings[MODULE_NAME].auditInterval;
+        settings.chats[getCurrentChatId()]?.genreAnchor?.auditInterval;
+    const configuredAuditInterval = settings.auditInterval;
     const isValidAuditInterval = (value) =>
         Number.isSafeInteger(value) &&
         (value === 0 ||
             (value >= MIN_AUDIT_INTERVAL && value <= MAX_AUDIT_INTERVAL));
     if (!isValidAuditInterval(configuredAuditInterval)) {
-        extension_settings[MODULE_NAME].auditInterval = isValidAuditInterval(
-            currentChatAuditInterval
-        )
+        settings.auditInterval = isValidAuditInterval(currentChatAuditInterval)
             ? currentChatAuditInterval
             : DEFAULT_AUDIT_INTERVAL;
     }
 
-    extension_settings[MODULE_NAME].customGenres =
-        extension_settings[MODULE_NAME].customGenres
+    settings.customGenres = settings.customGenres
             .filter((genre) => genre && typeof genre.id === "string" && typeof genre.label === "string")
             .map((genre) => ({
                 id: genre.id,
@@ -1459,8 +1472,7 @@ function ensureModuleSettings() {
             }))
             .filter((genre) => genre.label);
 
-    extension_settings[MODULE_NAME].customPlotCategories =
-        extension_settings[MODULE_NAME].customPlotCategories
+    settings.customPlotCategories = settings.customPlotCategories
             .filter(
                 (category) =>
                     category &&
@@ -1478,21 +1490,43 @@ function ensureModuleSettings() {
 
     const availablePlotCategoryIds = new Set([
         ...EVENT_CATEGORIES.map((category) => category.id),
-        ...extension_settings[MODULE_NAME].customPlotCategories.map(
-            (category) => category.id
-        ),
+        ...settings.customPlotCategories.map((category) => category.id),
     ]);
     if (
-        typeof extension_settings[MODULE_NAME].selectedPlotCategoryId !== "string" ||
-        !availablePlotCategoryIds.has(
-            extension_settings[MODULE_NAME].selectedPlotCategoryId
-        )
+        typeof settings.selectedPlotCategoryId !== "string" ||
+        !availablePlotCategoryIds.has(settings.selectedPlotCategoryId)
     ) {
-        extension_settings[MODULE_NAME].selectedPlotCategoryId =
-            EVENT_CATEGORIES[0].id;
+        settings.selectedPlotCategoryId = EVENT_CATEGORIES[0].id;
+    }
+}
+
+function ensureModuleSettings() {
+    let settings = extension_settings[MODULE_NAME];
+    if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+        settings = createDefaultModuleSettings();
+        extension_settings[MODULE_NAME] = settings;
     }
 
-    return extension_settings[MODULE_NAME];
+    if (!preparedModuleSettings.has(settings)) {
+        // Establish the collection containers before legacy migrations inspect
+        // them, then perform the full normalization exactly once per object.
+        if (!settings.chats || typeof settings.chats !== "object") settings.chats = {};
+        if (!Array.isArray(settings.customGenres)) settings.customGenres = [];
+        if (!Array.isArray(settings.customPlotCategories)) settings.customPlotCategories = [];
+        if (
+            !settings.characterBaselines ||
+            typeof settings.characterBaselines !== "object" ||
+            Array.isArray(settings.characterBaselines)
+        ) {
+            settings.characterBaselines = {};
+        }
+        const migrated = migrateModuleSettings(settings);
+        normalizeModuleSettings(settings);
+        preparedModuleSettings.add(settings);
+        if (migrated) saveSettingsDebounced();
+    }
+
+    return settings;
 }
 
 function isBoosterFeatureEnabled(feature) {
@@ -1535,10 +1569,11 @@ function getAvailablePlotCategories() {
 
 function getSelectedPlotCategory() {
     const settings = ensureModuleSettings();
+    const categories = getAvailablePlotCategories();
     return (
-        getAvailablePlotCategories().find(
+        categories.find(
             (category) => category.id === settings.selectedPlotCategoryId
-        ) || getAvailablePlotCategories()[0]
+        ) || categories[0]
     );
 }
 
@@ -1664,15 +1699,18 @@ function ensureChatState(chatId = getCurrentChatId()) {
     }
 
     const state = chats[chatId];
-    if (!Array.isArray(state.genres)) {
-        state.genres = DEFAULT_GENRES.map((g) => ({ ...g }));
+    if (!preparedChatStates.has(state)) {
+        if (!Array.isArray(state.genres)) {
+            state.genres = DEFAULT_GENRES.map((g) => ({ ...g }));
+        }
+        normalizeGenreSelection(state);
+        normalizePlotHistory(state);
+        if (typeof state.plotSecretMode !== "boolean") {
+            state.plotSecretMode = false;
+        }
+        ensureCharacterBoostState(state);
+        preparedChatStates.add(state);
     }
-    normalizeGenreSelection(state);
-    normalizePlotHistory(state);
-    if (typeof state.plotSecretMode !== "boolean") {
-        state.plotSecretMode = false;
-    }
-    ensureCharacterBoostState(state);
     ensureGenreAnchorState(state);
 
     return state;
@@ -2048,11 +2086,11 @@ function getGenreProfileSummary(profile) {
 
 function getGenreProfileAuditStandard(profile) {
     return [
-        `Identity: ${profile.identity}`,
-        `Distinctive signals: ${profile.signals}`,
-        `Character and relationship effects: ${profile.effects}`,
-        `Texture: ${profile.texture}`,
-        `Distinction guard: ${profile.guard}`,
+        `Narrative identity: ${profile.identity}`,
+        `Recognizable expression: ${profile.signals}`,
+        `Character and relationship consequence: ${profile.effects}`,
+        `Atmosphere and material texture: ${profile.texture}`,
+        `False-positive boundary: ${profile.guard}`,
     ]
         .filter(Boolean)
         .join(" ");
@@ -2287,12 +2325,63 @@ function getRoleplayTranscript({
 function snapshotCurrentChatMessages() {
     const chat = getContext()?.chat;
     if (!Array.isArray(chat)) return [];
-    return chat.map((message) => ({
-        is_user: Boolean(message?.is_user),
-        is_system: Boolean(message?.is_system),
-        mes: typeof message?.mes === "string" ? message.mes : "",
-        name: typeof message?.name === "string" ? message.name : "",
-    }));
+    return Object.freeze(
+        chat.map((message) =>
+            Object.freeze({
+                is_user: Boolean(message?.is_user),
+                is_system: Boolean(message?.is_system),
+                mes: typeof message?.mes === "string" ? message.mes : "",
+                name: typeof message?.name === "string" ? message.name : "",
+            })
+        )
+    );
+}
+
+function createOperationContextSnapshot({
+    chatId = getCurrentChatId(),
+    chatSnapshot = [],
+    characterKey = "",
+    profileId = "",
+    outputLanguage = "ko",
+    responseLength = 0,
+    selectionSignature = "",
+    correctionRevision = null,
+} = {}) {
+    const sourceChatSnapshot = Array.isArray(chatSnapshot) ? chatSnapshot : [];
+    const frozenChatSnapshot =
+        Object.isFrozen(sourceChatSnapshot) &&
+        sourceChatSnapshot.every((message) => Object.isFrozen(message))
+            ? sourceChatSnapshot
+            : Object.freeze(
+                  sourceChatSnapshot.map((message) =>
+                      Object.freeze({ ...message })
+                  )
+              );
+    return Object.freeze({
+        chatId: String(chatId),
+        chatSnapshot: frozenChatSnapshot,
+        characterKey: String(characterKey || ""),
+        profileId: String(profileId || ""),
+        outputLanguage: ["ko", "en"].includes(outputLanguage)
+            ? outputLanguage
+            : "ko",
+        responseLength: Math.max(0, Number(responseLength) || 0),
+        selectionSignature: String(selectionSignature || ""),
+        correctionRevision:
+            correctionRevision === null
+                ? null
+                : Math.max(0, Number(correctionRevision) || 0),
+        startedAt: Date.now(),
+    });
+}
+
+function isOperationContextCurrentChat(operationContext) {
+    return String(getCurrentChatId()) === String(operationContext?.chatId || "");
+}
+
+function isOperationContextCurrentCharacter(operationContext) {
+    if (!operationContext?.characterKey) return false;
+    return getCurrentCharacterIdentity()?.key === operationContext.characterKey;
 }
 
 function normalizeGeneratedText(value) {
@@ -2597,6 +2686,7 @@ async function generateStructuredAnalysis({
                 connectionSnapshot?.source === "profile" ? "profile" : "main",
         });
     operationDiagnostic.responseLength = Number(responseLength) || 0;
+    updateOperationDiagnosticInput(operationDiagnostic, prompt, transcript);
     const stableConnection =
         connectionSnapshot || (await resolveBackgroundConnectionSnapshot());
     updateOperationDiagnosticConnection(operationDiagnostic, stableConnection);
@@ -2770,25 +2860,25 @@ const GENRE_CORRECTION_LABELS = Object.freeze({
 
 const GENRE_CORRECTION_MODULES = Object.freeze({
     primary_genre:
-        "Make the primary genre unmistakably perceptible in this response. Use at least one concrete, genre-specific mechanism from the primary genre foundation and let it meaningfully shape {{char}}'s choice, relationship behavior, or the scene's emotional consequence. Continue the existing situation; do not introduce unrelated lore, a forced trope, or an arbitrary event merely to display the genre.",
+        "Restore the primary genre as the response's governing narrative logic. Use a recognizable mechanism from its stated direction and expression, and let it change {{char}}'s choice, relationship behavior, or the scene's consequence while respecting the genre boundary. Continue the existing situation; do not add unrelated lore, a forced trope, or an arbitrary event merely to display the genre.",
     genre_expression:
-        "Express the selected primary genre clearly through the response's descriptive focus, dialogue and action beats, event development, pacing, and consequences. Use concrete genre-specific techniques rather than labels, decorative keywords, or generic mood, while continuing the current scene organically.",
+        "Make the primary genre recognizable in how this response is staged: descriptive focus, dialogue and action beats, pacing, event development, and consequences. Use its stated expression techniques rather than labels, decorative keywords, generic mood, or a neighboring genre's shorthand, while continuing the current scene organically.",
     character_consistency:
-        "Restore {{char}}'s established personality, values, boundaries, speech habits, and relationship-specific behavior. Correct the diagnosed contradiction through a plausible choice, line, or reaction in the current scene; do not explain the correction or mechanically quote a character profile.",
+        "Restore {{char}}'s established personality, values, boundaries, voice, capabilities, and decision logic. Correct the diagnosed contradiction through one plausible choice, line, or reaction in the current scene; do not explain the correction, recite the baseline, or force every trait to appear.",
     char_agency:
         "Give {{char}} meaningful, character-specific agency in this response. Based on an established motive and decision style, let {{char}} make at least one relevant choice by initiating, refusing, withholding, redirecting, negotiating, proposing, or acting instead of only mirroring, waiting for {{user}}, or handing a choice that belongs to {{char}} back to {{user}}.",
     relationship:
-        "Make the specific established relationship clearly matter in this response. Let {{char}} react through shared history, subtext, boundaries, trust, tension, power, unresolved feelings, or changing distance. Use a character-specific relational beat rather than generic affection, hostility, jealousy, possession, or protection.",
+        "Make the specific established relationship clearly matter in this response. Let {{char}} react through shared history, subtext, boundaries, trust, tension, power, unresolved feelings, or changing distance. Use one context-relevant relational beat rather than generic affection, hostility, jealousy, possession, protection, or forced progression.",
     support_texture:
-        "Make the supporting genre clearly perceptible as a secondary lens in this response. Use at least one concrete, genre-specific pressure, relationship context, social or world rule, atmospheric element, or material and sensory detail to shape a development already justified by the scene. Keep the primary genre central; do not introduce unrelated lore or manufacture an event merely to display the supporting genre.",
+        "Restore the supporting genre as a secondary lens without taking over the scene. Through an existing opening, use its stated texture, pressure, relationship context, or social or world logic in a way that is identifiable beyond generic mood and respects its boundary. Keep the primary genre central; do not introduce unrelated lore or manufacture an event merely to display the supporting genre.",
     scene_density:
         "Restore scene density through purposeful action, dialogue, spatial awareness, sensory or material detail, behavioral cues, subtext, and immediate consequences. Let concrete details affect choice, attention, pressure, or emotional meaning instead of becoming detached decoration or summary.",
     continuity:
-        "First advance the unresolved action, conversation, emotional beat, or immediate causal consequence already present. Preserve characterization, location, timing, and spatial logic before adding any new development; avoid an abrupt interruption, location change, time skip, or unrelated turn.",
+        "First advance the unresolved action, conversation, emotional beat, or immediate causal consequence already present. Preserve location, timing, knowledge, physical state, and spatial logic before adding any new development; avoid an unexplained reset, interruption, time skip, or unrelated turn.",
     repetition:
-        "Do not reuse the recent responses' dominant gesture, sensory image, sentence pattern, or relational beat. Choose a visibly different concrete technique while preserving characterization, continuity, and the selected genre identity.",
+        "Replace the diagnosed mechanical repetition with a visibly different gesture, sensory focus, sentence pattern, emotional display, relational beat, or ending structure. Preserve genuine signature voice and behavior, characterization, continuity, and genre identity.",
     character_interpretation:
-        "Restore the underused established facets of {{char}} that were flattened by the recent one-sided or generic interpretation. Keep the character-specific tension between traits, motives, boundaries, and relationship behavior without inventing a new virtue, flaw, trauma, or hidden side.",
+        "Restore only the context-relevant established facets of {{char}} that were flattened by the recent one-sided or generic interpretation. Keep the specific tension between traits, motives, boundaries, and relationship behavior without inventing a virtue, flaw, trauma, contradiction, or hidden side.",
 });
 
 const GENRE_CORRECTION_DESCRIPTIONS = Object.freeze({
@@ -2953,38 +3043,54 @@ function buildGenrePromptText(selection) {
             ? `PRIMARY GENRE: ${getGenrePromptLabel(primaryGenre)}`
             : "",
         primaryGenre
-            ? `PRIMARY CORE: ${primaryProfile.identity} ${primaryProfile.signals} ${primaryProfile.effects}`
+            ? `PRIMARY DIRECTION: ${primaryProfile.identity}`
+            : "",
+        primaryGenre
+            ? `PRIMARY EXPRESSION: ${primaryProfile.signals}`
+            : "",
+        primaryGenre
+            ? `PRIMARY CONSEQUENCE: ${primaryProfile.effects}`
+            : "",
+        primaryGenre
+            ? `PRIMARY BOUNDARY: ${primaryProfile.guard}`
             : "",
         primaryGenre && supportGenre
             ? `SUPPORTING GENRE: ${getGenrePromptLabel(supportGenre)}`
             : "",
         primaryGenre && supportGenre
-            ? `SUPPORTING LENS: ${supportProfile.identity} ${supportProfile.texture}`
+            ? `SUPPORTING LENS: ${supportProfile.identity}`
             : "",
         primaryGenre && supportGenre
-            ? "ROLE: Keep the primary genre central. Use the supporting genre only as a secondary lens through an established or natural opening; let it remain subtle or dormant rather than seize direction."
+            ? `SUPPORTING TEXTURE: ${supportProfile.texture}`
+            : "",
+        primaryGenre && supportGenre
+            ? `SUPPORTING BOUNDARY: ${supportProfile.guard}`
+            : "",
+        primaryGenre && supportGenre
+            ? "GENRE ROLES: Primary governs scene meaning. Support adds only secondary pressure or texture through a natural opening and may remain dormant."
             : "",
         primaryGenre
-            ? "GENRE GUIDANCE: Let genre shape choices, relationship pressure, pacing, atmosphere, and concrete scene details. Events may emerge naturally from motives and circumstances, but do not force one merely to prove the genre."
+            ? "GENRE PRINCIPLE: Let genre shape choices, relationships, pacing, atmosphere, and detail. Allow events to emerge naturally; never force one to prove a label."
             : "",
         characterBoostActive ? "CHARACTER — {{char}}:" : "",
         characterBoostActive && characterBoostAnchor
             ? `<character_boost_anchor>\n${characterBoostAnchor}\n</character_boost_anchor>`
             : "",
         characterBoostActive && characterBoostAnchor
-            ? "Use this anchor as a compact reminder subordinate to the full character card and established roleplay; do not quote or explain it."
+            ? "ANCHOR ROLE: Character-specific priority reminder subordinate to the full card and established roleplay; never quote or explain it."
+            : "",
+        characterBoostActive ? "CHARACTER PRINCIPLES:" : "",
+        characterBoostActive
+            ? "- IDENTITY: Preserve established personality, values, voice, boundaries, capabilities, and decision logic; allow justified change or restraint."
             : "",
         characterBoostActive
-            ? "- Preserve {{char}}'s established personality, values, voice, boundaries, capabilities, and behavior."
+            ? "- AGENCY: Act from established motives and make character-specific choices; do not defer {{char}}'s own decisions back to {{user}}."
             : "",
         characterBoostActive
-            ? "- Keep {{char}} self-directed through character-specific choices and initiative; do not defer decisions belonging to {{char}} back to {{user}}."
+            ? "- RELATIONSHIP: Respond through shared history, trust, tension, boundaries, power, and changing distance—not a generic trope."
             : "",
         characterBoostActive
-            ? "- Respond through the established relationship and continue unresolved actions, emotions, scene facts, and immediate consequences."
-            : "",
-        characterBoostActive
-            ? "- Vary gestures, phrasing, imagery, and relational beats without changing characterization or filling the response by echoing {{user}}."
+            ? "- CONTINUITY & VARIETY: Carry forward immediate actions, emotions, facts, and consequences; do not echo {{user}} or mechanically reuse recent expression."
             : "",
         "DRIFT GUARD: Before finalizing, silently correct only the single largest drift from the enabled guidance or scene continuity. Do not output the check.",
         correctionLines.length
@@ -3144,6 +3250,9 @@ function buildGenreAuditPrompt(
     scope = "combined",
     outputLanguage = ensureModuleSettings().outputLanguage
 ) {
+    const primaryEvidenceMinimum = Math.ceil(
+        GENRE_AUDIT_RESPONSE_LIMIT * PRIMARY_GENRE_EVIDENCE_RATIO
+    );
     const primaryFoundation = selection.primaryGenre
         ? getGenreProfileAuditStandard(getGenreProfile(selection.primaryGenre))
         : "";
@@ -3182,12 +3291,15 @@ function buildGenreAuditPrompt(
         selection.primaryGenre
             ? "This is a strict drift audit, not a genre-compatibility or recommendation task. A genre may suit the roleplay and still be weak when its distinctive traits are not actually visible in the supplied {{char}} responses."
             : "",
+        selection.primaryGenre
+            ? "Read each genre standard consistently: narrative identity defines what gives the scene meaning; recognizable expression names positive techniques; character and relationship consequence shows what the genre changes; atmosphere and material texture supports embodiment; the false-positive boundary names neighboring or generic evidence that must not be counted."
+            : "",
         "Rate every requested dimension with one of its allowed states. Judge only what is actually visible in the supplied responses, even if settings changed after those responses were written. A normal or present rating is not the default: it must be supported by visible evidence wherever an evidence array is requested. Score the observed window first; do not soften a rating because the problem could be corrected later.",
         selection.primaryGenre
-            ? "primary_genre evaluates narrative identity: whether the selected primary genre governs motives, relationship stakes, choices, causal development, scene emphasis, or emotional logic. Begin with primary_genre=weak. Change it to present only when multiple numbered {{char}} responses contain clear genre-specific evidence. Generic emotion, conflict, danger, action, atmosphere, or competent prose is not enough."
+            ? `primary_genre evaluates narrative identity: whether the selected primary genre governs motives, relationship stakes, choices, causal development, scene emphasis, or emotional logic. Begin with primary_genre=weak. Change it to present only when at least ${primaryEvidenceMinimum} distinct numbered {{char}} responses contain clear genre-specific evidence. Generic emotion, conflict, danger, action, atmosphere, or competent prose is not enough.`
             : "",
         selection.primaryGenre
-            ? "Before rating primary_genre as present, apply this counterfactual check: if the same responses could still be described accurately without the selected primary genre, rate it weak."
+            ? "Before rating primary_genre as present, apply both boundary checks: if the same responses could still be described accurately without the selected genre, or if the evidence matches its false-positive boundary more closely than its positive standard, rate it weak."
             : "",
         selection.primaryGenre
             ? "The supporting genre is a conditional secondary lens, not a second primary genre. It may shape existing pressure, relationship context, social or world logic, atmosphere, prose rhythm, or sensory texture when the current scene offers a natural opening. It must not seize the scene direction or require a new event merely to prove itself."
@@ -3196,7 +3308,7 @@ function buildGenreAuditPrompt(
             ? "Use support_texture=present only when at least two distinct numbered {{char}} responses contain genre-specific influence that would let a reader identify the supporting genre without seeing its label. Use support_texture=dormant when the supporting lens has no clear evidence and the current scene offers no natural, already-established opening for it. Use support_texture=weak only when an established or naturally relevant supporting-genre element had a clear opening in one or more numbered {{char}} responses but {{char}} flattened, ignored, or contradicted it."
             : "",
         selection.primaryGenre
-            ? "Before rating support_texture as present, apply this counterfactual check: if the cited texture could belong equally to many unrelated genres, it is not identifiable and cannot be present. A generic mood, an isolated word or object, ordinary contemporary technology, broad danger, secrecy, conflict, compatibility, or future potential is not sufficient evidence."
+            ? "Before rating support_texture as present, apply both boundary checks: if the cited influence could belong equally to many unrelated genres, or if it matches the supporting genre's false-positive boundary, it is not identifiable and cannot be present. A generic mood, an isolated word or object, ordinary contemporary technology, broad danger, secrecy, conflict, compatibility, or future potential is not sufficient evidence."
             : "",
         selection.primaryGenre
             ? "For world or setting lenses such as fantasy, supernatural, urban fantasy, science fiction, cyberpunk, or historical fiction, require explicit setting-specific phenomena, rules, entities, institutions, material conditions, or consequences. Metaphor, coincidence, unease, an ordinary city, or commonplace technology does not count."
@@ -3211,7 +3323,7 @@ function buildGenreAuditPrompt(
             ? `Return at most ${AUDIT_EVIDENCE_MAX_ITEMS} support_texture_opportunity items as the numbered CHAR_RESPONSE values where an already-established or naturally relevant supporting-genre element had a clear opening but was ignored, flattened, or contradicted. Return support_texture_identifiable=true only when the evidence would identify the supporting genre without its label.`
             : "",
         selection.primaryGenre
-            ? "genre_expression evaluates execution rather than narrative identity: whether scene causality, description, dialogue and action emphasis, relationship pressure, stakes, event progression, pacing, atmosphere, and consequences visibly express the selected primary genre. Begin with genre_expression=weak. Use present only when at least four distinct numbered responses use recognizable genre-specific techniques. Labels, keywords, generic mood, isolated tropes, or mere plot compatibility do not count. Cite a failure when a response is generic enough that the same execution could serve unrelated genres, or when it names/decorates the genre without letting it shape the scene."
+            ? "genre_expression evaluates execution, not narrative identity: whether scene causality, description, dialogue and action emphasis, relationship pressure, stakes, event progression, pacing, atmosphere, and consequences visibly use the selected genre's recognizable expression. Begin with genre_expression=weak. Use present only when at least four distinct numbered responses use recognizable genre-specific techniques. Labels, keywords, generic mood, isolated tropes, or mere plot compatibility do not count. Cite a failure when the execution could serve unrelated genres, violates the genre boundary, or decorates the scene without shaping it."
             : "",
         selection.primaryGenre
             ? "scene_density evaluates whether the scene is concretely dramatized rather than flat, static, decorative, or summary-like. Purposeful action, dialogue, spatial awareness, sensory or material detail, behavioral cues, subtext, and immediate consequences must shape attention, pressure, choice, or emotional meaning. Begin with scene_density=weak. Use present only when at least four distinct numbered responses contain functional dramatic detail. Length, adjectives, or decorative sensory lists are not density. Cite a failure when emotion or action is merely summarized, the scene lacks usable physical or relational grounding, or detail does not affect what happens."
@@ -3228,6 +3340,9 @@ function buildGenreAuditPrompt(
               : "",
         selection.characterEnabled && characterBaseline
             ? "Use the compact baseline as the character-specific reference across the entire character audit, not only for consistency. Judge how the visible roleplay realizes this particular character's traits, motives, decision style, speech, emotional expression, values, boundaries, and relationship responses. The baseline describes possible patterns, not a checklist that must appear in every response."
+            : "",
+        selection.characterEnabled
+            ? "Keep the six dimensions independent: character_consistency detects contradiction with stored character logic; character_interpretation detects repeated flattening without requiring contradiction; char_agency detects self-directed choice; relationship detects relationship-specific response; continuity detects carried scene state; repetition detects mechanical reuse. Do not let strength or weakness in one dimension determine another."
             : "",
         selection.characterEnabled
             ? "character_consistency compares {{char}}'s visible speech, choices, values, boundaries, competence, and relationship-specific attitude with the compact baseline. Flag contradiction only when the supplied responses depart from the stored character logic, not merely because a trait is quiet or absent. Plausible development, regression, deception, disguise, context-dependent conduct, or a temporary reaction to extreme circumstances may explain one response, but do not use those possibilities to excuse a repeated contradiction that the transcript itself does not justify. Require two distinct response examples unless one contradiction is unmistakably severe."
@@ -4054,7 +4169,6 @@ async function runGenreDriftAudit(
     { manual = false, scope = "combined" } = {}
 ) {
     if (genreAuditPendingChats.has(chatId)) return;
-    genreAuditPendingChats.add(chatId);
     const auditLabel =
         scope === "genre"
             ? "장르"
@@ -4067,6 +4181,19 @@ async function runGenreDriftAudit(
     ).correctionRevision;
     const selectionSignature = getGenreSelectionSignature(selection);
     const chatSnapshot = snapshotCurrentChatMessages();
+    const auditSettings = ensureModuleSettings();
+    const auditResponseLength =
+        AUDIT_RESPONSE_LENGTHS[scope] || AUDIT_RESPONSE_LENGTHS.combined;
+    const operationContext = createOperationContextSnapshot({
+        chatId,
+        chatSnapshot,
+        characterKey: getCurrentCharacterIdentity()?.key || "",
+        profileId: auditSettings.analysisProfileId,
+        outputLanguage: auditSettings.outputLanguage,
+        responseLength: auditResponseLength,
+        selectionSignature,
+        correctionRevision: correctionRevisionAtStart,
+    });
     const latestAssistantMessageId = getLatestAssistantMessageId(chatSnapshot);
     const auditTranscript = getRoleplayTranscript({
         assistantRepliesWithUserContext: GENRE_AUDIT_RESPONSE_LIMIT,
@@ -4074,14 +4201,12 @@ async function runGenreDriftAudit(
         numberAssistantReplies: true,
         perMessageMaxChars: AUDIT_MESSAGE_MAX_CHARS,
         maxChars: 60000,
-        chatSnapshot,
+        chatSnapshot: operationContext.chatSnapshot,
     });
     const reviewedResponses = (
         auditTranscript.match(/\[CHAR_RESPONSE_\d+:/g) || []
     ).length;
-    const selectedProfileId = String(
-        ensureModuleSettings().analysisProfileId || ""
-    );
+    const selectedProfileId = operationContext.profileId;
     let connectionSnapshot = selectedProfileId
         ? createBackgroundConnectionSnapshot({
               id: selectedProfileId,
@@ -4095,23 +4220,24 @@ async function runGenreDriftAudit(
                 : scope === "character"
                   ? "character_audit"
                   : "combined_audit",
+        responseLength: operationContext.responseLength,
         connectionMode: selectedProfileId ? "profile" : "main",
     });
-    updateGenreAnchorPanel();
-    if (getCurrentChatId() === chatId) {
-        showGenreAuditToast(
-            "info",
-            manual
-                ? `🔍 최근 롤플을 ${auditLabel} 수동 진단 중이에요…`
-                : "🔍 최근 롤플을 자동 통합 진단 중이에요…"
-        );
-    }
-
+    genreAuditPendingChats.add(chatId);
     try {
+        updateGenreAnchorPanel();
+        if (isOperationContextCurrentChat(operationContext)) {
+            showGenreAuditToast(
+                "info",
+                manual
+                    ? `🔍 최근 롤플을 ${auditLabel} 수동 진단 중이에요…`
+                    : "🔍 최근 롤플을 자동 통합 진단 중이에요…"
+            );
+        }
         connectionSnapshot = await resolveBackgroundConnectionSnapshot(
             selectedProfileId
         );
-        const auditOutputLanguage = ensureModuleSettings().outputLanguage;
+        const auditOutputLanguage = operationContext.outputLanguage;
         const auditPrompt = buildGenreAuditPrompt(
             selection,
             scope,
@@ -4121,15 +4247,13 @@ async function runGenreDriftAudit(
             scope,
             auditOutputLanguage
         );
-        const auditResponseLength =
-            AUDIT_RESPONSE_LENGTHS[scope] || AUDIT_RESPONSE_LENGTHS.combined;
-        auditDiagnostic.responseLength = auditResponseLength;
+        auditDiagnostic.responseLength = operationContext.responseLength;
         updateOperationDiagnosticConnection(auditDiagnostic, connectionSnapshot);
         let result = await generateStructuredAnalysis({
             prompt: auditPrompt,
             transcript: auditTranscript,
             jsonSchema: auditJsonSchema,
-            responseLength: auditResponseLength,
+            responseLength: operationContext.responseLength,
             connectionSnapshot,
             task: auditDiagnostic.task,
             diagnostic: auditDiagnostic,
@@ -4151,7 +4275,7 @@ async function runGenreDriftAudit(
                 `[${MODULE_NAME}] ${auditLabel} 진단 형식이 불완전해 한 번 다시 요청합니다.`,
                 error?.missingFields || []
             );
-            if (getCurrentChatId() === chatId) {
+            if (isOperationContextCurrentChat(operationContext)) {
                 showGenreAuditToast(
                     "info",
                     `🔄 ${auditLabel} 진단 형식을 보정해 한 번 다시 확인하고 있어요…`
@@ -4165,7 +4289,7 @@ async function runGenreDriftAudit(
                 ].join("\n"),
                 transcript: auditTranscript,
                 jsonSchema: auditJsonSchema,
-                responseLength: Math.max(3200, auditResponseLength),
+                responseLength: Math.max(3200, operationContext.responseLength),
                 retryOnLength: false,
                 connectionSnapshot,
                 task: auditDiagnostic.task,
@@ -4196,7 +4320,7 @@ async function runGenreDriftAudit(
         );
         if (
             getGenreSelectionSignature(currentSelection) !==
-            selectionSignature
+            operationContext.selectionSignature
         ) {
             const cancelledRecord = createGenreAuditRecord({
                 selection,
@@ -4214,7 +4338,7 @@ async function runGenreDriftAudit(
             storeLastAuditRecord(chatState.genreAnchor, cancelledRecord, scope);
             chatState.genreAnchor.auditStatus = "waiting";
             saveSettingsDebounced();
-            if (getCurrentChatId() === chatId) {
+            if (isOperationContextCurrentChat(operationContext)) {
                 showGenreAuditToast(
                     "info",
                     "부스터 설정이나 캐릭터 기준이 변경되어 이전 진단 결과를 적용하지 않았어요."
@@ -4224,7 +4348,7 @@ async function runGenreDriftAudit(
         }
         if (
             chatState.genreAnchor.correctionRevision !==
-            correctionRevisionAtStart
+            operationContext.correctionRevision
         ) {
             const supersededRecord = createGenreAuditRecord({
                 selection,
@@ -4247,7 +4371,7 @@ async function runGenreDriftAudit(
                 scope
             );
             saveSettingsDebounced();
-            if (getCurrentChatId() === chatId) {
+            if (isOperationContextCurrentChat(operationContext)) {
                 showGenreAuditToast(
                     "info",
                     "진단은 완료됐지만 기존 1회 보강 선택을 유지했어요."
@@ -4308,7 +4432,7 @@ async function runGenreDriftAudit(
         }
         saveSettingsDebounced();
 
-        if (getCurrentChatId() === chatId) {
+        if (isOperationContextCurrentChat(operationContext)) {
             updateGenrePrompt();
             updateGenreAnchorPanel();
             showGenreAuditToast(
@@ -4334,7 +4458,7 @@ async function runGenreDriftAudit(
                         getBoosterSelection(chatState),
                         scope
                     )
-                ) !== selectionSignature;
+                ) !== operationContext.selectionSignature;
             chatState.genreAnchor.auditStatus = staleSelection
                 ? "waiting"
                 : "error";
@@ -4351,7 +4475,7 @@ async function runGenreDriftAudit(
             storeLastAuditRecord(chatState.genreAnchor, errorRecord, scope);
             saveSettingsDebounced();
         }
-        if (getCurrentChatId() === chatId) {
+        if (isOperationContextCurrentChat(operationContext)) {
             showGenreAuditToast(
                 staleSelection ? "info" : "warning",
                 staleSelection
@@ -4361,7 +4485,9 @@ async function runGenreDriftAudit(
         }
     } finally {
         genreAuditPendingChats.delete(chatId);
-        if (getCurrentChatId() === chatId) updateGenreAnchorPanel();
+        if (isOperationContextCurrentChat(operationContext)) {
+            updateGenreAnchorPanel();
+        }
     }
 }
 
@@ -4443,6 +4569,23 @@ function getCharacterBaselineFieldDefinition(fieldId) {
     return CHARACTER_BASELINE_FIELDS.find((field) => field.id === fieldId) || null;
 }
 
+function getCharacterBoostAnchorRequirements(
+    outputLanguage = ensureModuleSettings().outputLanguage
+) {
+    return [
+        `Write boost_anchor in grammatical English as a synthesized character-specific reminder, usually 70 to 110 words and never more than ${CHARACTER_BOOST_ANCHOR_MAX_CHARS} characters.`,
+        "Prioritize only supported distinctions: the character's defining tension, behaviorally relevant values or boundaries, decision logic and action triggers, speech or emotional signature, and relationship-specific response pattern.",
+        "Do not list the baseline fields. Exclude appearance, biography, setting lore, and plot summary unless they directly govern recurring behavior.",
+        "Avoid absolute claims such as always, never, completely, or zero unless the baseline explicitly establishes them.",
+        "Do not add generic instructions about agency, continuity, prose variety, or user control; those are supplied separately.",
+        outputLanguage === "ko"
+            ? "Also write boost_anchor_display as a faithful natural Korean display version that preserves every point without adding interpretation."
+            : "",
+    ]
+        .filter(Boolean)
+        .join(" ");
+}
+
 function buildCharacterBaselinePrompt(
     targetFields,
     contextFields = [],
@@ -4462,19 +4605,16 @@ function buildCharacterBaselinePrompt(
         targetFields.map((field) => [field.id, "..."])
     );
     return [
-        "Extract a compact roleplay baseline for the supplied character.",
-        "Use only the supplied character card. Do not continue roleplay and do not invent missing traits, trauma, moral judgments, hidden virtues, flaws, or relationships.",
+        "Extract a compact, evidence-bound roleplay baseline for the supplied character.",
+        "Use only the supplied character card. Do not continue roleplay and do not invent missing traits, trauma, moral judgments, hidden virtues, flaws, contradictions, or relationships.",
         "Do not prioritize appearance, long setting lore, plot summary, or lengthy examples unless they directly constrain personality, speech, or behavior.",
         "Preserve deliberate simplicity, strong archetypal traits, and genuine contradictions. Do not make the character artificially balanced or more conventionally sympathetic.",
+        "Give each fact one best home. Keep the fields complementary rather than repeating the same description, and distinguish stable character logic from a one-scene mood or circumstance.",
         outputLanguage === "en"
             ? "Write each requested field in natural English using one to three concise sentences. Keep it specific enough for later consistency auditing and avoid repeating the same fact across fields."
             : "Write each requested field in natural Korean using one to three concise sentences. Keep it specific enough for later consistency auditing and avoid repeating the same fact across fields. Do not write English prose except for established proper nouns.",
         includeBoostAnchor
-            ? `Also write boost_anchor in grammatical English as a compact character-specific reminder of at most ${CHARACTER_BOOST_ANCHOR_MAX_CHARS} characters. Use three to five short lines covering only the most distinctive personality tensions, values or boundaries, active motives, speech or behavioral signature, and relationship-specific response pattern supported by the card and fields. Avoid absolute claims such as always, never, completely, or zero unless the card explicitly establishes them. Do not repeat generic instructions about agency, continuity, prose variety, or user control; those are added separately.${
-                  outputLanguage === "ko"
-                      ? " Also write boost_anchor_display as a faithful, natural Korean display version of boost_anchor. Preserve every instruction and do not add interpretation."
-                      : ""
-              }`
+            ? getCharacterBoostAnchorRequirements(outputLanguage)
             : "Generate only the requested field. Do not generate or rewrite boost_anchor for this single-field request.",
         "FIELDS TO GENERATE:",
         targetList,
@@ -4616,21 +4756,27 @@ async function generateCharacterBaseline(fieldId = null) {
         definition,
         text: String(baseline.fields[definition.id]?.text || ""),
     }));
-    characterBaselinePendingTasks.set(identity.key, fieldId || "all");
-    safelyUpdateCharacterBoosterPanel("캐릭터 기준 생성 시작");
-
-    const selectedProfileId = String(
-        ensureModuleSettings().analysisProfileId || ""
-    );
-    const outputLanguage = ensureModuleSettings().outputLanguage;
+    const baselineSettings = ensureModuleSettings();
+    const baselineResponseLength = requestedField ? 1200 : 3600;
+    const operationContext = createOperationContextSnapshot({
+        chatId: taskChatId,
+        characterKey: identity.key,
+        profileId: baselineSettings.analysisProfileId,
+        outputLanguage: baselineSettings.outputLanguage,
+        responseLength: baselineResponseLength,
+    });
+    const selectedProfileId = operationContext.profileId;
+    const outputLanguage = operationContext.outputLanguage;
     const baselineDiagnostic = createOperationDiagnostic({
         task: requestedField
             ? `character_baseline_field_${requestedField.id}`
             : "character_baseline_all",
-        responseLength: requestedField ? 1200 : 3600,
+        responseLength: operationContext.responseLength,
         connectionMode: selectedProfileId ? "profile" : "main",
     });
+    characterBaselinePendingTasks.set(identity.key, fieldId || "all");
     try {
+        safelyUpdateCharacterBoosterPanel("캐릭터 기준 생성 시작");
         const connectionSnapshot = await resolveBackgroundConnectionSnapshot(
             selectedProfileId
         );
@@ -4685,13 +4831,12 @@ async function generateCharacterBaseline(fieldId = null) {
                     additionalProperties: false,
                 },
             };
-        const baselineResponseLength = requestedField ? 1200 : 3600;
         const requestBaseline = (prompt, retryOnLength = true) =>
             generateStructuredAnalysis({
                 prompt,
                 transcript: baselineTranscript,
                 jsonSchema: baselineJsonSchema,
-                responseLength: baselineResponseLength,
+                responseLength: operationContext.responseLength,
                 retryOnLength,
                 connectionSnapshot,
                 task: baselineDiagnostic.task,
@@ -4822,7 +4967,7 @@ async function generateCharacterBaseline(fieldId = null) {
         };
         invalidateCharacterAuditAfterBaselineChange(taskChatId);
         saveSettingsDebounced();
-        if (getCurrentCharacterIdentity()?.key === identity.key) {
+        if (isOperationContextCurrentCharacter(operationContext)) {
             const promptUpdated = safelyUpdateGenrePrompt(
                 "캐릭터 기준 생성 완료"
             );
@@ -5058,15 +5203,21 @@ function saveCharacterBoostAnchor(
 }
 
 async function convertCharacterAnchorDisplayToEnglish(displayText) {
+    const conversionSettings = ensureModuleSettings();
+    const operationContext = createOperationContextSnapshot({
+        chatId: getCurrentChatId(),
+        characterKey: getCurrentCharacterIdentity()?.key || "",
+        profileId: conversionSettings.analysisProfileId,
+        outputLanguage: conversionSettings.outputLanguage,
+        responseLength: 900,
+    });
     const anchorConversionDiagnostic = createOperationDiagnostic({
         task: "character_anchor_translation",
-        responseLength: 900,
-        connectionMode: ensureModuleSettings().analysisProfileId
-            ? "profile"
-            : "main",
+        responseLength: operationContext.responseLength,
+        connectionMode: operationContext.profileId ? "profile" : "main",
     });
     const connectionSnapshot = await resolveBackgroundConnectionSnapshot(
-        String(ensureModuleSettings().analysisProfileId || "")
+        operationContext.profileId
     );
     updateOperationDiagnosticConnection(
         anchorConversionDiagnostic,
@@ -5093,7 +5244,7 @@ async function convertCharacterAnchorDisplayToEnglish(displayText) {
                 additionalProperties: false,
             },
         },
-        responseLength: 900,
+        responseLength: operationContext.responseLength,
         connectionSnapshot,
         task: anchorConversionDiagnostic.task,
         diagnostic: anchorConversionDiagnostic,
@@ -5168,8 +5319,8 @@ async function saveEditedCharacterBoostAnchor() {
     const identityKey = target.identity.key;
     if (characterBaselinePendingTasks.has(identityKey)) return;
     characterBaselinePendingTasks.set(identityKey, "anchor");
-    safelyUpdateCharacterBoosterPanel("캐릭터 앵커 저장 시작");
     try {
+        safelyUpdateCharacterBoosterPanel("캐릭터 앵커 저장 시작");
         const canonicalText =
             language === "ko"
                 ? await convertCharacterAnchorDisplayToEnglish(displayText)
@@ -5233,32 +5384,34 @@ async function regenerateCharacterBoostAnchor() {
     const baselineState = getCurrentCharacterBaseline();
     if (!baselineState.identity || !baselineState.baseline) return;
     const { identity, baseline } = baselineState;
-    const outputLanguage = ensureModuleSettings().outputLanguage;
-    const taskChatId = getCurrentChatId();
+    const anchorSettings = ensureModuleSettings();
+    const operationContext = createOperationContextSnapshot({
+        chatId: getCurrentChatId(),
+        characterKey: identity.key,
+        profileId: anchorSettings.analysisProfileId,
+        outputLanguage: anchorSettings.outputLanguage,
+        responseLength: 900,
+    });
+    const outputLanguage = operationContext.outputLanguage;
     if (characterBaselinePendingTasks.has(identity.key)) return;
-    characterBaselinePendingTasks.set(identity.key, "anchor");
-    safelyUpdateCharacterBoosterPanel("캐릭터 앵커 생성 시작");
     const anchorDiagnostic = createOperationDiagnostic({
         task: "character_anchor_regeneration",
-        responseLength: 900,
-        connectionMode: ensureModuleSettings().analysisProfileId
-            ? "profile"
-            : "main",
+        responseLength: operationContext.responseLength,
+        connectionMode: operationContext.profileId ? "profile" : "main",
     });
+    characterBaselinePendingTasks.set(identity.key, "anchor");
     try {
+        safelyUpdateCharacterBoosterPanel("캐릭터 앵커 생성 시작");
         const connectionSnapshot = await resolveBackgroundConnectionSnapshot(
-            String(ensureModuleSettings().analysisProfileId || "")
+            operationContext.profileId
         );
         updateOperationDiagnosticConnection(anchorDiagnostic, connectionSnapshot);
         const result = await generateStructuredAnalysis({
             prompt: [
-                `Create a compact persistent roleplay anchor for ${identity.name}.`,
-                `Write it in English as three to five short lines and no more than ${CHARACTER_BOOST_ANCHOR_MAX_CHARS} characters.`,
-                "Preserve only character-specific personality tensions, values or boundaries, active motives, speech or behavioral signature, and relationship-specific response patterns supported by the baseline.",
-                "Use complete, grammatical English. Avoid absolute claims such as always, never, completely, or zero unless the baseline explicitly establishes them.",
-                "Do not invent traits. Do not add generic instructions about agency, continuity, prose variety, or user control; those are supplied separately.",
+                `Create a compact persistent roleplay anchor for ${identity.name} from the supplied baseline only. Do not invent or reinterpret traits.`,
+                getCharacterBoostAnchorRequirements(outputLanguage),
                 outputLanguage === "ko"
-                    ? 'Also provide boost_anchor_display as a faithful natural Korean display version. Return JSON only: {"boost_anchor":"English character-specific anchor","boost_anchor_display":"한국어 표시용 앵커"}.'
+                    ? 'Return JSON only: {"boost_anchor":"English character-specific anchor","boost_anchor_display":"한국어 표시용 앵커"}.'
                     : 'Return JSON only: {"boost_anchor":"English character-specific anchor"}.',
             ].join("\n"),
             transcript: `<character_baseline>\n${serializeCharacterBaseline(
@@ -5284,7 +5437,7 @@ async function regenerateCharacterBoostAnchor() {
                     additionalProperties: false,
                 },
             },
-            responseLength: 900,
+            responseLength: operationContext.responseLength,
             connectionSnapshot,
             task: anchorDiagnostic.task,
             diagnostic: anchorDiagnostic,
@@ -5322,7 +5475,7 @@ async function regenerateCharacterBoostAnchor() {
         baseline.updatedAt = Date.now();
         ensureModuleSettings().characterBaselines[identity.key] = baseline;
         saveSettingsDebounced();
-        if (getCurrentCharacterIdentity()?.key === identity.key) {
+        if (isOperationContextCurrentCharacter(operationContext)) {
             const promptUpdated = safelyUpdateGenrePrompt(
                 "캐릭터 앵커 생성 완료"
             );
@@ -5687,6 +5840,9 @@ function ensureGenreAnchorState(state) {
             lastCountedMessageId: null,
         };
     }
+    if (preparedGenreAnchors.has(state.genreAnchor)) {
+        return state.genreAnchor;
+    }
 
     if (
         !Number.isSafeInteger(state.genreAnchor.responseCount) ||
@@ -5789,6 +5945,7 @@ function ensureGenreAnchorState(state) {
         }
     }
 
+    preparedGenreAnchors.add(state.genreAnchor);
     return state.genreAnchor;
 }
 
@@ -6146,7 +6303,7 @@ function getPlotGenerateButtonLabel(mode, secretMode, secretAction = "") {
     if (secretAction === "random") return "🎁 랜덤박스 열기";
     if (secretAction === "crazy") return "💥 미친 랜덤박스 열기";
     if (secretAction === "character_question") {
-        return `❓ ${getCurrentRoleDisplayNames().characterName}의 질문 생성`;
+        return `❓ ${getCurrentRoleDisplayNames().characterName}의 질문박스`;
     }
     return "🎲 사건 생성";
 }
@@ -6324,13 +6481,13 @@ function triggerPlotEvent(eventText) {
 
     const text = [
         "[STORYBOOSTER — ONE-SHOT IN-CHARACTER PLOT INJECTION]",
-        "Treat the following plot event as an in-world development that is happening now or naturally beginning in the current scene.",
+        "NEXT-RESPONSE MANDATE: Make the following central plot development visibly begin in the next {{char}} response. Do not postpone it, merely foreshadow it, or promise to use it later.",
         `<plot_event>${line}</plot_event>`,
-        "Write the next {{char}} roleplay response immediately and continue directly from the latest scene.",
-        "Silently incorporate the event through in-character narration, dialogue, action, perception, and immediate consequences as appropriate.",
-        "Never acknowledge, quote, summarize, evaluate, or discuss this instruction or the plot event as a prompt.",
-        "Do not output OOC, meta commentary, planning, confirmation, or promises such as 'I will reflect this in future responses.'",
-        "Begin directly with the roleplay. Preserve established characterization, point of view, formatting, language, continuity, and relationship dynamics.",
+        "Continue directly from the latest scene and incorporate the development through in-character narration, dialogue, action, perception, and immediate consequences. Adapt its exact surface details only as needed to preserve already established facts and spatial continuity; keep its central change intact.",
+        "Preserve {{char}}'s established characterization, motives, capabilities, voice, relationship-specific behavior, point of view, language, and formatting.",
+        "Leave {{user}}'s dialogue, thoughts, emotions, consent, bodily reactions, choices, and actions undecided. {{char}} may initiate or act, but the response must leave room for {{user}} to respond.",
+        "Never acknowledge, quote, summarize, evaluate, or discuss this instruction or the plot event as a prompt. Do not output OOC, meta commentary, planning, confirmation, or promises such as 'I will reflect this in future responses.'",
+        "Begin directly with the roleplay.",
     ].join("\n");
 
     registerOneShotRoleplayInstruction(text);
@@ -6581,8 +6738,8 @@ function getPlotOutputInstruction(
     language = ensureModuleSettings().outputLanguage
 ) {
     return language === "en"
-        ? 'OUTPUT LANGUAGE AND FORMAT REQUIREMENT: Write the entire value of the "event" field in natural English in 1–3 sentences as the direct next plot development. Begin immediately with the category-appropriate behavior, condition, information, interaction, or change, then state the opening it leaves for what follows. Do not introduce or label it with phrases such as "This episode", "This scene", or "The plot". Do not use Korean narration. Do not write direct dialogue, internal monologue, character-roleplay narration, or a completed scene.'
-        : '출력 언어·형식 필수 조건: "event" 필드 전체를 반드시 자연스러운 한국어 1~3문장으로 다음 플롯 전개 자체를 바로 작성하라. 선택한 카테고리에 맞는 행동·조건·정보·상호작용·변화로 곧바로 시작하고, 이후에 남는 가능성을 이어서 적어라. "이 에피소드는", "이 장면은", "~한 에피소드입니다", "~한 장면입니다"처럼 소개하거나 규정하는 문구를 쓰지 마라. 기존 고유명사만 원어로 유지하라. 직접 대사, 내면 독백, 캐릭터 롤플 서술, 완성된 장면을 쓰지 마라. 영어 서술을 출력하지 마라.';
+        ? 'OUTPUT LANGUAGE AND FORMAT REQUIREMENT: Write the entire value of the "event" field in natural English in 1–3 decisive sentences as the direct next plot development. State what concretely changes, its immediate effect, and the unresolved opening it leaves. Begin with the requested-direction-appropriate behavior, condition, information, interaction, or change; do not hedge with a list of things that could happen. Do not introduce or label it with phrases such as "This episode", "This scene", or "The plot". Do not use Korean narration. Do not write direct dialogue, internal monologue, character-roleplay narration, or a completed scene.'
+        : '출력 언어·형식 필수 조건: "event" 필드 전체를 반드시 자연스러운 한국어 1~3개의 단호한 문장으로 다음 플롯 전개 자체를 바로 작성하라. 무엇이 구체적으로 변하는지, 그 즉각적인 영향과 이후에 남는 가능성을 적어라. 요청한 방향에 맞는 행동·조건·정보·상호작용·변화로 곧바로 시작하고, 일어날 수도 있는 일의 목록처럼 흐리게 쓰지 마라. "이 에피소드는", "이 장면은", "~한 에피소드입니다", "~한 장면입니다"처럼 소개하거나 규정하는 문구를 쓰지 마라. 기존 고유명사만 원어로 유지하라. 직접 대사, 내면 독백, 캐릭터 롤플 서술, 완성된 장면을 쓰지 마라. 영어 서술을 출력하지 마라.';
 }
 
 function getPlotCandidateFormatIssues(text) {
@@ -6841,6 +6998,9 @@ function buildEventGenerationPrompt(
     } = {}
 ) {
     const isCrazyRandom = surpriseType === "crazy";
+    const categoryGuidance = !isCrazyRandom && category?.id
+        ? EVENT_CATEGORY_GUIDANCE[category.id] || null
+        : null;
     const compactCharacterAnchor = String(characterBoostAnchor || "")
         .trim()
         .slice(0, CHARACTER_BOOST_ANCHOR_MAX_CHARS);
@@ -6856,16 +7016,18 @@ function buildEventGenerationPrompt(
         : [
               "No compact character-booster anchor is available. Infer characterization conservatively from the supplied transcript and do not invent a stock personality or relationship trope to create drama.",
           ];
-    const ideaLine = isCrazyRandom
-        ? "Invent the occurrence independently. Do not optimize it for coherence, plausibility, genre fit, usefulness, emotional relevance, continuity, tasteful storytelling, or smooth integration. Impossible, absurd, disproportionate, tonally disruptive, or inexplicable results are welcome."
+    const ideaLines = isCrazyRandom
+        ? [
+              "Invent the occurrence independently. Do not optimize it for coherence, plausibility, genre fit, usefulness, emotional relevance, continuity, tasteful storytelling, or smooth integration. Impossible, absurd, disproportionate, tonally disruptive, or inexplicable results are welcome.",
+          ]
         : userIdea
         ? [
-              "The user supplied a rough plot idea. Preserve its central intent and refine it into a coherent, context-aware event. Add only details needed for causality, specificity, and integration with the roleplay.",
+              "USER-IDEA CONTRACT: Preserve the supplied idea's central intent, desired direction, and recognizable core. Improve only the causality, specificity, character fit, and integration needed to make it usable in the current roleplay; do not replace it with a more dramatic idea.",
               `<user_plot_idea>${userIdea}</user_plot_idea>`,
-          ].join("\n")
-        : "Create the event freely within the selected category.";
+          ]
+        : ["Create the event freely within the selected category contract."];
 
-    const categoryLines = isCrazyRandom
+    const categoryContractLines = isCrazyRandom
         ? [
               "CHAOS MODE: Ignore the current roleplay, selected genre, plot categories, character anchor, relationship direction, tone, world rules, causality, and prior suggestions when inventing the occurrence.",
               "Generate three maximally different possibilities silently. Discard the easiest one to explain and the most conventional one. Return only the strangest remaining possibility.",
@@ -6874,36 +7036,34 @@ function buildEventGenerationPrompt(
           ]
         : category
         ? [
-              `Selected category: ${category.promptLabel || category.label}.`,
+              "SELECTED CATEGORY CONTRACT:",
+              `Category: ${category.promptLabel || category.label}.`,
               category.direction
-                  ? `Category direction: ${category.direction}`
-                  : "Interpret this user-defined category by its name and apply it naturally.",
-          ]
-        : [
-              "No plot category is selected. Follow the user's rough idea directly without forcing it into a preset category.",
-          ];
-    const categoryGuidance = !isCrazyRandom && category?.id
-        ? EVENT_CATEGORY_GUIDANCE[category.id] || null
-        : null;
-    const categoryPriorityLines = !isCrazyRandom && category
-        ? [
-              "CATEGORY PRIORITY: The selected category determines the development's type, narrative function, and degree of change. Do not substitute a more dramatic or familiar plot pattern for the selected category.",
+                  ? `Central direction: ${category.direction}`
+                  : "Interpret this user-defined category by its exact name and apply its semantic function directly.",
+              "CATEGORY PRIORITY: The selected category determines the development's type, narrative function, and degree of change. Do not substitute a more dramatic, familiar, or genre-flavored plot pattern for it.",
               categoryGuidance?.required ||
-                  "Center the semantic function of this user-defined category and make the result recognizable from its content even if the category label is removed.",
+                  "CUSTOM CATEGORY: Treat the category name and supplied direction as a hard semantic contract. The result must remain recognizable as this category even when its label is removed.",
               categoryGuidance?.avoid ||
-                  "Do not replace the user-defined direction with a more dramatic built-in plot pattern.",
+                  "Do not broaden the user-defined direction into a different built-in category or use higher stakes to compensate for an unclear fit.",
               categoryGuidance?.completion ||
                   "A complete candidate states the category-specific development, its grounding in the current context, and the usable opening left for what follows.",
-          ].filter(Boolean)
-        : [];
+          ]
+        : [
+              "NO CATEGORY CONTRACT: Follow the user's rough idea directly. Do not force it into a built-in category or import a more familiar plot pattern.",
+          ];
+
     const generalDevelopmentRequirement = isCrazyRandom
         ? "Return one concrete occurrence that begins immediately in-world when injected. It may violate realism, genre, tone, causality, continuity, or established world rules and may remain completely unexplained. It must be an event rather than random words or a vague dreamlike summary."
         : category
         ? "Keep the scale and kind of change appropriate to the selected category. A subtle emotional, relational, informational, environmental, or everyday shift can be a complete plot development when that is the category's function."
         : "The refined user idea must create a clear, context-specific and usable next development without being forced into an unrelated preset plot pattern.";
 
-    const operationLines =
-        operation === "refine"
+    const operationLines = isCrazyRandom
+        ? [
+              "CHAOS GENERATION TASK: Invent one independent, concrete, in-world occurrence without using the current roleplay, a selected category, a character anchor, or previous suggestions as creative guidance.",
+          ]
+        : operation === "refine"
             ? [
                   "REFINEMENT TASK: Preserve the current candidate's central premise, intended direction, and recognizable core.",
                   "Improve its specificity, causal plausibility, fidelity to the selected category, relevance to established characterization and relationships, and usable forward movement. Do not enlarge or redirect the event into a more dramatic plot type. Do not replace it with a completely different event.",
@@ -6930,35 +7090,65 @@ function buildEventGenerationPrompt(
                         : "",
                 ]
               : [
-                    "GENERATION TASK: Create a new candidate from the selected direction and current roleplay context.",
+                    "GENERATION TASK: Create one new candidate from the selected direction and current roleplay context.",
                 ];
-    const groundingLines = isCrazyRandom
+
+    const decisionPriorityLines = isCrazyRandom
+        ? [
+              "CHAOS PRIORITY: Unpredictability outranks coherence, usefulness, continuity, characterization, genre, and plausibility. The only hard boundaries are a concrete in-world occurrence, no metagaming, and an open {{user}} response.",
+          ]
+        : category
+          ? [
+                "DECISION PRIORITY — APPLY IN THIS ORDER:",
+                "1. Preserve established transcript facts, world rules, immediate scene continuity, and {{user}}'s undecided response.",
+                "2. Make the selected category contract the unmistakable central narrative function and keep its appropriate scale.",
+                "3. Keep the development plausible for {{char}} through the transcript and compact character anchor.",
+                "4. Seek novelty only inside the first three constraints; never raise stakes or switch plot type merely to appear creative.",
+                "If a lower priority conflicts with a higher one, obey the higher priority.",
+            ]
+        : [
+              "DECISION PRIORITY — APPLY IN THIS ORDER:",
+              "1. Preserve established transcript facts, world rules, immediate scene continuity, and {{user}}'s undecided response.",
+              "2. Preserve the supplied idea's central intent and recognizable direction.",
+              "3. Keep the development plausible for {{char}} through the transcript and compact character anchor.",
+              "4. Add novelty only where it does not replace or inflate the supplied idea.",
+              "If a lower priority conflicts with a higher one, obey the higher priority.",
+          ];
+
+    const plotContractLines = isCrazyRandom
         ? [
               "No roleplay transcript or character anchor governs the creative choice. Do not infer or reconstruct them.",
               "Do not decide {{user}}'s dialogue, thoughts, emotions, consent, bodily reactions, choices, or actions. Leave {{user}}'s response completely open.",
               "Do not use metagaming or mention prompts, roleplay instructions, character cards, genres, AI systems, players, interfaces, or system malfunctions. Present the occurrence entirely as an in-world event.",
           ]
         : [
-              "Prioritize the current conversation, {{char}}'s characterization and goals, the relationship between {{char}} and {{user}}, established world rules, and immediate scene continuity.",
-              "Use at least one concrete fact from the supplied transcript. Do not select from a fixed event list.",
-              "Continue the present causal situation. Do not introduce an unrelated accident, disaster, new person, or sudden revelation merely to create movement.",
+              "PLOT CONTRACT:",
+              "- Return one usable next development as planning text, not a performed roleplay response, completed scene, episode summary, or OOC explanation.",
+              "- Ground it in at least one concrete fact from the supplied transcript and continue the present causal situation.",
+              "- Preserve established characterization, relationship history, world rules, spatial state, and unresolved immediate actions.",
+              "- Do not decide {{user}}'s dialogue, thoughts, emotions, consent, bodily reactions, choices, or actions. Leave {{user}}'s response open.",
+              "- Do not fully resolve the development. End with a concrete pressure, option, question, adjustment, or consequence that the next roleplay response can act on.",
+              "- Do not introduce an unrelated accident, disaster, person, revelation, or escalation merely to create movement. A new element is valid only when the selected category calls for it and the transcript supplies a plausible opening.",
           ];
 
     return [
-        "Create one direct plot development for what happens next in the current roleplay. Write the plot itself, not a description of what kind of episode, scene, or plot it is. Begin immediately with the concrete development, behavior, condition, information, or change appropriate to the selected direction; do not perform or continue the roleplay itself.",
+        isCrazyRandom
+            ? "Create one direct, unexplained in-world occurrence. Write the occurrence itself, not a description of what kind of episode, scene, or plot it is; do not perform a completed roleplay scene."
+            : "Create one direct plot development for what happens next in the current roleplay. Write the plot itself, not a description of what kind of episode, scene, or plot it is. Begin immediately with the concrete development, behavior, condition, information, or change appropriate to the selected direction; do not perform or continue the roleplay itself.",
         ...operationLines,
-        ...categoryLines,
-        ideaLine,
+        ...decisionPriorityLines,
+        ...categoryContractLines,
+        ...ideaLines,
+        ...plotContractLines,
         ...characterContinuityLines,
-        ...groundingLines,
         isCrazyRandom
             ? "Use only the requested output language and the explicit no-metagaming and {{user}}-agency boundaries. Nothing else constrains the creative choice."
             : "Use only the supplied roleplay transcript, selected plot category, optional user idea, and previous suggestions as creative context. Do not consult or infer StoryBooster genre selections when choosing the development.",
         generalDevelopmentRequirement,
-        "Do not create jealousy, possessiveness, obsession, overprotectiveness, territorial behavior, controlling behavior, surveillance, or restriction of autonomy as generic relationship tension. Use any of them only when the recent transcript clearly establishes the relevant character tendency and the immediate situation specifically activates it; affection, concern, attraction, fear of loss, danger, or emotional intensity alone is not sufficient evidence.",
-        "Do not fully resolve the development; leave meaningful room for the next roleplay response and what follows.",
-        ...categoryPriorityLines,
-        "Use prospective or planning language, but state the development directly. Do not introduce, label, summarize, or evaluate it with phrases such as 'This episode...', 'This scene...', 'The plot...', '이 에피소드는', '이 장면은', '~한 에피소드입니다', or '~한 장면입니다'. Do not write direct dialogue, quoted speech, internal monologue, first-person narration, character-roleplay prose, or a completed scene. The result must still require a separate roleplay generation to become a scene.",
+        isCrazyRandom
+            ? ""
+            : "Do not create jealousy, possessiveness, obsession, overprotectiveness, territorial behavior, controlling behavior, surveillance, or restriction of autonomy as generic relationship tension. Use any of them only when the recent transcript clearly establishes the relevant character tendency and the immediate situation specifically activates it; affection, concern, attraction, fear of loss, danger, or emotional intensity alone is not sufficient evidence.",
+        "Use decisive prospective or planning language and state what develops, not what could hypothetically happen. Do not introduce, label, summarize, or evaluate it with phrases such as 'This episode...', 'This scene...', 'The plot...', '이 에피소드는', '이 장면은', '~한 에피소드입니다', or '~한 장면입니다'. Do not write direct dialogue, quoted speech, internal monologue, first-person narration, character-roleplay prose, or a completed scene. The result must still require a separate roleplay generation to become a scene.",
         "Treat these as planning instructions, never as an OOC request to acknowledge, promise future compliance, or explain how the plot should be used.",
         isCrazyRandom
             ? "Before returning the candidate, silently ask whether it feels coherent, useful, tasteful, foreshadowed, or like a familiar plot device. If so, discard it and choose something stranger. Verify only that it is a concrete in-world occurrence, contains no metagaming, and leaves {{user}}'s response open. Output only the candidate, not the check."
@@ -6988,8 +7178,7 @@ async function generateEventCandidate(operation = "generate", options = {}) {
         return;
     }
     const chatSnapshot = snapshotCurrentChatMessages();
-    const plotTokenBudget = ensureModuleSettings().plotMaxTokens;
-    const plotOutputLanguage = ensureModuleSettings().outputLanguage;
+    const plotSettings = ensureModuleSettings();
     const plotCharacterBaselineState = getCurrentCharacterBaseline();
     const plotCharacterReadiness = getCharacterBoosterReadiness(
         plotCharacterBaselineState
@@ -6997,9 +7186,17 @@ async function generateEventCandidate(operation = "generate", options = {}) {
     const plotCharacterBoostAnchor = plotCharacterReadiness.boostActive
         ? plotCharacterReadiness.boostAnchor
         : "";
-    const selectedProfileId = String(
-        ensureModuleSettings().plotProfileId || ""
-    );
+    const operationContext = createOperationContextSnapshot({
+        chatId: taskChatId,
+        chatSnapshot,
+        characterKey: plotCharacterBaselineState.identity?.key || "",
+        profileId: plotSettings.plotProfileId,
+        outputLanguage: plotSettings.outputLanguage,
+        responseLength: plotSettings.plotMaxTokens,
+    });
+    const plotTokenBudget = operationContext.responseLength;
+    const plotOutputLanguage = operationContext.outputLanguage;
+    const selectedProfileId = operationContext.profileId;
 
     const popupRoot = getActiveBoosterPopupRoot();
     const resultWrap = getBoosterElement("rp-event-result-wrap");
@@ -7057,23 +7254,22 @@ async function generateEventCandidate(operation = "generate", options = {}) {
         connectionMode: selectedProfileId ? "profile" : "main",
     });
     eventGenerationPendingTasks.set(taskChatId, task);
-    updatePlotGenerationPendingUi(taskChatId);
-    showPlotGenerationToast(
-        "info",
-        surpriseType === "random"
-            ? "랜덤박스를 열고 있어요."
-            : surpriseType === "crazy"
-              ? "미친 랜덤박스를 열고 있어요."
-              : surpriseType === "secret"
-                ? "비밀 플롯 생성을 시작했어요."
-                : operation === "refine"
-            ? "플롯 다듬기를 시작했어요."
-            : operation === "new_direction"
-              ? "새 플롯 방향 생성을 시작했어요."
-              : "플롯 생성을 시작했어요."
-    );
-
     try {
+        updatePlotGenerationPendingUi(taskChatId);
+        showPlotGenerationToast(
+            "info",
+            surpriseType === "random"
+                ? "랜덤박스를 열고 있어요."
+                : surpriseType === "crazy"
+                  ? "미친 랜덤박스를 열고 있어요."
+                  : surpriseType === "secret"
+                    ? "비밀 플롯 생성을 시작했어요."
+                    : operation === "refine"
+                      ? "플롯 다듬기를 시작했어요."
+                      : operation === "new_direction"
+                        ? "새 플롯 방향 생성을 시작했어요."
+                        : "플롯 생성을 시작했어요."
+        );
         const plotPrompt = buildEventGenerationPrompt(category, {
             operation,
             currentEvent,
@@ -7093,7 +7289,7 @@ async function generateEventCandidate(operation = "generate", options = {}) {
                       messageLimit: PLOT_CONTEXT_MESSAGE_LIMIT,
                       perMessageMaxChars: PLOT_MESSAGE_MAX_CHARS,
                       maxChars: 48000,
-                      chatSnapshot,
+                      chatSnapshot: operationContext.chatSnapshot,
                   });
         const plotTranscript =
             surpriseType === "crazy"
@@ -7227,7 +7423,7 @@ async function generateEventCandidate(operation = "generate", options = {}) {
             userIdea,
             surpriseType,
             chatId: taskChatId,
-            updateUi: getCurrentChatId() === taskChatId,
+            updateUi: isOperationContextCurrentChat(operationContext),
         });
         showPlotGenerationToast(
             "success",
@@ -7243,7 +7439,7 @@ async function generateEventCandidate(operation = "generate", options = {}) {
                   ? "새 플롯 방향이 완성됐어요."
                   : "플롯 생성이 완료됐어요."
         );
-        if (String(getCurrentChatId()) !== taskChatId) {
+        if (!isOperationContextCurrentChat(operationContext)) {
             return;
         }
         if (autoInject) {
@@ -7289,7 +7485,7 @@ async function generateEventCandidate(operation = "generate", options = {}) {
             diagnostic: plotDiagnostic,
         });
         const liveStatus =
-            String(getCurrentChatId()) === taskChatId
+            isOperationContextCurrentChat(operationContext)
                 ? getBoosterElement("rp-event-status") || status
                 : status;
         const timedOut = err?.code === "STORYBOOSTER_REQUEST_TIMEOUT";
@@ -8719,19 +8915,32 @@ async function generateGenreRecommendation() {
     if (genreRecommendationPendingChats.has(chatId)) return;
     const chatSnapshot = snapshotCurrentChatMessages();
     const availableGenres = getAvailableGenres();
-    const outputLanguage = ensureModuleSettings().outputLanguage;
+    const recommendationSettings = ensureModuleSettings();
+    const operationContext = createOperationContextSnapshot({
+        chatId,
+        chatSnapshot,
+        characterKey: getCurrentCharacterIdentity()?.key || "",
+        profileId: recommendationSettings.analysisProfileId,
+        outputLanguage: recommendationSettings.outputLanguage,
+        responseLength: 2400,
+    });
+    const outputLanguage = operationContext.outputLanguage;
     const recommendationDiagnostic = createOperationDiagnostic({
         task: "genre_recommendation",
-        responseLength: 2400,
-        connectionMode: ensureModuleSettings().analysisProfileId
-            ? "profile"
-            : "main",
+        responseLength: operationContext.responseLength,
+        connectionMode: operationContext.profileId ? "profile" : "main",
     });
     genreRecommendationPendingChats.add(chatId);
-    renderGenreRecommendation();
-
     try {
+        renderGenreRecommendation();
         const availableGenreIds = availableGenres.map((genre) => genre.id);
+        const connectionSnapshot = await resolveBackgroundConnectionSnapshot(
+            operationContext.profileId
+        );
+        updateOperationDiagnosticConnection(
+            recommendationDiagnostic,
+            connectionSnapshot
+        );
         const result = await generateStructuredAnalysis({
             prompt: buildGenreRecommendationPrompt(
                 availableGenres,
@@ -8741,7 +8950,7 @@ async function generateGenreRecommendation() {
                 messageLimit: GENRE_RECOMMENDATION_MESSAGE_LIMIT,
                 perMessageMaxChars: GENRE_RECOMMENDATION_MESSAGE_MAX_CHARS,
                 maxChars: 55000,
-                chatSnapshot,
+                chatSnapshot: operationContext.chatSnapshot,
             }),
             jsonSchema: {
                 name: "storybooster_genre_recommendation",
@@ -8768,7 +8977,8 @@ async function generateGenreRecommendation() {
                     additionalProperties: false,
                 },
             },
-            responseLength: 2400,
+            responseLength: operationContext.responseLength,
+            connectionSnapshot,
             task: recommendationDiagnostic.task,
             diagnostic: recommendationDiagnostic,
         });
@@ -8800,7 +9010,9 @@ async function generateGenreRecommendation() {
         chatState.genreAnchor.recommendation = recommendation;
         saveSettingsDebounced();
 
-        if (getCurrentChatId() === chatId) renderGenreRecommendation();
+        if (isOperationContextCurrentChat(operationContext)) {
+            renderGenreRecommendation();
+        }
     } catch (err) {
         console.error(`[${MODULE_NAME}] genre recommendation failed:`, err);
         recordStoryBoosterError(err, {
@@ -8810,7 +9022,9 @@ async function generateGenreRecommendation() {
         toastr?.error?.(`장르 추천 실패: ${err?.message || err}`);
     } finally {
         genreRecommendationPendingChats.delete(chatId);
-        if (getCurrentChatId() === chatId) renderGenreRecommendation();
+        if (isOperationContextCurrentChat(operationContext)) {
+            renderGenreRecommendation();
+        }
     }
 }
 
@@ -9229,7 +9443,7 @@ function renderBoosterPopupHtml(popupInstanceId = "") {
                     </button>
                     <button type="button" id="rp-character-question" class="menu_button rp-secret-action" data-secret-action="character_question" aria-pressed="false">
                         <span class="rp-secret-action-icon">❓</span>
-                        <span><strong>${escapeHtml(characterName)}의 질문</strong><small>${escapeHtml(
+                        <span><strong>${escapeHtml(characterName)}의 질문박스</strong><small>${escapeHtml(
                             characterName
                         )}가 ${escapeHtml(userName)}에게 무작위 질문을 던집니다</small></span>
                     </button>
