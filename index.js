@@ -28,7 +28,7 @@ import {
 } from "../../../../script.js";
 
 const MODULE_NAME = "rp-genre-plot-booster";
-const STORYBOOSTER_VERSION = "1.3.1";
+const STORYBOOSTER_VERSION = "1.4.1";
 const GENRE_PROMPT_KEY = "rp_genre_boost";
 const PLOT_PROMPT_KEY = "rp_plot_trigger";
 const DEFAULT_AUDIT_INTERVAL = 10;
@@ -47,18 +47,25 @@ const SCENE_DENSITY_EVIDENCE_MINIMUM = 4;
 // A supporting lens may be intermittent, so two distinct replies are enough
 // when the genre is also identifiable without seeing its label.
 const SUPPORT_GENRE_EVIDENCE_MINIMUM = 2;
-const CHARACTER_INTERPRETATION_EVIDENCE_MINIMUM = 2;
-// Three positive examples are required for the general character dimensions.
-// Repeated counter-evidence can still override that positive count below.
-const CHARACTER_POSITIVE_EVIDENCE_MINIMUM = 3;
+const CHARACTER_CONSISTENCY_POSITIVE_EVIDENCE_MINIMUM = 4;
+const CHARACTER_INTERPRETATION_POSITIVE_EVIDENCE_MINIMUM = 3;
+const CHARACTER_INTERPRETATION_FAILURE_EVIDENCE_MINIMUM = 2;
+// Agency and continuity must persist across a meaningful share of the
+// ten-response window. Relationship-specific behavior may naturally be less
+// frequent, so it keeps a slightly lower positive threshold.
+const CHARACTER_AGENCY_EVIDENCE_MINIMUM = 4;
+const CHARACTER_RELATIONSHIP_EVIDENCE_MINIMUM = 3;
+const CHARACTER_CONTINUITY_EVIDENCE_MINIMUM = 4;
 const GENRE_FAILURE_EVIDENCE_MINIMUM = 3;
-const CHARACTER_FAILURE_EVIDENCE_MINIMUM = 3;
+const CHARACTER_FAILURE_EVIDENCE_MINIMUM = 2;
 const RELATIONSHIP_FAILURE_EVIDENCE_MINIMUM = 2;
 const CONTINUITY_FAILURE_EVIDENCE_MINIMUM = 2;
 const REPETITION_GENERAL_EVIDENCE_MINIMUM = 3;
 const REPETITION_EXACT_EVIDENCE_MINIMUM = 2;
 const CHARACTER_BASELINE_FIELD_MAX_CHARS = 1000;
 const CHARACTER_BOOST_ANCHOR_MAX_CHARS = 700;
+const CHARACTER_CORRECTION_MAX_CHARS = 1800;
+const CHARACTER_CORRECTION_MAX_WORDS = 220;
 const CHARACTER_BASELINE_AUTOSAVE_DELAY = 700;
 const CHARACTER_CARD_INPUT_MAX_CHARS = 24000;
 const DEFAULT_PLOT_MAX_TOKENS = 1200;
@@ -1276,7 +1283,7 @@ function createDefaultModuleSettings() {
             plot: true,
         },
         characterBaselines: {},
-        settingsSchemaVersion: 19,
+        settingsSchemaVersion: 20,
     };
 }
 
@@ -1404,6 +1411,12 @@ function migrateModuleSettings(settings) {
             state.plotSecretMode = false;
         }
         settings.settingsSchemaVersion = 19;
+        migrated = true;
+    }
+    if (previousSchemaVersion < 20) {
+        // Version 20 expands audit ratings with an intermediate attention state
+        // and stores stronger positive/failure evidence for later inspection.
+        settings.settingsSchemaVersion = 20;
         migrated = true;
     }
 
@@ -2218,6 +2231,27 @@ function normalizeAuditReason(value, outputLanguage = "ko") {
     return `${safeCut.replace(/[.!?。！？,;:]+$/u, "")}…`;
 }
 
+function normalizeCharacterCorrectionText(value) {
+    const normalized = String(value || "")
+        .replace(/\r\n?/g, "\n")
+        .replace(/[ \t]+/g, " ")
+        .replace(/ *\n */g, "\n")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+    if (!normalized) return "";
+    const wordChunks = normalized.match(/\S+(?:\s+|$)/g) || [];
+    const wordLimited =
+        wordChunks.length > CHARACTER_CORRECTION_MAX_WORDS
+            ? wordChunks.slice(0, CHARACTER_CORRECTION_MAX_WORDS).join("").trim()
+            : normalized;
+    if (wordLimited.length <= CHARACTER_CORRECTION_MAX_CHARS) return wordLimited;
+    const clipped = wordLimited.slice(0, CHARACTER_CORRECTION_MAX_CHARS).trimEnd();
+    const lastSpace = clipped.lastIndexOf(" ");
+    return lastSpace >= Math.floor(CHARACTER_CORRECTION_MAX_CHARS * 0.8)
+        ? clipped.slice(0, lastSpace)
+        : clipped;
+}
+
 function getRoleplayTranscript({
     messageLimit = 0,
     assistantRepliesOnly = 0,
@@ -3005,9 +3039,11 @@ function getBoosterSelection(state = ensureChatState()) {
             : "",
         correctionCodes,
         correctionText: correctionCodes.some((code) =>
-            ["character_consistency", "character_interpretation"].includes(code)
+            CHARACTER_BOOST_CORRECTION_CODES.has(code)
         )
-            ? String(state.genreAnchor.correctionText || "")
+            ? normalizeCharacterCorrectionText(
+                  state.genreAnchor.correctionText
+              )
             : "",
         auditStatus: state.genreAnchor.auditStatus,
         responseCount: state.genreAnchor.responseCount,
@@ -3028,11 +3064,21 @@ function buildGenrePromptText(selection) {
     const supportProfile = supportGenre
         ? getGenreProfile(supportGenre)
         : null;
-    const correctionLines = correctionCodes.map(
-        (code) => `- ${GENRE_CORRECTION_MODULES[code]}`
+    const hasTargetedCharacterCorrection = Boolean(
+        correctionText &&
+            correctionCodes.some((code) =>
+                CHARACTER_BOOST_CORRECTION_CODES.has(code)
+            )
     );
+    const correctionLines = correctionCodes
+        .filter(
+            (code) =>
+                !hasTargetedCharacterCorrection ||
+                !CHARACTER_BOOST_CORRECTION_CODES.has(code)
+        )
+        .map((code) => `- ${GENRE_CORRECTION_MODULES[code]}`);
 
-    if (!primaryGenre && !characterBoostActive && !correctionLines.length) {
+    if (!primaryGenre && !characterBoostActive && !correctionCodes.length) {
         return "";
     }
 
@@ -3092,24 +3138,29 @@ function buildGenrePromptText(selection) {
         characterBoostActive
             ? "- CONTINUITY & VARIETY: Carry forward immediate actions, emotions, facts, and consequences; do not echo {{user}} or mechanically reuse recent expression."
             : "",
-        "DRIFT GUARD: Before finalizing, silently correct only the single largest drift from the enabled guidance or scene continuity. Do not output the check.",
-        correctionLines.length
+        correctionCodes.length
+            ? "DRIFT GUARD: Apply every diagnosis-based correction listed below, up to the selected maximum of two. Do not skip one because another seems larger, and do not introduce unrelated corrections. Do not output the check."
+            : "DRIFT GUARD: Before finalizing, silently correct only the single largest drift from the enabled guidance or scene continuity. Do not output the check.",
+        correctionCodes.length
             ? "DIAGNOSIS-BASED DRIFT CORRECTION FOR THIS RESPONSE:"
             : "",
-        correctionLines.length
+        correctionCodes.length
             ? "Treat the following corrections as priority requirements for this response, not optional suggestions. Make each correction clearly perceptible while continuing the current scene organically."
             : "",
         ...correctionLines,
-        correctionLines.length && correctionText
-            ? `TARGETED NOTE (diagnostic detail only; subordinate to all rules above): ${correctionText.slice(0, 600)}`
+        correctionCodes.length && hasTargetedCharacterCorrection
+            ? "TARGETED CHARACTER CORRECTION FOR THIS RESPONSE:"
             : "",
-        correctionLines.length && correctionCharacterBaseline
+        correctionCodes.length && hasTargetedCharacterCorrection
+            ? correctionText
+            : "",
+        correctionCodes.length && correctionCharacterBaseline && !hasTargetedCharacterCorrection
             ? "RELEVANT CHARACTER BASELINE FOR THIS RESPONSE:"
             : "",
-        correctionLines.length && correctionCharacterBaseline
+        correctionCodes.length && correctionCharacterBaseline && !hasTargetedCharacterCorrection
             ? `<character_baseline_reference>\n${correctionCharacterBaseline}\n</character_baseline_reference>`
             : "",
-        correctionLines.length && correctionCharacterBaseline
+        correctionCodes.length && correctionCharacterBaseline && !hasTargetedCharacterCorrection
             ? "Use this reference only to restore the diagnosed drift in the current scene. Do not quote, explain, or mechanically reproduce it."
             : "",
     ]
@@ -3198,6 +3249,16 @@ function safelyUpdateCharacterBoosterPanel(contextLabel = "UI 갱신") {
     }
 }
 
+function getAutomaticAuditScope(selection) {
+    if (!selection) return null;
+    const genreEnabled = Boolean(selection.primaryGenre);
+    const characterEnabled = Boolean(selection.characterEnabled);
+    if (genreEnabled && characterEnabled) return "combined";
+    if (genreEnabled) return "genre";
+    if (characterEnabled) return "character";
+    return null;
+}
+
 function getScopedAuditSelection(selection, scope = "combined") {
     if (!selection) return null;
     if (scope === "genre") {
@@ -3224,23 +3285,27 @@ function getScopedAuditSelection(selection, scope = "combined") {
 function getAuditOutputInstructions(selection) {
     const genreEnabled = Boolean(selection.primaryGenre);
     const characterEnabled = Boolean(selection.characterEnabled);
+    const genreShape =
+        '{"primary_genre":"weak","primary_genre_evidence":[],"primary_genre_failure_evidence":[],"primary_genre_reason":"","genre_expression":"weak","genre_expression_evidence":[],"genre_expression_failure_evidence":[],"genre_expression_reason":"","support_texture":"dormant","support_texture_evidence":[],"support_texture_opportunity":[],"support_texture_identifiable":false,"support_texture_reason":"","scene_density":"weak","scene_density_evidence":[],"scene_density_failure_evidence":[],"scene_density_reason":""}';
+    const characterShape =
+        '{"character_consistency":"unavailable","character_consistency_positive_evidence":[],"character_consistency_evidence":[],"character_consistency_severe":false,"character_consistency_reason":"","character_interpretation":"unavailable","character_interpretation_positive_evidence":[],"character_interpretation_evidence":[],"character_interpretation_reason":"","character_correction":"","character_focus_fields":[],"char_agency":"weak","char_agency_evidence":[],"char_agency_failure_evidence":[],"char_agency_reason":"","relationship":"weak","relationship_evidence":[],"relationship_failure_evidence":[],"relationship_reason":"","continuity":"weak","continuity_evidence":[],"continuity_failure_evidence":[],"continuity_severe":false,"continuity_reason":"","repetition":"stable","repetition_evidence":[],"repetition_exact":false,"repetition_reason":""}';
     if (genreEnabled && !characterEnabled) {
         return [
-            'Return JSON only with these exact keys: {"primary_genre":"weak","primary_genre_evidence":[],"primary_genre_reason":"","genre_expression":"weak","genre_expression_evidence":[],"genre_expression_failure_evidence":[],"genre_expression_reason":"","support_texture":"dormant","support_texture_evidence":[],"support_texture_opportunity":[],"support_texture_identifiable":false,"support_texture_reason":"","scene_density":"weak","scene_density_evidence":[],"scene_density_failure_evidence":[],"scene_density_reason":""}.',
-            "Allowed values: primary_genre, genre_expression, and scene_density = present, weak, or na; support_texture = present, dormant, weak, or na; support_texture_identifiable must be true or false.",
+            `Return JSON only with these exact keys: ${genreShape}.`,
+            "Allowed values: primary_genre, genre_expression, and scene_density = present, attention, weak, or na; support_texture = present, dormant, weak, or na; support_texture_identifiable must be true or false.",
             "Do not omit any key. Use support_texture=na and empty support arrays when there is no supporting genre.",
         ];
     }
     if (!genreEnabled && characterEnabled) {
         return [
-            'Return JSON only with these exact keys: {"character_consistency":"unavailable","character_consistency_evidence":[],"character_consistency_severe":false,"character_consistency_reason":"","character_interpretation":"unavailable","character_interpretation_evidence":[],"character_interpretation_reason":"","character_correction":"","character_focus_fields":[],"char_agency":"weak","char_agency_evidence":[],"char_agency_failure_evidence":[],"char_agency_reason":"","relationship":"weak","relationship_evidence":[],"relationship_failure_evidence":[],"relationship_reason":"","continuity":"weak","continuity_evidence":[],"continuity_failure_evidence":[],"continuity_severe":false,"continuity_reason":"","repetition":false,"repetition_evidence":[],"repetition_exact":false,"repetition_reason":""}.',
-            "Allowed values: character_consistency = stable, drifted, or unavailable; character_interpretation = stable, biased, or unavailable; char_agency, relationship, and continuity = present, weak, or na; boolean fields must be true or false.",
+            `Return JSON only with these exact keys: ${characterShape}.`,
+            "Allowed values: character_consistency = stable, attention, drifted, or unavailable; character_interpretation = stable, attention, biased, or unavailable; char_agency, relationship, and continuity = present, attention, weak, or na; repetition = stable, attention, weak, or na; boolean fields must be true or false.",
             "Do not omit any key.",
         ];
     }
     return [
-        'Return JSON only with these exact keys: {"primary_genre":"weak","primary_genre_evidence":[],"primary_genre_reason":"","genre_expression":"weak","genre_expression_evidence":[],"genre_expression_failure_evidence":[],"genre_expression_reason":"","support_texture":"dormant","support_texture_evidence":[],"support_texture_opportunity":[],"support_texture_identifiable":false,"support_texture_reason":"","scene_density":"weak","scene_density_evidence":[],"scene_density_failure_evidence":[],"scene_density_reason":"","character_consistency":"unavailable","character_consistency_evidence":[],"character_consistency_severe":false,"character_consistency_reason":"","character_interpretation":"unavailable","character_interpretation_evidence":[],"character_interpretation_reason":"","character_correction":"","character_focus_fields":[],"char_agency":"weak","char_agency_evidence":[],"char_agency_failure_evidence":[],"char_agency_reason":"","relationship":"weak","relationship_evidence":[],"relationship_failure_evidence":[],"relationship_reason":"","continuity":"weak","continuity_evidence":[],"continuity_failure_evidence":[],"continuity_severe":false,"continuity_reason":"","repetition":false,"repetition_evidence":[],"repetition_exact":false,"repetition_reason":""}.',
-        "Allowed values: primary_genre, genre_expression, and scene_density = present, weak, or na; support_texture = present, dormant, weak, or na; character_consistency = stable, drifted, unavailable, or na; character_interpretation = stable, biased, unavailable, or na; char_agency, relationship, and continuity = present, weak, or na; boolean fields must be true or false.",
+        `Return JSON only with every exact key in the following two shapes merged into one flat object. Do not include GENRE or CHARACTER as keys. GENRE KEYS: ${genreShape} CHARACTER KEYS: ${characterShape}.`,
+        "Allowed values: primary_genre, genre_expression, and scene_density = present, attention, weak, or na; support_texture = present, dormant, weak, or na; character_consistency = stable, attention, drifted, unavailable, or na; character_interpretation = stable, attention, biased, unavailable, or na; char_agency, relationship, and continuity = present, attention, weak, or na; repetition = stable, attention, weak, or na; boolean fields must be true or false.",
         "Do not omit any key. Return na for a disabled module. Use support_texture=na and empty support arrays when there is no supporting genre.",
     ];
 }
@@ -3266,6 +3331,31 @@ function buildGenreAuditPrompt(
     const reasonLanguage = outputLanguage === "en"
         ? "Write every *_reason value in natural English."
         : "Write every *_reason value in natural Korean. Keep established proper nouns in their original form, but do not write the explanation in English.";
+    const correctionPriority = (
+        scope === "genre"
+            ? ["primary_genre", "genre_expression", "support_texture", "scene_density"]
+            : scope === "character"
+              ? [
+                    "character_consistency",
+                    "char_agency",
+                    "relationship",
+                    "continuity",
+                    "character_interpretation",
+                    "repetition",
+                ]
+              : [
+                    "character_consistency",
+                    "primary_genre",
+                    "genre_expression",
+                    "char_agency",
+                    "relationship",
+                    "continuity",
+                    "support_texture",
+                    "scene_density",
+                    "character_interpretation",
+                    "repetition",
+                ]
+    ).join(" > ");
 
     return [
         `Analyze up to the ${GENRE_AUDIT_RESPONSE_LIMIT} most recent numbered {{char}} roleplay responses. One latest USER_CONTEXT block may be supplied only to clarify the most recent exchange: evaluate and cite only blocks labelled CHAR_RESPONSE_1 through CHAR_RESPONSE_${GENRE_AUDIT_RESPONSE_LIMIT}. Do not continue the roleplay and do not propose a plot event.`,
@@ -3294,12 +3384,12 @@ function buildGenreAuditPrompt(
         selection.primaryGenre
             ? "Read each genre standard consistently: narrative identity defines what gives the scene meaning; recognizable expression names positive techniques; character and relationship consequence shows what the genre changes; atmosphere and material texture supports embodiment; the false-positive boundary names neighboring or generic evidence that must not be counted."
             : "",
-        "Rate every requested dimension with one of its allowed states. Judge only what is actually visible in the supplied responses, even if settings changed after those responses were written. A normal or present rating is not the default: it must be supported by visible evidence wherever an evidence array is requested. Score the observed window first; do not soften a rating because the problem could be corrected later.",
+        "Rate every requested dimension with one of its allowed states. Judge only what is actually visible in the supplied responses, even if settings changed after those responses were written. Stable or present is never the default: it requires distinct positive evidence across the reviewed window. Use attention for mixed, borderline, or insufficiently repeated evidence that is not strong enough to confirm either stability or weakness. Use weak, drifted, or biased only for a repeated or severe visible failure. Score the observed window first; do not soften a rating because the problem could be corrected later.",
         selection.primaryGenre
-            ? `primary_genre evaluates narrative identity: whether the selected primary genre governs motives, relationship stakes, choices, causal development, scene emphasis, or emotional logic. Begin with primary_genre=weak. Change it to present only when at least ${primaryEvidenceMinimum} distinct numbered {{char}} responses contain clear genre-specific evidence. Generic emotion, conflict, danger, action, atmosphere, or competent prose is not enough.`
+            ? `primary_genre evaluates narrative identity: whether the selected primary genre governs motives, relationship stakes, choices, causal development, scene emphasis, or emotional logic. Use present only when at least ${primaryEvidenceMinimum} distinct numbered {{char}} responses contain clear genre-specific evidence. Use attention when the genre is visible but intermittent, mixed with generic logic, or supported by fewer than ${primaryEvidenceMinimum} distinct responses. Use weak when at least three responses remain governed by generic or contradictory logic despite a clear genre-relevant opening. Generic emotion, conflict, danger, action, atmosphere, or competent prose is not enough.`
             : "",
         selection.primaryGenre
-            ? "Before rating primary_genre as present, apply both boundary checks: if the same responses could still be described accurately without the selected genre, or if the evidence matches its false-positive boundary more closely than its positive standard, rate it weak."
+            ? "Before rating primary_genre as present, apply both boundary checks: if the same responses could still be described accurately without the selected genre, or if the evidence matches its false-positive boundary more closely than its positive standard, it cannot be present. Use attention unless the repeated-failure threshold for weak is met."
             : "",
         selection.primaryGenre
             ? "The supporting genre is a conditional secondary lens, not a second primary genre. It may shape existing pressure, relationship context, social or world logic, atmosphere, prose rhythm, or sensory texture when the current scene offers a natural opening. It must not seize the scene direction or require a new event merely to prove itself."
@@ -3317,16 +3407,16 @@ function buildGenreAuditPrompt(
             ? "Do not infer genre evidence from the selected labels themselves. Do not reward an intentionally changed or unrelated genre unless the supplied responses independently demonstrate it."
             : "",
         selection.primaryGenre
-            ? `Return at most ${AUDIT_EVIDENCE_MAX_ITEMS} strongest primary_genre_evidence, genre_expression_evidence, support_texture_evidence, and scene_density_evidence items as numbered CHAR_RESPONSE values that contain distinctive positive evidence for a present rating. Return genre_expression_failure_evidence and scene_density_failure_evidence as the strongest numbered responses that visibly miss or flatten that dimension. Use the integer only: for CHAR_RESPONSE_3 return 3. Do not include a response merely because it is compatible with the genre or competently written.`
+            ? `Return at most ${AUDIT_EVIDENCE_MAX_ITEMS} strongest primary_genre_evidence, genre_expression_evidence, support_texture_evidence, and scene_density_evidence items as numbered CHAR_RESPONSE values that contain distinctive positive evidence. Return primary_genre_failure_evidence, genre_expression_failure_evidence, and scene_density_failure_evidence as the strongest numbered responses that visibly contradict, miss, or flatten that dimension despite a relevant opening. Use the integer only: for CHAR_RESPONSE_3 return 3. Do not include a response merely because it is compatible with the genre or competently written. Repeated uses of the same cue count as separate responses but do not demonstrate expressive breadth by themselves.`
             : "",
         selection.primaryGenre
             ? `Return at most ${AUDIT_EVIDENCE_MAX_ITEMS} support_texture_opportunity items as the numbered CHAR_RESPONSE values where an already-established or naturally relevant supporting-genre element had a clear opening but was ignored, flattened, or contradicted. Return support_texture_identifiable=true only when the evidence would identify the supporting genre without its label.`
             : "",
         selection.primaryGenre
-            ? "genre_expression evaluates execution, not narrative identity: whether scene causality, description, dialogue and action emphasis, relationship pressure, stakes, event progression, pacing, atmosphere, and consequences visibly use the selected genre's recognizable expression. Begin with genre_expression=weak. Use present only when at least four distinct numbered responses use recognizable genre-specific techniques. Labels, keywords, generic mood, isolated tropes, or mere plot compatibility do not count. Cite a failure when the execution could serve unrelated genres, violates the genre boundary, or decorates the scene without shaping it."
+            ? "genre_expression evaluates execution, not narrative identity: whether scene causality, description, dialogue and action emphasis, relationship pressure, stakes, event progression, pacing, atmosphere, and consequences visibly use the selected genre's recognizable expression. Use present only when at least four distinct numbered responses use recognizable genre-specific techniques across at least two expressive channels such as action or dialogue emphasis, description or atmosphere, pacing, relationship pressure, or consequence. Use attention for partial or narrow expression. Use weak when generic or boundary-violating execution is repeated across at least three relevant responses. Labels, keywords, generic mood, isolated tropes, or mere plot compatibility do not count."
             : "",
         selection.primaryGenre
-            ? "scene_density evaluates whether the scene is concretely dramatized rather than flat, static, decorative, or summary-like. Purposeful action, dialogue, spatial awareness, sensory or material detail, behavioral cues, subtext, and immediate consequences must shape attention, pressure, choice, or emotional meaning. Begin with scene_density=weak. Use present only when at least four distinct numbered responses contain functional dramatic detail. Length, adjectives, or decorative sensory lists are not density. Cite a failure when emotion or action is merely summarized, the scene lacks usable physical or relational grounding, or detail does not affect what happens."
+            ? "scene_density evaluates whether the scene is concretely dramatized rather than flat, static, decorative, or summary-like. Purposeful action, dialogue, spatial awareness, sensory or material detail, behavioral cues, subtext, and immediate consequences must shape attention, pressure, choice, or emotional meaning. Use present only when at least four distinct numbered responses each connect at least two functional layers, such as action plus space, sensation plus emotional meaning, or dialogue plus immediate consequence. Use attention for uneven or narrowly grounded scenes. Use weak when summary, static exchange, or decorative detail dominates at least three relevant responses. Length, adjectives, or sensory lists alone are not density."
             : "",
         selection.characterEnabled
             ? "CHARACTER AUDIT IS ENABLED."
@@ -3345,28 +3435,28 @@ function buildGenreAuditPrompt(
             ? "Keep the six dimensions independent: character_consistency detects contradiction with stored character logic; character_interpretation detects repeated flattening without requiring contradiction; char_agency detects self-directed choice; relationship detects relationship-specific response; continuity detects carried scene state; repetition detects mechanical reuse. Do not let strength or weakness in one dimension determine another."
             : "",
         selection.characterEnabled
-            ? "character_consistency compares {{char}}'s visible speech, choices, values, boundaries, competence, and relationship-specific attitude with the compact baseline. Flag contradiction only when the supplied responses depart from the stored character logic, not merely because a trait is quiet or absent. Plausible development, regression, deception, disguise, context-dependent conduct, or a temporary reaction to extreme circumstances may explain one response, but do not use those possibilities to excuse a repeated contradiction that the transcript itself does not justify. Require two distinct response examples unless one contradiction is unmistakably severe."
+            ? "character_consistency compares {{char}}'s visible speech, choices, values, boundaries, competence, decision logic, and relationship-specific attitude with the compact baseline. Return stable only when at least four distinct responses positively realize at least two different baseline facets; cite them in character_consistency_positive_evidence. Quiet traits need not appear in every response. Return attention when positive realization is too narrow, mixed, or supported by fewer than four responses without a confirmed contradiction. Return drifted only for two distinct contradictions, or one unmistakably severe contradiction, cited in character_consistency_evidence. Plausible development, regression, deception, disguise, or context-dependent conduct counts only when the transcript itself supports it."
             : "",
         selection.characterEnabled
-            ? "character_interpretation detects whether the baseline is being flattened into a repeated one-sided or generic reading: overusing one trait, ignoring relevant coexisting or context-dependent tendencies, forcing an unjustified positive or negative moral direction, replacing character-specific behavior with a stock trope, or making responses nearly identical across contexts. Strong, simple, or archetypal traits are not errors by themselves. Do not invent cruelty, softness, trauma, redemption, virtues, flaws, or contradictions for the sake of complexity. Rate biased when the same flattening pattern is visible in at least two distinct numbered responses."
+            ? "character_interpretation detects whether the baseline is being realized as a specific, context-responsive person rather than flattened into a repeated one-sided or generic reading. Return stable only when at least three distinct responses positively show more than one relevant facet, tension, or context-dependent variation; cite them in character_interpretation_positive_evidence. Return attention when the portrayal is narrow or mixed but not repeatedly flattened. Return biased when the same flattening appears in at least two responses: overusing one trait, forcing an unjustified positive or negative direction, replacing character-specific behavior with a stock trope, or responding nearly identically across contexts. Do not invent complexity unsupported by the baseline."
             : "",
         selection.characterEnabled
-            ? "char_agency evaluates whether {{char}} acts from character-specific motives through their established decision style and meaningfully affects the exchange by choosing, initiating, refusing, withholding, redirecting, negotiating, or acting. Begin with char_agency=weak. Use present only when at least three distinct numbered responses show visible intent plus a consequential choice or initiative. Do not confuse activity, aggression, verbosity, or a newly invented event with agency; subtle or restrained initiative counts. Cite char_agency_failure_evidence when {{char}} repeatedly waits for {{user}}, only mirrors or acknowledges input, defers a choice that belongs to {{char}} back to {{user}}, avoids an available character-relevant choice, or moves solely because the narration pushes them. Do not penalize leaving {{user}}'s own actions, consent, dialogue, or decisions open."
+            ? "char_agency evaluates whether {{char}} acts from character-specific motives through their established decision style and meaningfully affects the exchange by choosing, initiating, refusing, withholding, redirecting, negotiating, or acting. Use present only when at least four distinct numbered responses show visible intent plus a consequential choice or initiative. Use attention for two or three qualifying responses, mixed initiative, or one isolated failure. Use weak when at least two responses show {{char}} repeatedly waiting for {{user}}, merely mirroring input, deferring a choice that belongs to {{char}} back to {{user}}, avoiding an available character-relevant choice, or moving only because narration pushes them. Do not confuse activity, aggression, verbosity, or a newly invented event with agency, and do not penalize leaving {{user}}'s own actions, consent, dialogue, or decisions open."
             : "",
         selection.characterEnabled
-            ? "relationship evaluates whether {{char}} responds through the specific established relationship: shared history, trust, tension, boundaries, power, attachment, distance, unresolved feelings, and prior relational consequences. Begin with relationship=weak. Use present only when at least three distinct numbered responses contain concrete relationship-specific reactions rather than generic attention, affection, hostility, jealousy, possession, or protection. Constant progression is not required. Use relationship=na only when the reviewed window genuinely contains no meaningful relationship interaction or opening. Cite relationship_failure_evidence when an available relationship context is repeatedly ignored, reset, contradicted, or flattened into a generic relational trope."
+            ? "relationship evaluates whether {{char}} responds through the specific established relationship: shared history, trust, tension, boundaries, power, attachment, distance, unresolved feelings, and prior relational consequences. Use present only when at least three distinct numbered responses contain concrete relationship-specific reactions rather than generic attention, affection, hostility, jealousy, possession, or protection. Use attention when the relationship is acknowledged but only one or two responses make its specific history or dynamics matter. Use weak when at least two available relationship contexts are ignored, reset, contradicted, or flattened into a generic trope. Constant progression is not required. Use relationship=na only when the reviewed window genuinely contains no meaningful relationship interaction or opening."
             : "",
         selection.characterEnabled
-            ? "continuity primarily evaluates the transcript itself: whether unresolved actions, dialogue, emotional beats, location, timing, knowledge, physical state, and immediate consequences are preserved and carried forward. Begin with continuity=weak. Use present only when at least three distinct numbered responses visibly continue relevant prior state without contradiction or unexplained reset. Use continuity=na only when the window genuinely contains no linkable prior state. Cite continuity_failure_evidence for abandoned immediate beats, unexplained jumps or resets, forgotten knowledge or conditions, and contradictions. Set continuity_severe=true only for one unmistakable contradiction or reset that materially breaks the scene; a severe failure is enough to prevent present."
+            ? "continuity primarily evaluates the transcript itself: whether unresolved actions, dialogue, emotional beats, location, timing, knowledge, physical state, and immediate consequences are preserved and carried forward. Use present only when at least four distinct numbered responses visibly continue relevant prior state without contradiction or unexplained reset. Use attention for two or three clear carryovers, mixed tracking, or one minor lapse. Use weak when at least two responses abandon or contradict linkable state, or when continuity_severe=true marks one unmistakable reset that materially breaks the scene. Use continuity=na only when the window genuinely contains no linkable prior state."
             : "",
         selection.characterEnabled
-            ? "Set repetition=true when at least three numbered responses mechanically reuse the same dominant gesture, image, sentence structure, emotional display, relational beat, or ending pattern. Two responses are enough only for near-verbatim reuse or an unusually distinctive phrase or beat; set repetition_exact=true only in that narrower case. Return the matched response numbers in repetition_evidence. Do not flag an intentional signature voice or behavior merely for recurring; flag it only when mechanical reuse substitutes for context-specific characterization or movement."
+            ? "Rate repetition=weak when at least three numbered responses mechanically reuse the same dominant gesture, image, sentence structure, emotional display, relational beat, or ending pattern. Two responses are enough only for near-verbatim reuse or an unusually distinctive phrase or beat; set repetition_exact=true only in that narrower case. Rate repetition=attention for a noticeable emerging pattern that is not repeated enough to confirm weakness. Otherwise rate repetition=stable. Return matched response numbers in repetition_evidence for attention or weak. Do not flag an intentional signature voice or behavior unless mechanical reuse substitutes for context-specific characterization or movement."
             : "",
         selection.characterEnabled
-            ? `Return at most ${AUDIT_EVIDENCE_MAX_ITEMS} strongest evidence items per array as numbered CHAR_RESPONSE integers only. character_consistency_evidence and character_interpretation_evidence cite diagnosed problems. char_agency_evidence, relationship_evidence, and continuity_evidence cite concrete positive evidence required for present; each matching *_failure_evidence array cites observed failures. repetition_evidence cites the repeated pattern when repetition=true. Do not count a single response more than once inside the same array.`
+            ? `Return at most ${AUDIT_EVIDENCE_MAX_ITEMS} strongest evidence items per array as numbered CHAR_RESPONSE integers only. character_consistency_positive_evidence and character_interpretation_positive_evidence cite distinct positive realization; the matching arrays without _positive cite diagnosed contradictions or flattening. char_agency_evidence, relationship_evidence, and continuity_evidence cite concrete positive evidence required for present; each matching *_failure_evidence array cites observed failures. repetition_evidence cites the emerging or confirmed repeated pattern. Do not count a single response more than once inside the same array, and do not treat repeated instances of one narrow cue as proof of multi-faceted characterization.`
             : "",
         selection.characterEnabled
-            ? "character_correction must be an English instruction of at most two short sentences, grounded only in the compact baseline and supplied responses. Return an empty string unless character_consistency=drifted or character_interpretation=biased."
+            ? `Use this correction priority when deciding the two response-level corrections that would be applied: ${correctionPriority}. Ignore attention, dormant, stable, present, unavailable, and na states. character_correction must cover only character dimensions that fall within the first two correction-worthy results under that order. Return an empty string when neither selected result is a character dimension. For one selected character dimension, write 80-140 English words; for two, write 140-220 English words. Use a short uppercase label for each dimension and concrete imperative instructions grounded only in the compact baseline and supplied responses. State what drift to reverse, how to make the correction visible through choice, dialogue, reaction, behavior, or carried scene state, and what mistaken pattern to avoid. For identity, interpretation, agency, or relationship, name only one or two relevant baseline traits or relationship patterns to restore; for continuity or repetition, target the observed scene-state or expression pattern instead. Do not quote or summarize the baseline, invent new traits, explain the diagnosis, mention response numbers, or force unrelated traits to appear.`
             : "",
         selection.characterEnabled
             ? `character_focus_fields must contain zero to two IDs from this list: ${CHARACTER_BASELINE_FIELD_IDS.join(", ")}. Select only the stored baseline fields most directly useful for correcting character_consistency, character_interpretation, char_agency, or relationship. Return an empty array when no compact baseline is available or none of those character dimensions needs correction.`
@@ -3386,14 +3476,25 @@ function buildGenreAuditPrompt(
 function buildGenreAuditJsonSchema(scope = "combined", outputLanguage = "ko") {
     const reasonMaxChars = getAuditReasonSchemaMaxChars(outputLanguage);
     const properties = {
-        primary_genre: { type: "string", enum: ["present", "weak", "na"] },
+        primary_genre: {
+            type: "string",
+            enum: ["present", "attention", "weak", "na"],
+        },
         primary_genre_evidence: {
             type: "array",
             maxItems: AUDIT_EVIDENCE_MAX_ITEMS,
             items: { type: "integer" },
         },
+        primary_genre_failure_evidence: {
+            type: "array",
+            maxItems: AUDIT_EVIDENCE_MAX_ITEMS,
+            items: { type: "integer" },
+        },
         primary_genre_reason: { type: "string", maxLength: reasonMaxChars },
-        genre_expression: { type: "string", enum: ["present", "weak", "na"] },
+        genre_expression: {
+            type: "string",
+            enum: ["present", "attention", "weak", "na"],
+        },
         genre_expression_evidence: {
             type: "array",
             maxItems: AUDIT_EVIDENCE_MAX_ITEMS,
@@ -3421,7 +3522,10 @@ function buildGenreAuditJsonSchema(scope = "combined", outputLanguage = "ko") {
         },
         support_texture_identifiable: { type: "boolean" },
         support_texture_reason: { type: "string", maxLength: reasonMaxChars },
-        scene_density: { type: "string", enum: ["present", "weak", "na"] },
+        scene_density: {
+            type: "string",
+            enum: ["present", "attention", "weak", "na"],
+        },
         scene_density_evidence: {
             type: "array",
             maxItems: AUDIT_EVIDENCE_MAX_ITEMS,
@@ -3435,7 +3539,12 @@ function buildGenreAuditJsonSchema(scope = "combined", outputLanguage = "ko") {
         scene_density_reason: { type: "string", maxLength: reasonMaxChars },
         character_consistency: {
             type: "string",
-            enum: ["stable", "drifted", "unavailable", "na"],
+            enum: ["stable", "attention", "drifted", "unavailable", "na"],
+        },
+        character_consistency_positive_evidence: {
+            type: "array",
+            maxItems: AUDIT_EVIDENCE_MAX_ITEMS,
+            items: { type: "integer" },
         },
         character_consistency_evidence: {
             type: "array",
@@ -3446,7 +3555,12 @@ function buildGenreAuditJsonSchema(scope = "combined", outputLanguage = "ko") {
         character_consistency_reason: { type: "string", maxLength: reasonMaxChars },
         character_interpretation: {
             type: "string",
-            enum: ["stable", "biased", "unavailable", "na"],
+            enum: ["stable", "attention", "biased", "unavailable", "na"],
+        },
+        character_interpretation_positive_evidence: {
+            type: "array",
+            maxItems: AUDIT_EVIDENCE_MAX_ITEMS,
+            items: { type: "integer" },
         },
         character_interpretation_evidence: {
             type: "array",
@@ -3454,13 +3568,19 @@ function buildGenreAuditJsonSchema(scope = "combined", outputLanguage = "ko") {
             items: { type: "integer" },
         },
         character_interpretation_reason: { type: "string", maxLength: reasonMaxChars },
-        character_correction: { type: "string" },
+        character_correction: {
+            type: "string",
+            maxLength: CHARACTER_CORRECTION_MAX_CHARS,
+        },
         character_focus_fields: {
             type: "array",
             maxItems: 2,
             items: { type: "string", enum: CHARACTER_BASELINE_FIELD_IDS },
         },
-        char_agency: { type: "string", enum: ["present", "weak", "na"] },
+        char_agency: {
+            type: "string",
+            enum: ["present", "attention", "weak", "na"],
+        },
         char_agency_evidence: {
             type: "array",
             maxItems: AUDIT_EVIDENCE_MAX_ITEMS,
@@ -3472,7 +3592,10 @@ function buildGenreAuditJsonSchema(scope = "combined", outputLanguage = "ko") {
             items: { type: "integer" },
         },
         char_agency_reason: { type: "string", maxLength: reasonMaxChars },
-        relationship: { type: "string", enum: ["present", "weak", "na"] },
+        relationship: {
+            type: "string",
+            enum: ["present", "attention", "weak", "na"],
+        },
         relationship_evidence: {
             type: "array",
             maxItems: AUDIT_EVIDENCE_MAX_ITEMS,
@@ -3484,7 +3607,10 @@ function buildGenreAuditJsonSchema(scope = "combined", outputLanguage = "ko") {
             items: { type: "integer" },
         },
         relationship_reason: { type: "string", maxLength: reasonMaxChars },
-        continuity: { type: "string", enum: ["present", "weak", "na"] },
+        continuity: {
+            type: "string",
+            enum: ["present", "attention", "weak", "na"],
+        },
         continuity_evidence: {
             type: "array",
             maxItems: AUDIT_EVIDENCE_MAX_ITEMS,
@@ -3497,7 +3623,10 @@ function buildGenreAuditJsonSchema(scope = "combined", outputLanguage = "ko") {
         },
         continuity_severe: { type: "boolean" },
         continuity_reason: { type: "string", maxLength: reasonMaxChars },
-        repetition: { type: "boolean" },
+        repetition: {
+            type: "string",
+            enum: ["stable", "attention", "weak", "na"],
+        },
         repetition_evidence: {
             type: "array",
             maxItems: AUDIT_EVIDENCE_MAX_ITEMS,
@@ -3509,6 +3638,7 @@ function buildGenreAuditJsonSchema(scope = "combined", outputLanguage = "ko") {
     const genreKeys = [
         "primary_genre",
         "primary_genre_evidence",
+        "primary_genre_failure_evidence",
         "primary_genre_reason",
         "genre_expression",
         "genre_expression_evidence",
@@ -3526,10 +3656,12 @@ function buildGenreAuditJsonSchema(scope = "combined", outputLanguage = "ko") {
     ];
     const characterKeys = [
         "character_consistency",
+        "character_consistency_positive_evidence",
         "character_consistency_evidence",
         "character_consistency_severe",
         "character_consistency_reason",
         "character_interpretation",
+        "character_interpretation_positive_evidence",
         "character_interpretation_evidence",
         "character_interpretation_reason",
         "character_correction",
@@ -3586,6 +3718,7 @@ function parseGenreAuditResult(
     const genreDefaults = {
         primary_genre: "na",
         primary_genre_evidence: [],
+        primary_genre_failure_evidence: [],
         primary_genre_reason: "",
         genre_expression: "na",
         genre_expression_evidence: [],
@@ -3603,10 +3736,12 @@ function parseGenreAuditResult(
     };
     const characterDefaults = {
         character_consistency: "na",
+        character_consistency_positive_evidence: [],
         character_consistency_evidence: [],
         character_consistency_severe: false,
         character_consistency_reason: "",
         character_interpretation: "na",
+        character_interpretation_positive_evidence: [],
         character_interpretation_evidence: [],
         character_interpretation_reason: "",
         character_correction: "",
@@ -3624,7 +3759,7 @@ function parseGenreAuditResult(
         continuity_failure_evidence: [],
         continuity_severe: false,
         continuity_reason: "",
-        repetition: false,
+        repetition: "na",
         repetition_evidence: [],
         repetition_exact: false,
         repetition_reason: "",
@@ -3635,28 +3770,46 @@ function parseGenreAuditResult(
             : scope === "character"
               ? { ...genreDefaults, ...extracted }
               : extracted;
-    const correctionPriority = [
-        "character_consistency",
-        "primary_genre",
-        "genre_expression",
-        "char_agency",
-        "relationship",
-        "continuity",
-        "support_texture",
-        "scene_density",
-        "character_interpretation",
-    ];
+    const correctionPriority =
+        scope === "genre"
+            ? [
+                  "primary_genre",
+                  "genre_expression",
+                  "support_texture",
+                  "scene_density",
+              ]
+            : scope === "character"
+              ? [
+                    "character_consistency",
+                    "char_agency",
+                    "relationship",
+                    "continuity",
+                    "character_interpretation",
+                    "repetition",
+                ]
+              : [
+                    "character_consistency",
+                    "primary_genre",
+                    "genre_expression",
+                    "char_agency",
+                    "relationship",
+                    "continuity",
+                    "support_texture",
+                    "scene_density",
+                    "character_interpretation",
+                    "repetition",
+                ];
     const valid =
-        ["present", "weak", "na"].includes(parsed.primary_genre) &&
-        ["present", "weak", "na"].includes(parsed.genre_expression) &&
+        ["present", "attention", "weak", "na"].includes(parsed.primary_genre) &&
+        ["present", "attention", "weak", "na"].includes(parsed.genre_expression) &&
         ["present", "dormant", "weak", "na"].includes(parsed.support_texture) &&
-        ["present", "weak", "na"].includes(parsed.scene_density) &&
-        ["stable", "drifted", "unavailable", "na"].includes(parsed.character_consistency) &&
-        ["stable", "biased", "unavailable", "na"].includes(parsed.character_interpretation) &&
-        ["present", "weak", "na"].includes(parsed.char_agency) &&
-        ["present", "weak", "na"].includes(parsed.relationship) &&
-        ["present", "weak", "na"].includes(parsed.continuity) &&
-        typeof parsed.repetition === "boolean" &&
+        ["present", "attention", "weak", "na"].includes(parsed.scene_density) &&
+        ["stable", "attention", "drifted", "unavailable", "na"].includes(parsed.character_consistency) &&
+        ["stable", "attention", "biased", "unavailable", "na"].includes(parsed.character_interpretation) &&
+        ["present", "attention", "weak", "na"].includes(parsed.char_agency) &&
+        ["present", "attention", "weak", "na"].includes(parsed.relationship) &&
+        ["present", "attention", "weak", "na"].includes(parsed.continuity) &&
+        ["stable", "attention", "weak", "na"].includes(parsed.repetition) &&
         typeof parsed.support_texture_identifiable === "boolean" &&
         typeof parsed.character_consistency_severe === "boolean" &&
         typeof parsed.continuity_severe === "boolean" &&
@@ -3677,6 +3830,7 @@ function parseGenreAuditResult(
         ].every((key) => typeof parsed[key] === "string") &&
         [
             "primary_genre_evidence",
+            "primary_genre_failure_evidence",
             "genre_expression_evidence",
             "genre_expression_failure_evidence",
             "support_texture_evidence",
@@ -3684,7 +3838,9 @@ function parseGenreAuditResult(
             "scene_density_evidence",
             "scene_density_failure_evidence",
             "character_consistency_evidence",
+            "character_consistency_positive_evidence",
             "character_interpretation_evidence",
+            "character_interpretation_positive_evidence",
             "char_agency_evidence",
             "char_agency_failure_evidence",
             "relationship_evidence",
@@ -3742,6 +3898,9 @@ function parseGenreAuditResult(
             .slice(0, AUDIT_EVIDENCE_MAX_ITEMS);
     const evidence = {
         primary: normalizeEvidence(parsed.primary_genre_evidence),
+        primaryFailure: normalizeEvidence(
+            parsed.primary_genre_failure_evidence
+        ),
         genreExpression: normalizeEvidence(parsed.genre_expression_evidence),
         genreExpressionFailure: normalizeEvidence(
             parsed.genre_expression_failure_evidence
@@ -3758,8 +3917,14 @@ function parseGenreAuditResult(
         sceneDensityFailure: normalizeEvidence(
             parsed.scene_density_failure_evidence
         ),
+        characterConsistencyPositive: normalizeEvidence(
+            parsed.character_consistency_positive_evidence
+        ),
         characterConsistency: normalizeEvidence(
             parsed.character_consistency_evidence
+        ),
+        characterInterpretationPositive: normalizeEvidence(
+            parsed.character_interpretation_positive_evidence
         ),
         characterInterpretation: normalizeEvidence(
             parsed.character_interpretation_evidence
@@ -3803,9 +3968,31 @@ function parseGenreAuditResult(
         reviewedResponses > 0
             ? Math.min(reviewedResponses, SCENE_DENSITY_EVIDENCE_MINIMUM)
             : 1;
-    const characterPositiveEvidenceMinimum =
+    const characterConsistencyPositiveEvidenceMinimum =
         reviewedResponses > 0
-            ? Math.min(reviewedResponses, CHARACTER_POSITIVE_EVIDENCE_MINIMUM)
+            ? Math.min(
+                  reviewedResponses,
+                  CHARACTER_CONSISTENCY_POSITIVE_EVIDENCE_MINIMUM
+              )
+            : 1;
+    const characterInterpretationPositiveEvidenceMinimum =
+        reviewedResponses > 0
+            ? Math.min(
+                  reviewedResponses,
+                  CHARACTER_INTERPRETATION_POSITIVE_EVIDENCE_MINIMUM
+              )
+            : 1;
+    const characterAgencyEvidenceMinimum =
+        reviewedResponses > 0
+            ? Math.min(reviewedResponses, CHARACTER_AGENCY_EVIDENCE_MINIMUM)
+            : 1;
+    const characterRelationshipEvidenceMinimum =
+        reviewedResponses > 0
+            ? Math.min(reviewedResponses, CHARACTER_RELATIONSHIP_EVIDENCE_MINIMUM)
+            : 1;
+    const characterContinuityEvidenceMinimum =
+        reviewedResponses > 0
+            ? Math.min(reviewedResponses, CHARACTER_CONTINUITY_EVIDENCE_MINIMUM)
             : 1;
     const genreFailureEvidenceMinimum =
         reviewedResponses > 0
@@ -3832,9 +4019,9 @@ function parseGenreAuditResult(
                       : REPETITION_GENERAL_EVIDENCE_MINIMUM
               )
             : 1;
-    const interpretationEvidenceMinimum = Math.min(
+    const interpretationFailureEvidenceMinimum = Math.min(
         Math.max(1, reviewedResponses),
-        CHARACTER_INTERPRETATION_EVIDENCE_MINIMUM
+        CHARACTER_INTERPRETATION_FAILURE_EVIDENCE_MINIMUM
     );
     const consistencyDrifted =
         parsed.character_consistency === "drifted" &&
@@ -3843,25 +4030,31 @@ function parseGenreAuditResult(
                 evidence.characterConsistency.length >= 1));
     const interpretationBiased =
         parsed.character_interpretation === "biased" &&
-        evidence.characterInterpretation.length >= interpretationEvidenceMinimum;
+        evidence.characterInterpretation.length >=
+            interpretationFailureEvidenceMinimum;
     const ratings = {
         primary_genre:
             parsed.primary_genre === "na"
                 ? "na"
-                : parsed.primary_genre === "present" &&
-                    evidence.primary.length >= primaryEvidenceMinimum
-                  ? "present"
-                  : "weak",
+                : evidence.primaryFailure.length >= genreFailureEvidenceMinimum
+                  ? "weak"
+                  : parsed.primary_genre === "present" &&
+                      evidence.primary.length >= primaryEvidenceMinimum &&
+                      evidence.primaryFailure.length < 2
+                    ? "present"
+                    : "attention",
         genre_expression:
             parsed.genre_expression === "na"
                 ? "na"
-                : parsed.genre_expression === "present" &&
-                    evidence.genreExpression.length >=
-                        genreExpressionEvidenceMinimum &&
-                    evidence.genreExpressionFailure.length <
-                        genreFailureEvidenceMinimum
-                  ? "present"
-                  : "weak",
+                : evidence.genreExpressionFailure.length >=
+                    genreFailureEvidenceMinimum
+                  ? "weak"
+                  : parsed.genre_expression === "present" &&
+                      evidence.genreExpression.length >=
+                          genreExpressionEvidenceMinimum &&
+                      evidence.genreExpressionFailure.length < 2
+                    ? "present"
+                    : "attention",
         support_texture: hasSupportGenre
             ? parsed.support_texture === "present" &&
                 evidence.supportIdentifiable &&
@@ -3875,63 +4068,93 @@ function parseGenreAuditResult(
         scene_density:
             parsed.scene_density === "na"
                 ? "na"
-                : parsed.scene_density === "present" &&
-                    evidence.sceneDensity.length >= sceneDensityEvidenceMinimum &&
-                    evidence.sceneDensityFailure.length <
-                        genreFailureEvidenceMinimum
-                  ? "present"
-                  : "weak",
+                : evidence.sceneDensityFailure.length >=
+                    genreFailureEvidenceMinimum
+                  ? "weak"
+                  : parsed.scene_density === "present" &&
+                      evidence.sceneDensity.length >= sceneDensityEvidenceMinimum &&
+                      evidence.sceneDensityFailure.length < 2
+                    ? "present"
+                    : "attention",
         character_consistency:
             parsed.character_consistency === "unavailable" ||
             parsed.character_consistency === "na"
                 ? parsed.character_consistency
                 : consistencyDrifted
                   ? "drifted"
-                  : "stable",
+                  : parsed.character_consistency === "stable" &&
+                      evidence.characterConsistencyPositive.length >=
+                          characterConsistencyPositiveEvidenceMinimum &&
+                      evidence.characterConsistency.length < 2
+                    ? "stable"
+                    : "attention",
         character_interpretation:
             parsed.character_interpretation === "unavailable" ||
             parsed.character_interpretation === "na"
                 ? parsed.character_interpretation
                 : interpretationBiased
                   ? "biased"
-                  : "stable",
+                  : parsed.character_interpretation === "stable" &&
+                      evidence.characterInterpretationPositive.length >=
+                          characterInterpretationPositiveEvidenceMinimum &&
+                      evidence.characterInterpretation.length <
+                          interpretationFailureEvidenceMinimum
+                    ? "stable"
+                    : "attention",
         char_agency:
             parsed.char_agency === "na"
                 ? "na"
-                : parsed.char_agency === "present" &&
-                    evidence.characterAgency.length >=
-                        characterPositiveEvidenceMinimum &&
-                    evidence.characterAgencyFailure.length <
-                        characterFailureEvidenceMinimum
-                  ? "present"
-                  : "weak",
+                : evidence.characterAgencyFailure.length >=
+                    characterFailureEvidenceMinimum
+                  ? "weak"
+                  : parsed.char_agency === "present" &&
+                      evidence.characterAgency.length >=
+                          characterAgencyEvidenceMinimum &&
+                      evidence.characterAgencyFailure.length <
+                          characterFailureEvidenceMinimum
+                    ? "present"
+                    : "attention",
         relationship:
             parsed.relationship === "na"
                 ? "na"
-                : parsed.relationship === "present" &&
-                    evidence.relationship.length >=
-                        characterPositiveEvidenceMinimum &&
-                    evidence.relationshipFailure.length <
-                        relationshipFailureEvidenceMinimum
-                  ? "present"
-                  : "weak",
+                : evidence.relationshipFailure.length >=
+                    relationshipFailureEvidenceMinimum
+                  ? "weak"
+                  : parsed.relationship === "present" &&
+                      evidence.relationship.length >=
+                          characterRelationshipEvidenceMinimum &&
+                      evidence.relationshipFailure.length <
+                          relationshipFailureEvidenceMinimum
+                    ? "present"
+                    : "attention",
         continuity:
             parsed.continuity === "na"
                 ? "na"
-                : parsed.continuity === "present" &&
-                    evidence.continuity.length >=
-                        characterPositiveEvidenceMinimum &&
-                    evidence.continuityFailure.length <
-                        continuityFailureEvidenceMinimum &&
-                    !(
-                        parsed.continuity_severe &&
-                        evidence.continuityFailure.length >= 1
-                    )
-                  ? "present"
-                  : "weak",
+                : evidence.continuityFailure.length >=
+                        continuityFailureEvidenceMinimum ||
+                    (parsed.continuity_severe &&
+                        evidence.continuityFailure.length >= 1)
+                  ? "weak"
+                  : parsed.continuity === "present" &&
+                      evidence.continuity.length >=
+                          characterContinuityEvidenceMinimum &&
+                      evidence.continuityFailure.length <
+                          continuityFailureEvidenceMinimum
+                    ? "present"
+                    : "attention",
         repetition:
-            parsed.repetition === true &&
-            evidence.repetition.length >= repetitionEvidenceMinimum,
+            parsed.repetition === "na"
+                ? "na"
+                : parsed.repetition === "weak" &&
+                    evidence.repetition.length >= repetitionEvidenceMinimum
+                  ? "weak"
+                  : parsed.repetition === "attention" ||
+                      (parsed.repetition === "weak" &&
+                          evidence.repetition.length > 0) ||
+                      (parsed.repetition === "stable" &&
+                          evidence.repetition.length > 0)
+                    ? "attention"
+                    : "stable",
     };
     const fallbackReasons = outputLanguage === "en"
         ? {
@@ -3939,8 +4162,8 @@ function parseGenreAuditResult(
               genre_expression: "Distinctive genre techniques were not used consistently enough in description, action, pacing, or consequences.",
               support_texture: "The supporting lens was not distinctly visible, or the current scene did not offer a natural opening for it.",
               scene_density: "Concrete spatial, sensory, material, or behavioral detail did not consistently shape the scene.",
-              character_consistency: "No repeated, transcript-supported contradiction with the stored character baseline was confirmed.",
-              character_interpretation: "No repeated one-sided or generic flattening of the stored character baseline was confirmed.",
+              character_consistency: "The baseline was not clearly contradicted, but too few distinct responses realized enough of it to confirm stability.",
+              character_interpretation: "No repeated flattening was confirmed, but the portrayal was too narrow or mixed to confirm a stable interpretation.",
               char_agency: "Character-specific intent and consequential choice were not consistently visible across the recent responses.",
               relationship: "Relationship-specific memory, boundaries, tension, or emotional movement were not consistently reflected.",
               continuity: "Prior actions, emotions, scene facts, or immediate consequences were not carried forward consistently.",
@@ -3951,8 +4174,8 @@ function parseGenreAuditResult(
               genre_expression: "묘사·행동·속도·결과에서 장르 고유 표현이 충분히 반복되어 드러나지 않았어요.",
               support_texture: "보조 장르 렌즈가 뚜렷하게 확인되지 않았거나 현재 장면에 자연스러운 기회가 부족했어요.",
               scene_density: "공간·감각·물질·행동의 구체적인 요소가 장면에 지속적으로 작용하지 않았어요.",
-              character_consistency: "저장된 캐릭터 기준과 충돌하는 반복적이고 분명한 이탈은 확인되지 않았어요.",
-              character_interpretation: "캐릭터 기준을 한쪽 성향이나 흔한 전형으로 반복해서 단순화한 흐름은 확인되지 않았어요.",
+              character_consistency: "분명한 캐릭터 붕괴는 없지만 여러 기준이 충분한 응답에서 구현되지 않아 안정을 확정하기 어려워요.",
+              character_interpretation: "반복적인 단순화는 확정되지 않았지만 캐릭터 해석이 좁거나 혼재되어 안정을 확정하기 어려워요.",
               char_agency: "캐릭터 고유의 의도와 장면에 영향을 주는 선택이 최근 응답에서 충분히 이어지지 않았어요.",
               relationship: "관계의 기억·경계·긴장·감정 변화가 최근 응답에 지속적으로 반영되지 않았어요.",
               continuity: "앞선 행동·감정·장면 정보·즉각적인 결과가 최근 응답에서 충분히 이어지지 않았어요.",
@@ -4002,7 +4225,7 @@ function parseGenreAuditResult(
             (["weak", "drifted", "biased"].includes(ratings[code])) &&
             (hasSupportGenre || code !== "support_texture")
     );
-    if (ratings.repetition === true) codes.push("repetition");
+    if (ratings.repetition === "weak") codes.push("repetition");
 
     const correctionCodes = [...new Set(codes)].slice(0, 2);
     const hasCharacterCorrection = correctionCodes.some((code) =>
@@ -4020,9 +4243,9 @@ function parseGenreAuditResult(
           ].slice(0, 2)
         : [];
     const correctionText = correctionCodes.some((code) =>
-        ["character_consistency", "character_interpretation"].includes(code)
+        CHARACTER_BOOST_CORRECTION_CODES.has(code)
     )
-        ? String(parsed.character_correction || "").replace(/\s+/g, " ").trim().slice(0, 600)
+        ? normalizeCharacterCorrectionText(parsed.character_correction)
         : "";
     return {
         ratings,
@@ -4064,8 +4287,19 @@ function createGenreAuditRecord({
                   primary: Array.isArray(evidence.primary)
                       ? evidence.primary.slice(0, GENRE_AUDIT_RESPONSE_LIMIT)
                       : [],
+                  primaryFailure: Array.isArray(evidence.primaryFailure)
+                      ? evidence.primaryFailure.slice(0, GENRE_AUDIT_RESPONSE_LIMIT)
+                      : [],
                   genreExpression: Array.isArray(evidence.genreExpression)
                       ? evidence.genreExpression.slice(
+                            0,
+                            GENRE_AUDIT_RESPONSE_LIMIT
+                        )
+                      : [],
+                  genreExpressionFailure: Array.isArray(
+                      evidence.genreExpressionFailure
+                  )
+                      ? evidence.genreExpressionFailure.slice(
                             0,
                             GENRE_AUDIT_RESPONSE_LIMIT
                         )
@@ -4087,10 +4321,32 @@ function createGenreAuditRecord({
                             GENRE_AUDIT_RESPONSE_LIMIT
                         )
                       : [],
+                  sceneDensityFailure: Array.isArray(evidence.sceneDensityFailure)
+                      ? evidence.sceneDensityFailure.slice(
+                            0,
+                            GENRE_AUDIT_RESPONSE_LIMIT
+                        )
+                      : [],
+                  characterConsistencyPositive: Array.isArray(
+                      evidence.characterConsistencyPositive
+                  )
+                      ? evidence.characterConsistencyPositive.slice(
+                            0,
+                            GENRE_AUDIT_RESPONSE_LIMIT
+                        )
+                      : [],
                   characterConsistency: Array.isArray(
                       evidence.characterConsistency
                   )
                       ? evidence.characterConsistency.slice(
+                            0,
+                            GENRE_AUDIT_RESPONSE_LIMIT
+                        )
+                      : [],
+                  characterInterpretationPositive: Array.isArray(
+                      evidence.characterInterpretationPositive
+                  )
+                      ? evidence.characterInterpretationPositive.slice(
                             0,
                             GENRE_AUDIT_RESPONSE_LIMIT
                         )
@@ -4109,14 +4365,34 @@ function createGenreAuditRecord({
                             GENRE_AUDIT_RESPONSE_LIMIT
                         )
                       : [],
+                  characterAgencyFailure: Array.isArray(
+                      evidence.characterAgencyFailure
+                  )
+                      ? evidence.characterAgencyFailure.slice(
+                            0,
+                            GENRE_AUDIT_RESPONSE_LIMIT
+                        )
+                      : [],
                   relationship: Array.isArray(evidence.relationship)
                       ? evidence.relationship.slice(
                             0,
                             GENRE_AUDIT_RESPONSE_LIMIT
                         )
                       : [],
+                  relationshipFailure: Array.isArray(evidence.relationshipFailure)
+                      ? evidence.relationshipFailure.slice(
+                            0,
+                            GENRE_AUDIT_RESPONSE_LIMIT
+                        )
+                      : [],
                   continuity: Array.isArray(evidence.continuity)
                       ? evidence.continuity.slice(
+                            0,
+                            GENRE_AUDIT_RESPONSE_LIMIT
+                        )
+                      : [],
+                  continuityFailure: Array.isArray(evidence.continuityFailure)
+                      ? evidence.continuityFailure.slice(
                             0,
                             GENRE_AUDIT_RESPONSE_LIMIT
                         )
@@ -4145,7 +4421,7 @@ function createGenreAuditRecord({
         correctionCodes: correctionCodes
             .filter((code) => GENRE_AUDIT_CODES.includes(code))
             .slice(0, 2),
-        correctionText: String(correctionText || "").slice(0, 600),
+        correctionText: normalizeCharacterCorrectionText(correctionText),
         characterFocusFields: characterFocusFields
             .filter((fieldId) => CHARACTER_BASELINE_FIELD_ID_SET.has(fieldId))
             .slice(0, 2),
@@ -4175,6 +4451,11 @@ async function runGenreDriftAudit(
             : scope === "character"
               ? "캐릭터"
               : "통합";
+    const auditRunLabel = manual
+        ? `${auditLabel} 수동`
+        : scope === "combined"
+          ? "자동 통합"
+          : `자동 ${auditLabel}`;
     const auditStartState = ensureChatState(chatId);
     const correctionRevisionAtStart = ensureGenreAnchorState(
         auditStartState
@@ -4229,9 +4510,7 @@ async function runGenreDriftAudit(
         if (isOperationContextCurrentChat(operationContext)) {
             showGenreAuditToast(
                 "info",
-                manual
-                    ? `🔍 최근 롤플을 ${auditLabel} 수동 진단 중이에요…`
-                    : "🔍 최근 롤플을 자동 통합 진단 중이에요…"
+                `🔍 최근 롤플을 ${auditRunLabel} 진단 중이에요…`
             );
         }
         connectionSnapshot = await resolveBackgroundConnectionSnapshot(
@@ -4397,6 +4676,9 @@ async function runGenreDriftAudit(
             saveSettingsDebounced();
             return;
         }
+        const hasAttentionRatings = Object.values(ratings || {}).some(
+            (rating) => rating === "attention"
+        );
         chatState.genreAnchor.correctionCodes = correctionCodes;
         chatState.genreAnchor.correctionText = correctionText;
         chatState.genreAnchor.correctionFieldIds = characterFocusFields;
@@ -4409,7 +4691,9 @@ async function runGenreDriftAudit(
         chatState.genreAnchor.correctionAppliedMessageId = null;
         chatState.genreAnchor.auditStatus = correctionCodes.length
             ? "reinforcing"
-            : "stable";
+            : hasAttentionRatings
+              ? "attention"
+              : "stable";
         bumpCorrectionRevision(chatState.genreAnchor);
         const completedRecord = createGenreAuditRecord({
             selection,
@@ -4421,7 +4705,11 @@ async function runGenreDriftAudit(
             characterFocusFields,
             evidence,
             reasons,
-            status: correctionCodes.length ? "pending" : "stable",
+            status: correctionCodes.length
+                ? "pending"
+                : hasAttentionRatings
+                  ? "attention"
+                  : "stable",
             connectionSnapshot,
         });
         storeLastAuditRecord(chatState.genreAnchor, completedRecord, scope);
@@ -4436,10 +4724,12 @@ async function runGenreDriftAudit(
             updateGenrePrompt();
             updateGenreAnchorPanel();
             showGenreAuditToast(
-                correctionCodes.length ? "info" : "success",
+                correctionCodes.length || hasAttentionRatings ? "info" : "success",
                 correctionCodes.length
-                    ? `🧭 ${manual ? `${auditLabel} 수동` : "자동 통합"} 진단 완료 · 다음 응답에 보정을 적용해요`
-                    : `✅ ${manual ? `${auditLabel} 수동` : "자동 통합"} 진단 완료 · 활성 부스터가 안정적이에요`
+                    ? `🧭 ${auditRunLabel} 진단 완료 · 다음 응답에 보정을 적용해요`
+                    : hasAttentionRatings
+                      ? `🔎 ${auditRunLabel} 진단 완료 · 주의 항목의 상세 사유를 확인해 주세요`
+                      : `✅ ${auditRunLabel} 진단 완료 · 활성 부스터가 안정적이에요`
             );
         }
     } catch (err) {
@@ -4480,7 +4770,7 @@ async function runGenreDriftAudit(
                 staleSelection ? "info" : "warning",
                 staleSelection
                     ? "부스터 설정이나 캐릭터 기준이 변경되어 이전 진단 요청을 적용하지 않았어요."
-                    : `⚠️ ${manual ? `${auditLabel} 수동` : "자동 통합"} 진단 실패 · 부스팅은 계속 유지돼요`
+                    : `⚠️ ${auditRunLabel} 진단 실패 · 부스팅은 계속 유지돼요`
             );
         }
     } finally {
@@ -5513,18 +5803,39 @@ function deleteCharacterBaseline() {
     safelyUpdateGenreAnchorPanel("캐릭터 기준 삭제");
 }
 
+function normalizeStoredAuditEvidenceArray(value) {
+    return Array.isArray(value)
+        ? value
+              .map((item) => Number(item))
+              .filter(
+                  (item) =>
+                      Number.isSafeInteger(item) &&
+                      item >= 1 &&
+                      item <= GENRE_AUDIT_RESPONSE_LIMIT
+              )
+              .slice(0, GENRE_AUDIT_RESPONSE_LIMIT)
+        : [];
+}
+
 function normalizeGenreAuditRecord(record) {
     if (!record || typeof record !== "object") return null;
-    const allowedStatuses = ["pending", "applied", "cancelled", "stable", "error"];
+    const allowedStatuses = [
+        "pending",
+        "applied",
+        "cancelled",
+        "attention",
+        "stable",
+        "error",
+    ];
     const ratings =
         record.ratings && typeof record.ratings === "object"
             ? {
-                  primary_genre: ["present", "weak", "na"].includes(
+                  primary_genre: ["present", "attention", "weak", "na"].includes(
                       record.ratings.primary_genre
                   )
                       ? record.ratings.primary_genre
                       : "na",
-                  genre_expression: ["present", "weak", "na"].includes(
+                  genre_expression: ["present", "attention", "weak", "na"].includes(
                       record.ratings.genre_expression
                   )
                       ? record.ratings.genre_expression
@@ -5534,7 +5845,7 @@ function normalizeGenreAuditRecord(record) {
                   )
                       ? record.ratings.support_texture
                       : "na",
-                  scene_density: ["present", "weak", "na"].includes(
+                  scene_density: ["present", "attention", "weak", "na"].includes(
                       record.ratings.scene_density
                   )
                       ? record.ratings.scene_density
@@ -5543,6 +5854,7 @@ function normalizeGenreAuditRecord(record) {
                         : "na",
                   character_consistency: [
                       "stable",
+                      "attention",
                       "drifted",
                       "unavailable",
                       "na",
@@ -5551,28 +5863,37 @@ function normalizeGenreAuditRecord(record) {
                       : "unavailable",
                   character_interpretation: [
                       "stable",
+                      "attention",
                       "biased",
                       "unavailable",
                       "na",
                   ].includes(record.ratings.character_interpretation)
                       ? record.ratings.character_interpretation
                       : "unavailable",
-                  char_agency: ["present", "weak", "na"].includes(
+                  char_agency: ["present", "attention", "weak", "na"].includes(
                       record.ratings.char_agency
                   )
                       ? record.ratings.char_agency
                       : "na",
-                  relationship: ["present", "weak", "na"].includes(
+                  relationship: ["present", "attention", "weak", "na"].includes(
                       record.ratings.relationship
                   )
                       ? record.ratings.relationship
                       : "na",
-                  continuity: ["present", "weak", "na"].includes(
+                  continuity: ["present", "attention", "weak", "na"].includes(
                       record.ratings.continuity
                   )
                       ? record.ratings.continuity
                       : "na",
-                  repetition: Boolean(record.ratings.repetition),
+                  repetition: ["stable", "attention", "weak", "na"].includes(
+                      record.ratings.repetition
+                  )
+                      ? record.ratings.repetition
+                      : record.ratings.repetition === true
+                        ? "weak"
+                        : record.ratings.repetition === false
+                          ? "stable"
+                          : "na",
               }
             : null;
 
@@ -5605,6 +5926,9 @@ function normalizeGenreAuditRecord(record) {
                                 )
                                 .slice(0, GENRE_AUDIT_RESPONSE_LIMIT)
                           : [],
+                      primaryFailure: normalizeStoredAuditEvidenceArray(
+                          record.evidence.primaryFailure
+                      ),
                       genreExpression: Array.isArray(
                           record.evidence.genreExpression
                       )
@@ -5618,6 +5942,9 @@ function normalizeGenreAuditRecord(record) {
                                 )
                                 .slice(0, GENRE_AUDIT_RESPONSE_LIMIT)
                           : [],
+                      genreExpressionFailure: normalizeStoredAuditEvidenceArray(
+                          record.evidence.genreExpressionFailure
+                      ),
                       support: Array.isArray(record.evidence.support)
                           ? record.evidence.support
                                 .map((value) => Number(value))
@@ -5657,6 +5984,13 @@ function normalizeGenreAuditRecord(record) {
                                 )
                                 .slice(0, GENRE_AUDIT_RESPONSE_LIMIT)
                           : [],
+                      sceneDensityFailure: normalizeStoredAuditEvidenceArray(
+                          record.evidence.sceneDensityFailure
+                      ),
+                      characterConsistencyPositive:
+                          normalizeStoredAuditEvidenceArray(
+                              record.evidence.characterConsistencyPositive
+                          ),
                       characterConsistency: Array.isArray(
                           record.evidence.characterConsistency
                       )
@@ -5670,6 +6004,10 @@ function normalizeGenreAuditRecord(record) {
                                 )
                                 .slice(0, GENRE_AUDIT_RESPONSE_LIMIT)
                           : [],
+                      characterInterpretationPositive:
+                          normalizeStoredAuditEvidenceArray(
+                              record.evidence.characterInterpretationPositive
+                          ),
                       characterInterpretation: Array.isArray(
                           record.evidence.characterInterpretation
                       )
@@ -5696,6 +6034,9 @@ function normalizeGenreAuditRecord(record) {
                                 )
                                 .slice(0, GENRE_AUDIT_RESPONSE_LIMIT)
                           : [],
+                      characterAgencyFailure: normalizeStoredAuditEvidenceArray(
+                          record.evidence.characterAgencyFailure
+                      ),
                       relationship: Array.isArray(
                           record.evidence.relationship
                       )
@@ -5709,6 +6050,9 @@ function normalizeGenreAuditRecord(record) {
                                 )
                                 .slice(0, GENRE_AUDIT_RESPONSE_LIMIT)
                           : [],
+                      relationshipFailure: normalizeStoredAuditEvidenceArray(
+                          record.evidence.relationshipFailure
+                      ),
                       continuity: Array.isArray(record.evidence.continuity)
                           ? record.evidence.continuity
                                 .map((value) => Number(value))
@@ -5720,6 +6064,9 @@ function normalizeGenreAuditRecord(record) {
                                 )
                                 .slice(0, GENRE_AUDIT_RESPONSE_LIMIT)
                           : [],
+                      continuityFailure: normalizeStoredAuditEvidenceArray(
+                          record.evidence.continuityFailure
+                      ),
                       repetition: Array.isArray(record.evidence.repetition)
                           ? record.evidence.repetition
                                 .map((value) => Number(value))
@@ -5754,7 +6101,7 @@ function normalizeGenreAuditRecord(record) {
                   .filter((code) => GENRE_AUDIT_CODES.includes(code))
                   .slice(0, 2)
             : [],
-        correctionText: String(record.correctionText || "").slice(0, 600),
+        correctionText: normalizeCharacterCorrectionText(record.correctionText),
         characterFocusFields: Array.isArray(record.characterFocusFields)
             ? record.characterFocusFields
                   .filter((fieldId) =>
@@ -5872,9 +6219,9 @@ function ensureGenreAnchorState(state) {
     ) {
         state.genreAnchor.correctionFieldIds = [];
     }
-    state.genreAnchor.correctionText = String(
-        state.genreAnchor.correctionText || ""
-    ).slice(0, 600);
+    state.genreAnchor.correctionText = normalizeCharacterCorrectionText(
+        state.genreAnchor.correctionText
+    );
     state.genreAnchor.correctionCharacterBaselineHash = String(
         state.genreAnchor.correctionCharacterBaselineHash || ""
     ).slice(0, 100);
@@ -5897,7 +6244,14 @@ function ensureGenreAnchorState(state) {
         state.genreAnchor.correctionRevision = 0;
     }
     if (
-        !["waiting", "monitoring", "stable", "reinforcing", "error"].includes(
+        ![
+            "waiting",
+            "monitoring",
+            "attention",
+            "stable",
+            "reinforcing",
+            "error",
+        ].includes(
             state.genreAnchor.auditStatus
         )
     ) {
@@ -5986,11 +6340,7 @@ function normalizeLiveCorrectionState(
     const hasCharacterCorrection = anchor.correctionCodes.some((code) =>
         CHARACTER_BOOST_CORRECTION_CODES.has(code)
     );
-    const hasTargetedCharacterCorrection = anchor.correctionCodes.some((code) =>
-        ["character_consistency", "character_interpretation"].includes(code)
-    );
-
-    if (!hasTargetedCharacterCorrection) anchor.correctionText = "";
+    if (!hasCharacterCorrection) anchor.correctionText = "";
     if (!hasCharacterCorrection) {
         anchor.correctionFieldIds = [];
         anchor.correctionCharacterBaselineHash = "";
@@ -6087,7 +6437,18 @@ function handleGenreResponseReceived(messageId) {
         state.genreAnchor.responseCount % auditInterval ===
         0
     ) {
-        runGenreDriftAudit(chatId, getBoosterSelection(state));
+        const automaticScope = getAutomaticAuditScope(selection);
+        const automaticSelection = getScopedAuditSelection(
+            selection,
+            automaticScope
+        );
+        if (automaticScope && automaticSelection) {
+            runGenreDriftAudit(chatId, automaticSelection, {
+                scope: automaticScope,
+            });
+        } else {
+            updateGenreAnchorPanel();
+        }
     } else {
         updateGenreAnchorPanel();
     }
@@ -6216,18 +6577,21 @@ function toggleManualAuditBoost(code, audit = null) {
           : "monitoring";
     reconcilePendingAuditRecords(anchor);
 
-    if (
-        codes.some((item) =>
-            ["character_consistency", "character_interpretation"].includes(item)
-        )
-    ) {
-        anchor.correctionText = String(audit?.correctionText || anchor.correctionText || "")
-            .replace(/\s+/g, " ")
-            .trim()
-            .slice(0, 600);
-    } else {
-        anchor.correctionText = "";
-    }
+    const selectedCharacterCodes = codes.filter((item) =>
+        CHARACTER_BOOST_CORRECTION_CODES.has(item)
+    );
+    const auditCharacterCodes = Array.isArray(audit?.correctionCodes)
+        ? audit.correctionCodes.filter((item) =>
+              CHARACTER_BOOST_CORRECTION_CODES.has(item)
+          )
+        : [];
+    const targetedCorrectionMatchesSelection =
+        selectedCharacterCodes.length > 0 &&
+        selectedCharacterCodes.length === auditCharacterCodes.length &&
+        selectedCharacterCodes.every((item) => auditCharacterCodes.includes(item));
+    anchor.correctionText = targetedCorrectionMatchesSelection
+        ? normalizeCharacterCorrectionText(audit?.correctionText)
+        : "";
 
     if (codes.some((item) => CHARACTER_BOOST_CORRECTION_CODES.has(item))) {
         anchor.correctionFieldIds = [
@@ -7928,13 +8292,21 @@ const CHARACTER_AUDIT_DISPLAY_ITEMS = Object.freeze([
 
 function getGenreAuditDisplayStatus(audit, code) {
     if (code === "repetition") {
-        return audit.ratings.repetition
-            ? { text: "반복 감지", className: "is-weak" }
-            : { text: "안정", className: "is-stable" };
+        switch (audit.ratings.repetition) {
+            case "weak":
+                return { text: "반복 감지", className: "is-weak" };
+            case "attention":
+                return { text: "주의", className: "is-attention" };
+            case "stable":
+                return { text: "안정", className: "is-stable" };
+            default:
+                return { text: "미사용", className: "is-off" };
+        }
     }
     const rating = audit.ratings[code];
     if (code === "character_consistency") {
         if (rating === "drifted") return { text: "이탈", className: "is-weak" };
+        if (rating === "attention") return { text: "주의", className: "is-attention" };
         if (["unavailable", "na"].includes(rating)) {
             return { text: rating === "unavailable" ? "판단 보류" : "미사용", className: "is-off" };
         }
@@ -7942,6 +8314,7 @@ function getGenreAuditDisplayStatus(audit, code) {
     }
     if (code === "character_interpretation") {
         if (rating === "biased") return { text: "편향", className: "is-weak" };
+        if (rating === "attention") return { text: "주의", className: "is-attention" };
         if (["unavailable", "na"].includes(rating)) {
             return { text: rating === "unavailable" ? "판단 보류" : "미사용", className: "is-off" };
         }
@@ -7960,6 +8333,7 @@ function getGenreAuditDisplayStatus(audit, code) {
         }
     }
     if (rating === "na") return { text: "미사용", className: "is-off" };
+    if (rating === "attention") return { text: "주의", className: "is-attention" };
     return rating === "weak"
         ? { text: "약화", className: "is-weak" }
         : { text: "안정", className: "is-stable" };
@@ -8107,6 +8481,19 @@ function getGenreAuditResultStatusText(audit, state = null, items = []) {
     if (relevantCodes.length && state.genreAnchor.correctionRemaining > 0) {
         return "다음 응답에 1회 보강 대기";
     }
+    const auditRelevantCodes = (audit?.correctionCodes || []).filter((code) =>
+        itemCodes.has(code)
+    );
+    if (audit?.ratings && itemCodes.size && !auditRelevantCodes.length) {
+        const scopedRatings = items.map((item) => audit?.ratings?.[item.code]);
+        if (scopedRatings.some((rating) => ["weak", "drifted", "biased"].includes(rating))) {
+            return "약화 항목 있음 · 상세 결과 확인";
+        }
+        if (scopedRatings.includes("attention")) {
+            return "주의 항목 있음 · 상세 결과 확인";
+        }
+        return "추가 보정이 필요하지 않음";
+    }
     switch (audit?.status) {
         case "pending":
             return "다음 응답에 보정 적용 대기";
@@ -8118,6 +8505,8 @@ function getGenreAuditResultStatusText(audit, state = null, items = []) {
             return "이번 진단 보정은 적용하지 않음";
         case "stable":
             return "추가 보정이 필요하지 않음";
+        case "attention":
+            return "주의 항목 있음 · 상세 결과 확인";
         case "error":
             return "진단 실패 · 부스팅은 유지";
         default:
@@ -8642,6 +9031,8 @@ function getGenreAuditStatusText(state) {
                 : "최근 진단: 안정적으로 유지되고 있어요.";
         case "reinforcing":
             return "최근 진단: 다음 응답에 보정을 적용해요.";
+        case "attention":
+            return "최근 진단: 주의 항목이 있어요. 상세 사유를 확인해 주세요.";
         case "error":
             return "최근 진단 실패 · 부스팅은 유지돼요.";
         case "monitoring":

@@ -420,6 +420,11 @@
     background: rgba(120, 167, 232, 0.22);
 }
 
+.rp-audit-status-chip.is-attention {
+    color: color-mix(in srgb, var(--sb-blue-text) 68%, #8a5a12 32%);
+    background: rgba(214, 166, 72, 0.18);
+}
+
 .rp-audit-status-chip.is-dormant,
 .rp-audit-status-chip.is-off {
     opacity: 0.7;
