@@ -580,6 +580,174 @@
     white-space: normal;
 }
 
+#rp-booster-popup .rp-character-version-manager,
+#rp-booster-popup .rp-character-revision-maker,
+#rp-booster-popup .rp-character-revision-proposal {
+    margin-top: 10px;
+    padding: 10px;
+    border: 1px solid rgba(120, 167, 232, 0.34);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--sb-blue-panel) 68%, white 32%);
+}
+
+#rp-booster-popup .rp-character-version-manager label,
+#rp-booster-popup .rp-character-revision-maker label {
+    margin-top: 0;
+    font-size: 0.86em;
+}
+
+#rp-booster-popup .rp-character-version-manager small,
+#rp-booster-popup .rp-character-revision-maker p,
+#rp-booster-popup .rp-character-revision-proposal > p {
+    display: block;
+    margin: 7px 0 0;
+    opacity: 0.72;
+    font-size: 0.78em;
+    line-height: 1.45;
+}
+
+#rp-booster-popup .rp-character-version-actions,
+#rp-booster-popup .rp-character-revision-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    margin-top: 7px;
+}
+
+#rp-booster-popup .rp-character-version-actions button {
+    min-width: 0;
+    min-height: 34px;
+    padding: 5px 8px;
+    border: 1px solid var(--sb-blue-border);
+    border-radius: 7px;
+    background: rgba(255, 255, 255, 0.44);
+    color: inherit;
+    font: inherit;
+    font-size: 0.82em;
+    font-weight: 700;
+}
+
+#rp-booster-popup .rp-character-revision-maker summary {
+    cursor: pointer;
+    color: color-mix(in srgb, currentColor 72%, var(--sb-blue-strong) 28%);
+    font-weight: 800;
+}
+
+#rp-booster-popup #rp-character-revision-generate,
+#rp-booster-popup #rp-character-revision-auto-generate {
+    margin-top: 8px;
+}
+
+#rp-booster-popup .rp-character-revision-auto {
+    margin-top: 9px;
+    padding-top: 9px;
+    border-top: 1px dashed rgba(120, 167, 232, 0.38);
+}
+
+#rp-booster-popup .rp-character-revision-auto small {
+    display: block;
+    opacity: 0.66;
+    font-size: 0.75em;
+    line-height: 1.4;
+}
+
+#rp-booster-popup .rp-character-revision-proposal-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+#rp-booster-popup .rp-character-revision-proposal-header small {
+    opacity: 0.65;
+}
+
+#rp-booster-popup .rp-character-revision-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-top: 8px;
+}
+
+#rp-booster-popup .rp-character-revision-summary span {
+    padding: 3px 7px;
+    border: 1px solid var(--sb-blue-border);
+    border-radius: 999px;
+    background: var(--sb-blue-selected);
+    color: var(--sb-blue-text);
+    font-size: 0.7em;
+    font-weight: 700;
+}
+
+#rp-booster-popup .rp-character-revision-evidence,
+#rp-booster-popup .rp-character-revision-maintained {
+    margin: 7px 0 0;
+    font-size: 0.78em;
+    line-height: 1.45;
+}
+
+#rp-booster-popup .rp-character-revision-evidence {
+    padding: 7px 8px;
+    border-left: 3px solid var(--sb-blue-strong);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.32);
+}
+
+#rp-booster-popup .rp-character-revision-fields {
+    display: grid;
+    gap: 8px;
+    margin-top: 9px;
+}
+
+#rp-booster-popup .rp-character-revision-field-card {
+    padding: 9px;
+    border: 1px solid rgba(120, 167, 232, 0.3);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.36);
+}
+
+#rp-booster-popup .rp-character-revision-choice {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin: 0;
+}
+
+#rp-booster-popup .rp-character-revision-choice input {
+    flex: 0 0 auto;
+    width: 17px;
+    height: 17px;
+    margin: 0;
+    accent-color: var(--sb-blue-strong);
+}
+
+#rp-booster-popup .rp-character-revision-reason {
+    display: block;
+    margin-top: 5px;
+    opacity: 0.72;
+    font-size: 0.76em;
+}
+
+#rp-booster-popup .rp-character-revision-field-card details {
+    margin-top: 7px;
+    font-size: 0.78em;
+}
+
+#rp-booster-popup .rp-character-revision-field-card details p {
+    margin: 5px 0 0;
+    padding: 7px 8px;
+    border-left: 2px solid var(--sb-blue-border);
+    opacity: 0.74;
+    white-space: pre-wrap;
+}
+
+#rp-booster-popup .rp-character-revision-field {
+    min-height: 82px;
+    margin-top: 7px;
+    resize: vertical;
+    line-height: 1.46;
+}
+
 #rp-booster-popup .rp-character-baseline-fields {
     display: grid;
     gap: 8px;

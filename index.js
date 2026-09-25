@@ -28,7 +28,7 @@ import {
 } from "../../../../script.js";
 
 const MODULE_NAME = "rp-genre-plot-booster";
-const STORYBOOSTER_VERSION = "1.4.1";
+const STORYBOOSTER_VERSION = "1.5.3";
 const GENRE_PROMPT_KEY = "rp_genre_boost";
 const PLOT_PROMPT_KEY = "rp_plot_trigger";
 const DEFAULT_AUDIT_INTERVAL = 10;
@@ -68,8 +68,14 @@ const CHARACTER_CORRECTION_MAX_CHARS = 1800;
 const CHARACTER_CORRECTION_MAX_WORDS = 220;
 const CHARACTER_BASELINE_AUTOSAVE_DELAY = 700;
 const CHARACTER_CARD_INPUT_MAX_CHARS = 24000;
+const CHARACTER_REVISION_TRANSCRIPT_MAX_CHARS = 90000;
+const CHARACTER_REVISION_ASSISTANT_REPLIES = 20;
+const CHARACTER_REVISION_NOTE_MAX_CHARS = 1200;
+const CHARACTER_BASELINE_VERSION_LABEL_MAX_CHARS = 40;
+const MAX_CHARACTER_BASELINE_VERSIONS = 10;
 const DEFAULT_PLOT_MAX_TOKENS = 1200;
 const MIN_PLOT_MAX_TOKENS = 200;
+const MAX_PLOT_MAX_TOKENS = 4000;
 const MAX_PLOT_HISTORY = 5;
 // Keep the user-facing message windows while preventing unusually long
 // individual replies from dominating input-token cost.
@@ -179,6 +185,7 @@ function getSillyTavernDiagnosticVersion() {
 
 function getErrorDiagnosticStage(error, fallback = "unknown") {
     const code = String(error?.code || "").toUpperCase();
+    const message = String(error?.message || "");
     if (code.includes("TIMEOUT")) return "request_timeout";
     if (code.includes("PROFILE")) return "connection_profile";
     if (code.includes("TRUNCATED") || code.includes("INCOMPLETE_JSON")) {
@@ -186,11 +193,16 @@ function getErrorDiagnosticStage(error, fallback = "unknown") {
     }
     if (
         code.includes("INCOMPLETE_RATINGS") ||
-        code.includes("BASELINE_INCOMPLETE")
+        code.includes("BASELINE_INCOMPLETE") ||
+        code.includes("REQUIRED_FIELDS_MISSING") ||
+        code.includes("INVALID_FIELDS")
     ) {
         return "required_field_validation";
     }
     if (code.includes("PARSE") || error instanceof SyntaxError) return "json_parsing";
+    if (/api request failed|network|failed to fetch/i.test(message)) {
+        return "request_transport";
+    }
     return fallback;
 }
 
@@ -262,6 +274,8 @@ function createOperationDiagnostic({
         responseFormat: "",
         finishReason: "",
         returnedFields: [],
+        compatibilityFallback: false,
+        retryReason: "",
     };
 }
 
@@ -450,6 +464,13 @@ function recordStoryBoosterError(error, details = {}) {
             .map((item) => sanitizeDiagnosticText(item, 120))
             .filter(Boolean)
             .slice(0, 40),
+        compatibilityFallback: Boolean(
+            details.compatibilityFallback ?? diagnostic.compatibilityFallback
+        ),
+        retryReason: sanitizeDiagnosticText(
+            details.retryReason || diagnostic.retryReason || "",
+            160
+        ),
         missingFields: [...new Set(missingFields)].slice(0, 30),
         invalidFields: [...new Set(invalidFields)].slice(0, 30),
         location: getErrorDiagnosticLocation(error),
@@ -502,6 +523,9 @@ function formatStoryBoosterErrorEntry(entry, index) {
         `프롬프트/대화: ${entry.promptChars || 0}자 / ${entry.transcriptChars || 0}자`,
         `소요 시간: ${entry.elapsedMs ? `${Math.round(entry.elapsedMs / 100) / 10}초` : "확인 불가"}`,
         `요청/재시도: ${entry.requestCount || 0}회 / ${entry.retryCount || 0}회`,
+        `호환 재시도: ${entry.compatibilityFallback ? "사용" : "미사용"}${
+            entry.retryReason ? ` · ${entry.retryReason}` : ""
+        }`,
         `HTTP/종료 사유: ${entry.httpStatus || "없음"} / ${entry.finishReason || "없음"}`,
         `오류 코드: ${entry.errorCode || "없음"}`,
         `오류 메시지: ${entry.errorMessage || "없음"}`,
@@ -727,6 +751,33 @@ function withRequestTimeout(
     return Promise.race([Promise.resolve(request), timeout]).finally(() =>
         clearTimeout(timeoutId)
     );
+}
+
+function requestCurrentRoleplayGenerationStop() {
+    let context = null;
+    try {
+        context = getContext?.();
+    } catch {
+        context = null;
+    }
+    if (typeof context?.stopGeneration === "function") {
+        context.stopGeneration();
+        return true;
+    }
+
+    // Older SillyTavern builds do not expose stopGeneration through the
+    // extension context. Their visible stop button still invokes the same
+    // cancellation path, so use it only while it is active and enabled.
+    const stopButton = document.getElementById("mes_stop");
+    if (
+        stopButton &&
+        !stopButton.disabled &&
+        stopButton.getClientRects().length > 0
+    ) {
+        stopButton.click();
+        return true;
+    }
+    return false;
 }
 
 const CHARACTER_BASELINE_FIELDS = Object.freeze([
@@ -1248,7 +1299,7 @@ function getCurrentRoleDisplayNames() {
     } catch {
         context = null;
     }
-    const userName = String(context?.name1 || "").trim() || "펠소";
+    const userName = String(context?.name1 || "").trim() || "유저";
     const characterName =
         context?.groupId == null
             ? String(
@@ -1283,7 +1334,8 @@ function createDefaultModuleSettings() {
             plot: true,
         },
         characterBaselines: {},
-        settingsSchemaVersion: 20,
+        characterBaselineVersions: {},
+        settingsSchemaVersion: 22,
     };
 }
 
@@ -1419,6 +1471,35 @@ function migrateModuleSettings(settings) {
         settings.settingsSchemaVersion = 20;
         migrated = true;
     }
+    if (previousSchemaVersion < 21) {
+        // Version 21 tracks whether a pending one-response correction was
+        // already armed when generation began. This prevents an audit that
+        // finishes mid-generation from claiming that response as corrected.
+        settings.settingsSchemaVersion = 21;
+        migrated = true;
+    }
+    if (previousSchemaVersion < 22) {
+        // Version 22 adds complete, user-selectable character baseline
+        // revisions. Existing baselines remain the protected original.
+        if (
+            !settings.characterBaselineVersions ||
+            typeof settings.characterBaselineVersions !== "object" ||
+            Array.isArray(settings.characterBaselineVersions)
+        ) {
+            settings.characterBaselineVersions = {};
+        }
+        for (const state of Object.values(settings.chats || {})) {
+            if (!state || typeof state !== "object") continue;
+            if (!state.characterBoost || typeof state.characterBoost !== "object") {
+                state.characterBoost = {};
+            }
+            if (typeof state.characterBoost.baselineVersionId !== "string") {
+                state.characterBoost.baselineVersionId = "";
+            }
+        }
+        settings.settingsSchemaVersion = 22;
+        migrated = true;
+    }
 
     return migrated;
 }
@@ -1439,10 +1520,29 @@ function normalizeModuleSettings(settings) {
         settings.characterBaselines = {};
     }
     if (
+        !settings.characterBaselineVersions ||
+        typeof settings.characterBaselineVersions !== "object" ||
+        Array.isArray(settings.characterBaselineVersions)
+    ) {
+        settings.characterBaselineVersions = {};
+    }
+    for (const [identityKey, value] of Object.entries(
+        settings.characterBaselineVersions
+    )) {
+        const normalized = normalizeCharacterBaselineVersionStore(value);
+        if (Object.keys(normalized.versions).length) {
+            settings.characterBaselineVersions[identityKey] = normalized;
+        } else {
+            delete settings.characterBaselineVersions[identityKey];
+        }
+    }
+    if (
         !Number.isSafeInteger(settings.plotMaxTokens) ||
         settings.plotMaxTokens < MIN_PLOT_MAX_TOKENS
     ) {
         settings.plotMaxTokens = DEFAULT_PLOT_MAX_TOKENS;
+    } else if (settings.plotMaxTokens > MAX_PLOT_MAX_TOKENS) {
+        settings.plotMaxTokens = MAX_PLOT_MAX_TOKENS;
     }
     if (typeof settings.analysisProfileId !== "string") settings.analysisProfileId = "";
     if (typeof settings.plotProfileId !== "string") settings.plotProfileId = "";
@@ -1532,6 +1632,13 @@ function ensureModuleSettings() {
             Array.isArray(settings.characterBaselines)
         ) {
             settings.characterBaselines = {};
+        }
+        if (
+            !settings.characterBaselineVersions ||
+            typeof settings.characterBaselineVersions !== "object" ||
+            Array.isArray(settings.characterBaselineVersions)
+        ) {
+            settings.characterBaselineVersions = {};
         }
         const migrated = migrateModuleSettings(settings);
         normalizeModuleSettings(settings);
@@ -1697,6 +1804,7 @@ function ensureChatState(chatId = getCurrentChatId()) {
                 correctionCharacterBaselineHash: "",
                 correctionRemaining: 0,
                 correctionAppliedMessageId: null,
+                correctionArmedRevision: 0,
                 correctionRevision: 0,
                 auditStatus: "waiting",
                 recommendation: null,
@@ -1732,6 +1840,9 @@ function ensureChatState(chatId = getCurrentChatId()) {
 function ensureCharacterBoostState(state) {
     if (!state.characterBoost || typeof state.characterBoost !== "object") {
         state.characterBoost = {};
+    }
+    if (typeof state.characterBoost.baselineVersionId !== "string") {
+        state.characterBoost.baselineVersionId = "";
     }
     return state.characterBoost;
 }
@@ -1844,6 +1955,178 @@ function normalizeCharacterBaseline(entry) {
     };
 }
 
+function normalizeCharacterBaselineVersionStore(value) {
+    const raw = value && typeof value === "object" ? value : {};
+    const rawVersions =
+        raw.versions && typeof raw.versions === "object" &&
+        !Array.isArray(raw.versions)
+            ? raw.versions
+            : {};
+    const versions = {};
+    Object.entries(rawVersions)
+        .map(([key, entry]) => {
+            const baseline = normalizeCharacterBaseline(entry?.baseline);
+            if (!baseline) return null;
+            const id = String(entry?.id || key).trim().slice(0, 100);
+            if (!id) return null;
+            return {
+                id,
+                label:
+                    String(entry?.label || "갱신본")
+                        .trim()
+                        .slice(0, CHARACTER_BASELINE_VERSION_LABEL_MAX_CHARS) ||
+                    "갱신본",
+                baseline,
+                parentVersionId: String(entry?.parentVersionId || "").slice(
+                    0,
+                    100
+                ),
+                revisionMode: ["directed", "automatic"].includes(
+                    entry?.revisionMode
+                )
+                    ? entry.revisionMode
+                    : "",
+                evidenceLevel: ["strong", "partial", "limited"].includes(
+                    entry?.evidenceLevel
+                )
+                    ? entry.evidenceLevel
+                    : "",
+                createdAt: Number(entry?.createdAt) || Date.now(),
+                updatedAt:
+                    Number(entry?.updatedAt) ||
+                    Number(baseline.updatedAt) ||
+                    Date.now(),
+            };
+        })
+        .filter(Boolean)
+        .sort((a, b) => a.createdAt - b.createdAt)
+        .slice(-MAX_CHARACTER_BASELINE_VERSIONS)
+        .forEach((entry) => {
+            versions[entry.id] = entry;
+        });
+    const inferredNextNumber =
+        Object.values(versions).reduce((highest, entry) => {
+            const match = String(entry.label || "").match(/^(\d+)번 갱신$/);
+            return match ? Math.max(highest, Number(match[1]) + 1) : highest;
+        }, 1) || 1;
+    return {
+        nextNumber: Math.max(
+            inferredNextNumber,
+            Number.isSafeInteger(raw.nextNumber) ? raw.nextNumber : 1
+        ),
+        versions,
+    };
+}
+
+function getCharacterBaselineVersionStore(identityKey, { create = false } = {}) {
+    const key = String(identityKey || "");
+    if (!key) return null;
+    const settings = ensureModuleSettings();
+    const existing = settings.characterBaselineVersions[key];
+    if (!existing && !create) {
+        return { nextNumber: 1, versions: {} };
+    }
+    const normalized = normalizeCharacterBaselineVersionStore(existing);
+    if (create || Object.keys(normalized.versions).length) {
+        settings.characterBaselineVersions[key] = normalized;
+    }
+    return normalized;
+}
+
+function getCharacterBaselineVersion(identityKey, versionId = "") {
+    const settings = ensureModuleSettings();
+    const id = String(versionId || "");
+    if (!id) {
+        return normalizeCharacterBaseline(settings.characterBaselines[identityKey]);
+    }
+    const store = getCharacterBaselineVersionStore(identityKey);
+    return normalizeCharacterBaseline(store?.versions?.[id]?.baseline);
+}
+
+function writeCharacterBaselineVersion(identity, baseline, versionId = "") {
+    const normalized = normalizeCharacterBaseline(baseline);
+    if (!identity?.key || !normalized) return false;
+    normalized.characterName = identity.name || normalized.characterName;
+    const settings = ensureModuleSettings();
+    if (!versionId) {
+        settings.characterBaselines[identity.key] = normalized;
+        return true;
+    }
+    const store = getCharacterBaselineVersionStore(identity.key, {
+        create: true,
+    });
+    const record = store.versions[versionId];
+    if (!record) return false;
+    record.baseline = normalized;
+    record.updatedAt = Date.now();
+    settings.characterBaselineVersions[identity.key] = store;
+    return true;
+}
+
+function createCharacterBaselineVersion(
+    identity,
+    baseline,
+    {
+        chatId = getCurrentChatId(),
+        parentVersionId = "",
+        label = "",
+        revisionMode = "",
+        evidenceLevel = "",
+    } = {}
+) {
+    const normalized = normalizeCharacterBaseline(baseline);
+    if (!identity?.key || !normalized) return null;
+    const settings = ensureModuleSettings();
+    const store = getCharacterBaselineVersionStore(identity.key, {
+        create: true,
+    });
+    if (Object.keys(store.versions).length >= MAX_CHARACTER_BASELINE_VERSIONS) {
+        throw new Error(
+            `갱신본은 캐릭터당 최대 ${MAX_CHARACTER_BASELINE_VERSIONS}개까지 저장할 수 있습니다.`
+        );
+    }
+    const number = store.nextNumber;
+    const id = `revision_${Date.now().toString(36)}_${Math.random()
+        .toString(36)
+        .slice(2, 8)}`;
+    const now = Date.now();
+    const record = {
+        id,
+        label:
+            String(label || `${number}번 갱신`)
+                .trim()
+                .slice(0, CHARACTER_BASELINE_VERSION_LABEL_MAX_CHARS) ||
+            `${number}번 갱신`,
+        baseline: {
+            ...normalized,
+            characterName: identity.name || normalized.characterName,
+            updatedAt: now,
+        },
+        parentVersionId: String(parentVersionId || "").slice(0, 100),
+        revisionMode: ["directed", "automatic"].includes(revisionMode)
+            ? revisionMode
+            : "",
+        evidenceLevel: ["strong", "partial", "limited"].includes(evidenceLevel)
+            ? evidenceLevel
+            : "",
+        createdAt: now,
+        updatedAt: now,
+    };
+    store.nextNumber = number + 1;
+    store.versions[id] = record;
+    settings.characterBaselineVersions[identity.key] = store;
+    const boostState = ensureCharacterBoostState(ensureChatState(chatId));
+    boostState.baselineVersionId = id;
+    return record;
+}
+
+function getCharacterBaselineVersionOptions(identityKey) {
+    const store = getCharacterBaselineVersionStore(identityKey);
+    return Object.values(store?.versions || {}).sort(
+        (a, b) => a.createdAt - b.createdAt
+    );
+}
+
 function createEmptyCharacterBaseline(identity) {
     const fields = Object.fromEntries(
         CHARACTER_BASELINE_FIELDS.map((definition) => [
@@ -1916,21 +2199,118 @@ function resolveCharacterCorrectionFieldIds(
     return resolved.slice(0, 2);
 }
 
-function getCurrentCharacterBaseline() {
+function getCurrentCharacterBaseline(chatId = getCurrentChatId()) {
     const identity = getCurrentCharacterIdentity();
     if (!identity) return { status: "unavailable", identity: null, baseline: null };
-    const settings = ensureModuleSettings();
-    const baseline = normalizeCharacterBaseline(
-        settings.characterBaselines[identity.key]
-    );
+    const boostState = ensureCharacterBoostState(ensureChatState(chatId));
+    const requestedVersionId = String(boostState.baselineVersionId || "");
+    let versionId = requestedVersionId;
+    let baseline = getCharacterBaselineVersion(identity.key, versionId);
+    if (versionId && !baseline) {
+        versionId = "";
+        boostState.baselineVersionId = "";
+        baseline = getCharacterBaselineVersion(identity.key, "");
+        saveSettingsDebounced();
+    }
+    const version = versionId
+        ? getCharacterBaselineVersionStore(identity.key)?.versions?.[versionId]
+        : null;
     return {
         identity,
         baseline,
+        versionId,
+        versionLabel: version?.label || "원본",
+        isOriginal: !versionId,
         // Character-card edits do not automatically invalidate a saved
         // baseline or pause its anchor. Users explicitly choose when to run a
         // new full summary; sourceHash is retained only as source metadata.
         status: baseline ? "current" : "missing",
     };
+}
+
+function selectCharacterBaselineVersion(versionId = "") {
+    const chatId = String(getCurrentChatId());
+    const identity = getCurrentCharacterIdentity();
+    if (!identity) return false;
+    const id = String(versionId || "");
+    if (id && !getCharacterBaselineVersion(identity.key, id)) return false;
+    characterBaselineRevisionProposals.delete(
+        getCharacterRevisionProposalKey(identity.key, chatId)
+    );
+    ensureCharacterBoostState(ensureChatState(chatId)).baselineVersionId = id;
+    invalidateCharacterAuditAfterBaselineChange(chatId);
+    saveSettingsDebounced();
+    safelyUpdateGenrePrompt("캐릭터 기준 버전 변경");
+    safelyUpdateGenreAnchorPanel("캐릭터 기준 버전 변경");
+    return true;
+}
+
+function renameCurrentCharacterBaselineVersion() {
+    const baselineState = getCurrentCharacterBaseline();
+    if (!baselineState.identity || !baselineState.versionId) return;
+    const nextLabel = window.prompt(
+        "갱신본 이름을 입력하세요.",
+        baselineState.versionLabel
+    );
+    if (nextLabel === null) return;
+    const label = String(nextLabel)
+        .trim()
+        .slice(0, CHARACTER_BASELINE_VERSION_LABEL_MAX_CHARS);
+    if (!label) {
+        toastr?.warning?.("버전 이름을 비워 둘 수 없습니다.");
+        return;
+    }
+    const store = getCharacterBaselineVersionStore(baselineState.identity.key, {
+        create: true,
+    });
+    const record = store.versions[baselineState.versionId];
+    if (!record) return;
+    record.label = label;
+    record.updatedAt = Date.now();
+    ensureModuleSettings().characterBaselineVersions[
+        baselineState.identity.key
+    ] = store;
+    saveSettingsDebounced();
+    safelyUpdateCharacterBoosterPanel("캐릭터 기준 버전 이름 변경");
+}
+
+function deleteCurrentCharacterBaselineVersion() {
+    const baselineState = getCurrentCharacterBaseline();
+    if (!baselineState.identity || !baselineState.versionId) return;
+    if (
+        !window.confirm(
+            `「${baselineState.versionLabel}」을 삭제할까요? 원본은 유지됩니다.`
+        )
+    ) {
+        return;
+    }
+    const settings = ensureModuleSettings();
+    const store = getCharacterBaselineVersionStore(baselineState.identity.key, {
+        create: true,
+    });
+    delete store.versions[baselineState.versionId];
+    if (Object.keys(store.versions).length) {
+        settings.characterBaselineVersions[baselineState.identity.key] = store;
+    } else {
+        delete settings.characterBaselineVersions[baselineState.identity.key];
+    }
+    const affectedChatIds = [];
+    for (const [chatId, state] of Object.entries(settings.chats || {})) {
+        if (state?.characterBoost?.baselineVersionId === baselineState.versionId) {
+            state.characterBoost.baselineVersionId = "";
+            affectedChatIds.push(chatId);
+        }
+    }
+    if (affectedChatIds.length) {
+        affectedChatIds.forEach((chatId) =>
+            invalidateCharacterAuditAfterBaselineChange(chatId)
+        );
+    } else {
+        invalidateCharacterAuditAfterBaselineChange();
+    }
+    saveSettingsDebounced();
+    safelyUpdateGenrePrompt("캐릭터 기준 버전 삭제");
+    safelyUpdateGenreAnchorPanel("캐릭터 기준 버전 삭제");
 }
 
 function getCharacterCardChangeStatus(
@@ -1949,6 +2329,7 @@ function getCharacterCardChangeStatus(
         changed,
         identity,
         baseline,
+        versionId: String(baselineState?.versionId || ""),
         currentHash,
         alreadyNotified:
             changed && baseline?.notifiedSourceHash === currentHash,
@@ -1961,8 +2342,11 @@ function notifyCharacterCardChangeIfNeeded() {
         return status;
     }
     status.baseline.notifiedSourceHash = status.currentHash;
-    ensureModuleSettings().characterBaselines[status.identity.key] =
-        status.baseline;
+    writeCharacterBaselineVersion(
+        status.identity,
+        status.baseline,
+        status.versionId
+    );
     saveSettingsDebounced();
     toastr?.info?.(
         "캐릭터 카드의 변경을 감지했어요. 현재는 기존 기준과 앵커로 계속 부스팅하고 있어요."
@@ -1976,8 +2360,11 @@ function acknowledgeCharacterCardChange() {
     status.baseline.sourceHash = status.currentHash;
     status.baseline.notifiedSourceHash = "";
     status.baseline.updatedAt = Date.now();
-    ensureModuleSettings().characterBaselines[status.identity.key] =
-        status.baseline;
+    writeCharacterBaselineVersion(
+        status.identity,
+        status.baseline,
+        status.versionId
+    );
     saveSettingsDebounced();
     safelyUpdateCharacterBoosterPanel("캐릭터 카드 변경 확인");
     toastr?.success?.("현재 캐릭터 기준과 앵커를 그대로 유지합니다.");
@@ -2710,6 +3097,7 @@ async function generateStructuredAnalysis({
     connectionSnapshot = null,
     task = "structured_analysis",
     diagnostic = null,
+    recordErrors = true,
 }) {
     const operationDiagnostic =
         diagnostic ||
@@ -2765,13 +3153,17 @@ async function generateStructuredAnalysis({
         if (typeof context?.generateRawData === "function") {
             operationDiagnostic.method = "generateRawData";
             operationDiagnostic.requestCount += 1;
+            const requestController = new AbortController();
             const rawData = await withRequestTimeout(
                 context.generateRawData({
                     prompt: rawPrompt,
                     responseLength,
                     jsonSchema: compatibleJsonSchema,
+                    signal: requestController.signal,
                 }),
-                "현재 채팅 연결의 백그라운드 요청이 3분 안에 완료되지 않았습니다."
+                "현재 채팅 연결의 백그라운드 요청이 3분 안에 완료되지 않아 중단을 요청했습니다.",
+                BACKGROUND_REQUEST_TIMEOUT_MS,
+                () => requestController.abort()
             );
             const rawText = extractTextFromGenerationData(rawData);
             captureOperationResponseDiagnostic(
@@ -2791,13 +3183,17 @@ async function generateStructuredAnalysis({
         if (typeof context?.generateRaw === "function") {
             operationDiagnostic.method = "generateRaw";
             operationDiagnostic.requestCount += 1;
+            const requestController = new AbortController();
             const rawResult = await withRequestTimeout(
                 context.generateRaw({
                     prompt: rawPrompt,
                     responseLength,
                     jsonSchema: compatibleJsonSchema,
+                    signal: requestController.signal,
                 }),
-                "현재 채팅 연결의 백그라운드 요청이 3분 안에 완료되지 않았습니다."
+                "현재 채팅 연결의 백그라운드 요청이 3분 안에 완료되지 않아 중단을 요청했습니다.",
+                BACKGROUND_REQUEST_TIMEOUT_MS,
+                () => requestController.abort()
             );
             const rawText = extractTextFromGenerationData(rawResult);
             captureOperationResponseDiagnostic(
@@ -2827,6 +3223,7 @@ async function generateStructuredAnalysis({
         ].join("\n");
         operationDiagnostic.method = "generateQuietPrompt";
         operationDiagnostic.requestCount += 1;
+        const requestController = new AbortController();
         const result = await withRequestTimeout(
             context.generateQuietPrompt({
                 quietPrompt,
@@ -2834,8 +3231,11 @@ async function generateStructuredAnalysis({
                 jsonSchema: compatibleJsonSchema,
                 responseLength,
                 removeReasoning: false,
+                signal: requestController.signal,
             }),
-            "현재 채팅 연결의 백그라운드 요청이 3분 안에 완료되지 않았습니다."
+            "현재 채팅 연결의 백그라운드 요청이 3분 안에 완료되지 않아 중단을 요청했습니다.",
+            BACKGROUND_REQUEST_TIMEOUT_MS,
+            () => requestController.abort()
         );
         const text = extractTextFromGenerationData(result);
         captureOperationResponseDiagnostic(
@@ -2869,12 +3269,15 @@ async function generateStructuredAnalysis({
                 connectionSnapshot: stableConnection,
                 task,
                 diagnostic: operationDiagnostic,
+                recordErrors,
             });
         }
-        recordStoryBoosterError(error, {
-            task,
-            diagnostic: operationDiagnostic,
-        });
+        if (recordErrors) {
+            recordStoryBoosterError(error, {
+                task,
+                diagnostic: operationDiagnostic,
+            });
+        }
         throw error;
     }
 }
@@ -2884,7 +3287,7 @@ const GENRE_CORRECTION_LABELS = Object.freeze({
     genre_expression: "장르 표현",
     character_consistency: "캐릭터성",
     char_agency: "캐릭터 능동성",
-    relationship: "캐릭터·펠소 관계성",
+    relationship: "캐릭터·유저 관계성",
     support_texture: "보조 장르 렌즈",
     scene_density: "장면 밀도",
     continuity: "현재 장면 연속성",
@@ -2927,7 +3330,7 @@ const GENRE_CORRECTION_DESCRIPTIONS = Object.freeze({
     char_agency:
         "캐릭터가 자신의 목적에 따라 먼저 말하거나 행동하고 선택하도록 강화",
     relationship:
-        "캐릭터와 펠소 사이의 신뢰·긴장·경계·감정 변화를 행동과 대화에 반영",
+        "캐릭터와 유저 사이의 신뢰·긴장·경계·감정 변화를 행동과 대화에 반영",
     scene_density:
         "장르 고유의 배경·감각·공간·행동 디테일로 평면적인 장면을 보강",
     continuity:
@@ -2997,6 +3400,7 @@ function getBoosterSelection(state = ensureChatState()) {
         state.genreAnchor.correctionText = "";
         state.genreAnchor.correctionFieldIds = [];
         state.genreAnchor.correctionCharacterBaselineHash = "";
+        state.genreAnchor.correctionArmedRevision = 0;
         if (!state.genreAnchor.correctionCodes.length) {
             state.genreAnchor.correctionRemaining = 0;
             state.genreAnchor.correctionAppliedMessageId = null;
@@ -3004,11 +3408,17 @@ function getBoosterSelection(state = ensureChatState()) {
         }
         saveSettingsDebounced();
     }
-    const correctionCodes = (state.genreAnchor.correctionCodes || []).filter(
-        (code) =>
-            (genreSelection && GENRE_BOOST_CORRECTION_CODES.has(code)) ||
-            (characterEnabled && CHARACTER_BOOST_CORRECTION_CODES.has(code))
+    const correctionPendingForNextResponse = Boolean(
+        state.genreAnchor.correctionRemaining > 0 &&
+            state.genreAnchor.correctionAppliedMessageId === null
     );
+    const correctionCodes = correctionPendingForNextResponse
+        ? (state.genreAnchor.correctionCodes || []).filter(
+              (code) =>
+                  (genreSelection && GENRE_BOOST_CORRECTION_CODES.has(code)) ||
+                  (characterEnabled && CHARACTER_BOOST_CORRECTION_CODES.has(code))
+          )
+        : [];
     const correctionFieldIds =
         characterEnabled && baselineState.baseline
             ? resolveCharacterCorrectionFieldIds(
@@ -4689,6 +5099,7 @@ async function runGenreDriftAudit(
             : "";
         chatState.genreAnchor.correctionRemaining = correctionCodes.length ? 1 : 0;
         chatState.genreAnchor.correctionAppliedMessageId = null;
+        chatState.genreAnchor.correctionArmedRevision = 0;
         chatState.genreAnchor.auditStatus = correctionCodes.length
             ? "reinforcing"
             : hasAttentionRatings
@@ -4806,6 +5217,7 @@ function runManualGenreAudit(scope = "genre") {
 
 const characterBaselinePendingTasks = new Map();
 const characterBaselineAutosaveTimers = new Map();
+const characterBaselineRevisionProposals = new Map();
 
 function invalidateCharacterAuditAfterBaselineChange(chatId = getCurrentChatId()) {
     const state = ensureChatState(chatId);
@@ -4847,6 +5259,7 @@ function invalidateCharacterAuditAfterBaselineChange(chatId = getCurrentChatId()
     anchor.correctionCodes = genreCorrectionCodes;
     anchor.correctionText = "";
     anchor.correctionFieldIds = [];
+    anchor.correctionArmedRevision = 0;
     if (!genreCorrectionCodes.length) {
         anchor.correctionRemaining = 0;
         anchor.correctionAppliedMessageId = null;
@@ -5000,6 +5413,609 @@ function getCharacterBaselineGenerationIssues(
     return issues;
 }
 
+function getCharacterRevisionProposalKey(
+    identityKey = getCurrentCharacterIdentity()?.key || "",
+    chatId = getCurrentChatId()
+) {
+    return `${String(chatId)}::${String(identityKey)}`;
+}
+
+function buildCharacterBaselineRevisionPrompt(
+    baseline,
+    outputLanguage = ensureModuleSettings().outputLanguage,
+    userDirection = "",
+    mode = "directed"
+) {
+    const pinnedFields = CHARACTER_BASELINE_FIELDS.filter(
+        (definition) => baseline?.fields?.[definition.id]?.pinned
+    );
+    const languageInstruction =
+        outputLanguage === "en"
+            ? "Write every field in natural English."
+            : "Write every field in natural Korean. Do not use English prose except for established proper nouns.";
+    const isDirected = mode === "directed";
+    return [
+        isDirected
+            ? "Revise the complete roleplay character baseline in the direction explicitly requested by the user. The user's requested direction is the primary editing instruction, not a hypothesis that the transcript must approve or reject."
+            : "Inspect the supplied recent roleplay and revise the complete character baseline only where it demonstrates a sustained, causally supported change.",
+        isDirected
+            ? "Use the recent roleplay only to calibrate how the requested development appears in behavior, speech, relationships, scope, and intensity. If recent evidence is sparse, still create the requested revision and report that limitation instead of refusing the change."
+            : "The existing baseline is the reference point, not an error to correct. Preserve every field verbatim unless repeated behavior across the transcript clearly establishes a lasting development.",
+        "Preserve every unrelated field verbatim. Integrate development into the existing personality instead of replacing the character with a newly invented or generically improved personality.",
+        "Do not convert a temporary mood, one scene, situational compliance, intoxication, coercion, exceptional crisis, or a single affectionate/hostile moment into a permanent personality change.",
+        isDirected
+            ? "Do not exaggerate beyond the user's requested direction. Do not make the character kinder, softer, healthier, more balanced, more romantic, or more sympathetic unless the request calls for that specific development."
+            : "Do not make the character kinder, softer, healthier, more balanced, more romantic, or more sympathetic unless the transcript repeatedly and specifically supports that change.",
+        "Keep relationship-specific development scoped to the relevant relationship. Do not turn behavior toward {{user}} into a universal trait unless the transcript supports that generalization.",
+        "Preserve contradictions, boundaries, negative traits, decision logic, speech habits, and emotional defenses that remain active.",
+        pinnedFields.length
+            ? `These pinned fields must be copied exactly without any change: ${pinnedFields
+                  .map((field) => field.id)
+                  .join(", ")}.`
+            : "No fields are pinned.",
+        isDirected
+            ? `The user supplied a requested direction. Apply it to at least one unpinned field: ${userDirection}`
+            : "No requested direction was supplied. This is a conservative automatic scan of recent roleplay only.",
+        "In revised fields, use the actual role names supplied in the input. Never introduce literal role-template placeholders in user-facing baseline text.",
+        languageInstruction,
+        "Return all seven fields as a complete replacement baseline. List changed_fields using only field IDs whose text truly differs. For every field, return a concise change_reasons string; use an empty string when unchanged.",
+        "Set evidence_level to strong, partial, or limited. In evidence_summary, briefly distinguish what the recent roleplay supports from what follows mainly from the user's requested direction. Do not quote long passages.",
+        `Field IDs: ${CHARACTER_BASELINE_FIELDS.map((field) => field.id).join(", ")}.`,
+        `Return JSON only in this exact shape: ${JSON.stringify({
+            fields: Object.fromEntries(
+                CHARACTER_BASELINE_FIELDS.map((field) => [field.id, "..."])
+            ),
+            changed_fields: ["field_id"],
+            change_reasons: Object.fromEntries(
+                CHARACTER_BASELINE_FIELDS.map((field) => [field.id, ""])
+            ),
+            evidence_level: "partial",
+            evidence_summary: "...",
+        })}.`,
+    ].join("\n");
+}
+
+function normalizeCharacterBaselineRevisionPayload(value, baseline) {
+    const parsed = value && typeof value === "object" ? value : {};
+    const rawFields =
+        parsed.fields && typeof parsed.fields === "object" ? parsed.fields : {};
+    const rawReasons =
+        parsed.change_reasons && typeof parsed.change_reasons === "object"
+            ? parsed.change_reasons
+            : {};
+    const fields = {};
+    const changedFields = [];
+    for (const definition of CHARACTER_BASELINE_FIELDS) {
+        const currentText = String(
+            baseline?.fields?.[definition.id]?.text || ""
+        ).trim();
+        let text = String(rawFields[definition.id] || "")
+            .trim()
+            .slice(0, CHARACTER_BASELINE_FIELD_MAX_CHARS);
+        if (baseline?.fields?.[definition.id]?.pinned) text = currentText;
+        if (text.length < 10) {
+            throw new Error(`${definition.label} 항목이 누락되었거나 지나치게 짧습니다.`);
+        }
+        fields[definition.id] = {
+            text,
+            reason: String(rawReasons[definition.id] || "")
+                .trim()
+                .slice(0, 500),
+        };
+        if (text !== currentText) changedFields.push(definition.id);
+    }
+    const evidenceLevel = ["strong", "partial", "limited"].includes(
+        parsed.evidence_level
+    )
+        ? parsed.evidence_level
+        : "limited";
+    return {
+        fields,
+        changedFields,
+        evidenceLevel,
+        evidenceSummary: String(parsed.evidence_summary || "")
+            .trim()
+            .slice(0, 800),
+    };
+}
+
+function parseCharacterBoostAnchorResult(result, outputLanguage) {
+    const parsed = extractJsonObject(
+        result,
+        "Character boost anchor returned no JSON object."
+    );
+    const requiredFields = [
+        "boost_anchor",
+        ...(outputLanguage === "ko" ? ["boost_anchor_display"] : []),
+    ];
+    const missingFields = requiredFields.filter(
+        (field) => !Object.hasOwn(parsed, field)
+    );
+    if (missingFields.length) {
+        const error = new Error(
+            `필수 캐릭터 앵커 필드가 누락되었습니다: ${missingFields.join(", ")}`
+        );
+        error.code = "STORYBOOSTER_REQUIRED_FIELDS_MISSING";
+        error.missingFields = missingFields;
+        throw error;
+    }
+
+    const boostAnchor = String(parsed.boost_anchor || "")
+        .trim()
+        .slice(0, CHARACTER_BOOST_ANCHOR_MAX_CHARS);
+    const boostAnchorDisplay =
+        outputLanguage === "ko"
+            ? String(parsed.boost_anchor_display || "")
+                  .trim()
+                  .slice(0, CHARACTER_BOOST_ANCHOR_MAX_CHARS)
+            : boostAnchor;
+    const invalidFields = [];
+    if (boostAnchor.length < 30) invalidFields.push("boost_anchor");
+    if (outputLanguage === "ko" && boostAnchorDisplay.length < 15) {
+        invalidFields.push("boost_anchor_display");
+    }
+    if (invalidFields.length) {
+        const error = new Error(
+            `캐릭터 앵커 필드가 지나치게 짧습니다: ${invalidFields.join(", ")}`
+        );
+        error.code = "STORYBOOSTER_INVALID_FIELDS";
+        error.invalidFields = invalidFields;
+        throw error;
+    }
+    return { boostAnchor, boostAnchorDisplay };
+}
+
+function shouldRetryCharacterAnchorWithoutSchema(error, connectionSnapshot) {
+    if (connectionSnapshot?.source !== "profile") return false;
+    const code = String(error?.code || "").toUpperCase();
+    if (
+        [
+            "TIMEOUT",
+            "PROFILE",
+            "CONTEXT_CHANGED",
+            "ABORT",
+        ].some((marker) => code.includes(marker))
+    ) {
+        return false;
+    }
+    const message = String(error?.message || "");
+    if (/unauthorized|forbidden|invalid api key|authentication/i.test(message)) {
+        return false;
+    }
+    const status = Number(error?.status || error?.statusCode) || 0;
+    if (status && ![400, 415, 422].includes(status)) return false;
+    return true;
+}
+
+async function requestCharacterBoostAnchor({
+    identity,
+    baseline,
+    outputLanguage,
+    connectionSnapshot,
+    diagnostic,
+    responseLength = 900,
+}) {
+    const basePrompt = [
+        `Create a compact persistent roleplay anchor for ${identity.name} from the supplied baseline only. Do not invent or reinterpret traits.`,
+        getCharacterBoostAnchorRequirements(outputLanguage),
+        outputLanguage === "ko"
+            ? 'Return JSON only: {"boost_anchor":"English character-specific anchor","boost_anchor_display":"한국어 표시용 앵커"}.'
+            : 'Return JSON only: {"boost_anchor":"English character-specific anchor"}.',
+    ].join("\n");
+    const transcript = `<character_baseline>\n${serializeCharacterBaseline(
+        baseline
+    )}\n</character_baseline>`;
+    const jsonSchema = {
+        name: "storybooster_character_boost_anchor",
+        strict: true,
+        schema: {
+            type: "object",
+            properties: {
+                boost_anchor: { type: "string" },
+                ...(outputLanguage === "ko"
+                    ? { boost_anchor_display: { type: "string" } }
+                    : {}),
+            },
+            required: [
+                "boost_anchor",
+                ...(outputLanguage === "ko" ? ["boost_anchor_display"] : []),
+            ],
+            additionalProperties: false,
+        },
+    };
+    const runAttempt = async ({ withoutSchema = false } = {}) => {
+        const result = await generateStructuredAnalysis({
+            prompt: [
+                basePrompt,
+                withoutSchema
+                    ? "COMPATIBILITY RETRY: The provider did not honor the structured-output schema. Return the complete non-empty JSON object directly without Markdown or commentary."
+                    : "",
+            ]
+                .filter(Boolean)
+                .join("\n"),
+            transcript,
+            jsonSchema: withoutSchema ? null : jsonSchema,
+            responseLength,
+            retryOnLength: !withoutSchema,
+            connectionSnapshot,
+            task: diagnostic.task,
+            diagnostic,
+            recordErrors: false,
+        });
+        return parseCharacterBoostAnchorResult(result, outputLanguage);
+    };
+
+    try {
+        return await runAttempt();
+    } catch (error) {
+        if (!shouldRetryCharacterAnchorWithoutSchema(error, connectionSnapshot)) {
+            throw error;
+        }
+        diagnostic.retryCount += 1;
+        diagnostic.compatibilityFallback = true;
+        diagnostic.retryReason = error?.missingFields?.length
+            ? "필수 앵커 필드 누락"
+            : error?.invalidFields?.length
+              ? "앵커 필드 길이 오류"
+              : "구조화 출력 요청 오류";
+        return runAttempt({ withoutSchema: true });
+    }
+}
+
+async function generateCharacterBaselineRevisionProposal({ automatic = false } = {}) {
+    if (!isBoosterFeatureEnabled("character")) {
+        toastr?.info?.("전역 설정에서 캐릭터 부스터를 켜 주세요.");
+        return;
+    }
+    const baselineState = getCurrentCharacterBaseline();
+    if (!baselineState.identity || !baselineState.baseline) {
+        toastr?.warning?.("먼저 캐릭터 원본 기준을 만들어 주세요.");
+        return;
+    }
+    const { identity, baseline } = baselineState;
+    if (characterBaselinePendingTasks.has(identity.key)) return;
+    if (
+        getCharacterBaselineVersionOptions(identity.key).length >=
+        MAX_CHARACTER_BASELINE_VERSIONS
+    ) {
+        toastr?.warning?.(
+            `갱신본은 최대 ${MAX_CHARACTER_BASELINE_VERSIONS}개입니다. 사용하지 않는 갱신본을 삭제해 주세요.`
+        );
+        return;
+    }
+    const chatId = getCurrentChatId();
+    const note = String(
+        getBoosterElement("rp-character-revision-note")?.value || ""
+    )
+        .trim()
+        .slice(0, CHARACTER_REVISION_NOTE_MAX_CHARS);
+    if (!automatic && !note) {
+        toastr?.warning?.("새 기준에 반영할 변화 방향을 먼저 적어 주세요.");
+        getBoosterElement("rp-character-revision-note")?.focus();
+        return;
+    }
+    const resolvedNote = automatic ? "" : resolveRoleMacrosForDisplay(note);
+    const revisionMode = automatic ? "automatic" : "directed";
+    const settings = ensureModuleSettings();
+    const operationContext = createOperationContextSnapshot({
+        chatId,
+        chatSnapshot: snapshotCurrentChatMessages(),
+        characterKey: identity.key,
+        profileId: settings.analysisProfileId,
+        outputLanguage: settings.outputLanguage,
+        responseLength: 4200,
+    });
+    const diagnostic = createOperationDiagnostic({
+        task: "character_baseline_revision_proposal",
+        responseLength: operationContext.responseLength,
+        connectionMode: operationContext.profileId ? "profile" : "main",
+    });
+    characterBaselinePendingTasks.set(identity.key, "revision");
+    try {
+        safelyUpdateCharacterBoosterPanel("캐릭터 갱신안 생성 시작");
+        const connectionSnapshot = await resolveBackgroundConnectionSnapshot(
+            operationContext.profileId
+        );
+        updateOperationDiagnosticConnection(diagnostic, connectionSnapshot);
+        const schemaProperties = Object.fromEntries(
+            CHARACTER_BASELINE_FIELDS.map((field) => [
+                field.id,
+                { type: "string" },
+            ])
+        );
+        const result = await generateStructuredAnalysis({
+            prompt: resolveRoleMacrosForDisplay(
+                buildCharacterBaselineRevisionPrompt(
+                    baseline,
+                    operationContext.outputLanguage,
+                    resolvedNote,
+                    revisionMode
+                )
+            ),
+            transcript: [
+                `<current_baseline>\n${serializeCharacterBaseline(
+                    baseline
+                )}\n</current_baseline>`,
+                !automatic
+                    ? `<user_requested_direction>\n${resolvedNote}\n</user_requested_direction>`
+                    : "",
+                `<recent_roleplay>\n${getRoleplayTranscript({
+                    assistantRepliesWithUserContext:
+                        CHARACTER_REVISION_ASSISTANT_REPLIES,
+                    perMessageMaxChars: PLOT_MESSAGE_MAX_CHARS,
+                    maxChars: CHARACTER_REVISION_TRANSCRIPT_MAX_CHARS,
+                    chatSnapshot: operationContext.chatSnapshot,
+                })}\n</recent_roleplay>`,
+            ]
+                .filter(Boolean)
+                .join("\n\n"),
+            jsonSchema: {
+                name: "storybooster_character_baseline_revision",
+                strict: true,
+                schema: {
+                    type: "object",
+                    properties: {
+                        fields: {
+                            type: "object",
+                            properties: schemaProperties,
+                            required: CHARACTER_BASELINE_FIELDS.map(
+                                (field) => field.id
+                            ),
+                            additionalProperties: false,
+                        },
+                        changed_fields: {
+                            type: "array",
+                            items: {
+                                type: "string",
+                                enum: CHARACTER_BASELINE_FIELDS.map(
+                                    (field) => field.id
+                                ),
+                            },
+                        },
+                        change_reasons: {
+                            type: "object",
+                            properties: schemaProperties,
+                            required: CHARACTER_BASELINE_FIELDS.map(
+                                (field) => field.id
+                            ),
+                            additionalProperties: false,
+                        },
+                        evidence_level: {
+                            type: "string",
+                            enum: ["strong", "partial", "limited"],
+                        },
+                        evidence_summary: { type: "string" },
+                    },
+                    required: [
+                        "fields",
+                        "changed_fields",
+                        "change_reasons",
+                        "evidence_level",
+                        "evidence_summary",
+                    ],
+                    additionalProperties: false,
+                },
+            },
+            responseLength: operationContext.responseLength,
+            connectionSnapshot,
+            task: diagnostic.task,
+            diagnostic,
+        });
+        if (!isBoosterFeatureEnabled("character")) return;
+        const normalized = normalizeCharacterBaselineRevisionPayload(
+            extractJsonObject(
+                result,
+                "Character baseline revision returned no JSON object."
+            ),
+            baseline
+        );
+        if (!normalized.changedFields.length) {
+            characterBaselineRevisionProposals.delete(
+                getCharacterRevisionProposalKey(identity.key, chatId)
+            );
+            if (automatic) {
+                toastr?.info?.(
+                    "최근 20개 롤플에서 기준을 바꿀 만큼 지속적인 변화는 찾지 못했어요."
+                );
+            } else {
+                toastr?.error?.(
+                    "요청한 변화가 갱신안에 반영되지 않았어요. 방향을 조금 더 구체적으로 적어 다시 시도해 주세요."
+                );
+            }
+            return;
+        }
+        characterBaselineRevisionProposals.set(
+            getCharacterRevisionProposalKey(identity.key, chatId),
+            {
+                identityKey: identity.key,
+                chatId,
+                baseVersionId: String(baselineState.versionId || ""),
+                baseVersionLabel: baselineState.versionLabel,
+                fields: normalized.fields,
+                changedFields: normalized.changedFields,
+                mode: revisionMode,
+                userDirection: resolvedNote,
+                evidenceLevel: normalized.evidenceLevel,
+                evidenceSummary: normalized.evidenceSummary,
+                analyzedAssistantReplies: CHARACTER_REVISION_ASSISTANT_REPLIES,
+                createdAt: Date.now(),
+            }
+        );
+        toastr?.success?.(
+            `${normalized.changedFields.length}개 항목의 ${automatic ? "자동 탐색" : "요청 기반"} 갱신안을 만들었어요. 확인 후 저장해 주세요.`
+        );
+    } catch (error) {
+        console.error(`[${MODULE_NAME}] character revision proposal failed:`, error);
+        recordStoryBoosterError(error, {
+            task: diagnostic.task,
+            diagnostic,
+        });
+        toastr?.error?.(
+            `캐릭터 갱신안을 만들지 못했습니다: ${error?.message || "연결 상태를 확인해 주세요."}`
+        );
+    } finally {
+        characterBaselinePendingTasks.delete(identity.key);
+        safelyUpdateCharacterBoosterPanel("캐릭터 갱신안 생성 종료");
+    }
+}
+
+function cancelCharacterBaselineRevisionProposal(
+    identityKey = getCurrentCharacterIdentity()?.key || "",
+    chatId = getCurrentChatId()
+) {
+    if (!identityKey) return;
+    characterBaselineRevisionProposals.delete(
+        getCharacterRevisionProposalKey(identityKey, chatId)
+    );
+    safelyUpdateCharacterBoosterPanel("캐릭터 갱신안 취소");
+}
+
+async function applyCharacterBaselineRevisionProposal() {
+    const chatId = String(getCurrentChatId());
+    const baselineState = getCurrentCharacterBaseline(chatId);
+    if (!baselineState.identity || !baselineState.baseline) return;
+    const { identity, baseline } = baselineState;
+    const key = getCharacterRevisionProposalKey(identity.key, chatId);
+    const proposal = characterBaselineRevisionProposals.get(key);
+    if (!proposal) return;
+    if (
+        String(proposal.chatId || "") !== chatId ||
+        proposal.identityKey !== identity.key
+    ) {
+        characterBaselineRevisionProposals.delete(key);
+        toastr?.warning?.(
+            "채팅이나 캐릭터가 바뀌었어요. 현재 채팅에서 갱신안을 다시 만들어 주세요."
+        );
+        return;
+    }
+    if (
+        getCharacterBaselineVersionOptions(identity.key).length >=
+        MAX_CHARACTER_BASELINE_VERSIONS
+    ) {
+        toastr?.warning?.(
+            `갱신본은 최대 ${MAX_CHARACTER_BASELINE_VERSIONS}개입니다. 사용하지 않는 갱신본을 삭제해 주세요.`
+        );
+        return;
+    }
+    if (proposal.baseVersionId !== String(baselineState.versionId || "")) {
+        toastr?.warning?.(
+            "기준 버전이 바뀌었어요. 현재 버전으로 갱신안을 다시 만들어 주세요."
+        );
+        cancelCharacterBaselineRevisionProposal(identity.key, chatId);
+        return;
+    }
+    const selected = [];
+    for (const fieldId of proposal.changedFields) {
+        const checkbox = getActiveBoosterPopupRoot()?.querySelector(
+            `.rp-character-revision-include[data-field-id="${fieldId}"]`
+        );
+        if (!checkbox?.checked) continue;
+        const textarea = getActiveBoosterPopupRoot()?.querySelector(
+            `.rp-character-revision-field[data-field-id="${fieldId}"]`
+        );
+        const text = String(textarea?.value || "")
+            .trim()
+            .slice(0, CHARACTER_BASELINE_FIELD_MAX_CHARS);
+        if (text.length < 10) {
+            toastr?.warning?.(
+                `${getCharacterBaselineFieldDefinition(fieldId)?.label || "선택 항목"} 내용을 10자 이상 입력해 주세요.`
+            );
+            return;
+        }
+        selected.push({ fieldId, text });
+    }
+    if (!selected.length) {
+        toastr?.warning?.("새 버전에 반영할 항목을 하나 이상 선택해 주세요.");
+        return;
+    }
+    if (characterBaselinePendingTasks.has(identity.key)) return;
+    const settings = ensureModuleSettings();
+    const operationContext = createOperationContextSnapshot({
+        chatId,
+        characterKey: identity.key,
+        profileId: settings.analysisProfileId,
+        outputLanguage: settings.outputLanguage,
+        responseLength: 900,
+    });
+    const diagnostic = createOperationDiagnostic({
+        task: "character_baseline_revision_anchor",
+        responseLength: operationContext.responseLength,
+        connectionMode: operationContext.profileId ? "profile" : "main",
+    });
+    const nextBaseline = normalizeCharacterBaseline(baseline);
+    for (const { fieldId, text } of selected) {
+        nextBaseline.fields[fieldId] = {
+            ...nextBaseline.fields[fieldId],
+            text,
+            source: "ai",
+            language: operationContext.outputLanguage,
+            updatedAt: Date.now(),
+        };
+    }
+    nextBaseline.boostAnchorNeedsRefresh = true;
+    nextBaseline.updatedAt = Date.now();
+    characterBaselinePendingTasks.set(identity.key, "revision-apply");
+    try {
+        safelyUpdateCharacterBoosterPanel("캐릭터 갱신본 저장 시작");
+        const connectionSnapshot = await resolveBackgroundConnectionSnapshot(
+            operationContext.profileId
+        );
+        updateOperationDiagnosticConnection(diagnostic, connectionSnapshot);
+        const anchor = await requestCharacterBoostAnchor({
+            identity,
+            baseline: nextBaseline,
+            outputLanguage: operationContext.outputLanguage,
+            connectionSnapshot,
+            diagnostic,
+            responseLength: operationContext.responseLength,
+        });
+        if (!isBoosterFeatureEnabled("character")) return;
+        if (
+            !isOperationContextCurrentChat(operationContext) ||
+            !isOperationContextCurrentCharacter(operationContext)
+        ) {
+            const contextError = new Error(
+                "앵커 생성 중 채팅이나 캐릭터가 바뀌어 저장을 중단했습니다. 원래 채팅에서 다시 시도해 주세요."
+            );
+            contextError.code = "STORYBOOSTER_CONTEXT_CHANGED";
+            throw contextError;
+        }
+        nextBaseline.boostAnchor = anchor.boostAnchor;
+        nextBaseline.boostAnchorDisplay = anchor.boostAnchorDisplay;
+        nextBaseline.boostAnchorDisplayLanguage = operationContext.outputLanguage;
+        nextBaseline.boostAnchorUpdatedAt = Date.now();
+        nextBaseline.boostAnchorNeedsRefresh = false;
+        nextBaseline.updatedAt = Date.now();
+        const record = createCharacterBaselineVersion(identity, nextBaseline, {
+            chatId: operationContext.chatId,
+            parentVersionId: proposal.baseVersionId,
+            revisionMode: proposal.mode,
+            evidenceLevel: proposal.evidenceLevel,
+        });
+        if (!record) throw new Error("새 캐릭터 기준 버전을 저장하지 못했습니다.");
+        characterBaselineRevisionProposals.delete(key);
+        invalidateCharacterAuditAfterBaselineChange(operationContext.chatId);
+        saveSettingsDebounced();
+        if (isOperationContextCurrentCharacter(operationContext)) {
+            safelyUpdateGenrePrompt("캐릭터 갱신본 저장");
+            safelyUpdateGenreAnchorPanel("캐릭터 갱신본 저장");
+        }
+        toastr?.success?.(`「${record.label}」을 저장하고 이 채팅에 적용했어요.`);
+    } catch (error) {
+        console.error(`[${MODULE_NAME}] character revision apply failed:`, error);
+        recordStoryBoosterError(error, {
+            task: diagnostic.task,
+            diagnostic,
+        });
+        toastr?.error?.(
+            `캐릭터 갱신본을 저장하지 못했습니다: ${error?.message || "연결 상태를 확인해 주세요."}`
+        );
+    } finally {
+        characterBaselinePendingTasks.delete(identity.key);
+        safelyUpdateCharacterBoosterPanel("캐릭터 갱신본 저장 종료");
+    }
+}
+
 async function generateCharacterBaseline(fieldId = null) {
     if (!isBoosterFeatureEnabled("character")) {
         toastr?.info?.("전역 설정에서 캐릭터 부스터를 켜 주세요.");
@@ -5014,8 +6030,20 @@ async function generateCharacterBaseline(fieldId = null) {
         toastr?.warning?.("분석할 캐릭터 시트 내용이 없습니다.");
         return;
     }
+    if (
+        baselineState.isOriginal &&
+        baselineState.baseline &&
+        getCharacterBaselineVersionOptions(baselineState.identity.key).length >=
+            MAX_CHARACTER_BASELINE_VERSIONS
+    ) {
+        toastr?.warning?.(
+            `갱신본은 최대 ${MAX_CHARACTER_BASELINE_VERSIONS}개입니다. 사용하지 않는 갱신본을 삭제해 주세요.`
+        );
+        return;
+    }
     const { identity } = baselineState;
     const taskChatId = getCurrentChatId();
+    const taskVersionId = String(baselineState.versionId || "");
     if (characterBaselinePendingTasks.has(identity.key)) return;
     if (getBoosterElement("rp-character-baseline-fields")?.querySelector(
         ".rp-character-field-text:not([readonly])"
@@ -5251,10 +6279,28 @@ async function generateCharacterBaseline(fieldId = null) {
             nextBaseline.sourceHash = identity.sourceHash;
             nextBaseline.notifiedSourceHash = "";
         }
-        ensureModuleSettings().characterBaselines[identity.key] = {
+        const completedBaseline = {
             characterName: identity.name,
             ...nextBaseline,
         };
+        if (taskVersionId) {
+            if (
+                !writeCharacterBaselineVersion(
+                    identity,
+                    completedBaseline,
+                    taskVersionId
+                )
+            ) {
+                throw new Error("저장하려던 캐릭터 기준 버전을 찾지 못했습니다.");
+            }
+        } else if (baselineState.baseline) {
+            createCharacterBaselineVersion(identity, completedBaseline, {
+                chatId: taskChatId,
+                parentVersionId: "",
+            });
+        } else {
+            writeCharacterBaselineVersion(identity, completedBaseline, "");
+        }
         invalidateCharacterAuditAfterBaselineChange(taskChatId);
         saveSettingsDebounced();
         if (isOperationContextCurrentCharacter(operationContext)) {
@@ -5305,6 +6351,7 @@ function getCharacterEditTarget(element) {
             sourceHash: String(element.dataset.sourceHash || ""),
         },
         chatId: String(element.dataset.chatId || getCurrentChatId()),
+        versionId: String(element.dataset.baselineVersionId || ""),
     };
 }
 
@@ -5319,9 +6366,30 @@ function saveCharacterBaselineField(
     const targetChatId = String(target?.chatId || getCurrentChatId());
     if (!definition || !identity?.key) return false;
     const settings = ensureModuleSettings();
-    const baseline = normalizeCharacterBaseline(
-        settings.characterBaselines[identity.key]
-    ) || createEmptyCharacterBaseline(identity);
+    const currentState = getCurrentCharacterBaseline(targetChatId);
+    const requestedVersionId = String(
+        target?.versionId ||
+            (currentState.identity?.key === identity.key
+                ? currentState.versionId
+                : "")
+    );
+    const existingBaseline = getCharacterBaselineVersion(
+        identity.key,
+        requestedVersionId
+    );
+    if (
+        !requestedVersionId &&
+        existingBaseline &&
+        getCharacterBaselineVersionOptions(identity.key).length >=
+            MAX_CHARACTER_BASELINE_VERSIONS
+    ) {
+        setCharacterFieldSaveStatus(
+            fieldId,
+            `저장 불가 · 갱신본 최대 ${MAX_CHARACTER_BASELINE_VERSIONS}개`
+        );
+        return false;
+    }
+    const baseline = existingBaseline || createEmptyCharacterBaseline(identity);
     const text = String(value || "").trim().slice(0, CHARACTER_BASELINE_FIELD_MAX_CHARS);
     baseline.fields[fieldId] = {
         ...baseline.fields[fieldId],
@@ -5335,9 +6403,25 @@ function saveCharacterBaselineField(
     baseline.updatedAt = Date.now();
     if (!baseline.sourceHash) baseline.sourceHash = identity.sourceHash;
     if (Object.values(baseline.fields).some((field) => field.text)) {
-        settings.characterBaselines[identity.key] = baseline;
+        if (requestedVersionId) {
+            writeCharacterBaselineVersion(identity, baseline, requestedVersionId);
+        } else if (existingBaseline) {
+            createCharacterBaselineVersion(identity, baseline, {
+                chatId: targetChatId,
+                parentVersionId: "",
+            });
+        } else {
+            writeCharacterBaselineVersion(identity, baseline, "");
+        }
     } else {
-        delete settings.characterBaselines[identity.key];
+        if (requestedVersionId) {
+            const store = getCharacterBaselineVersionStore(identity.key, {
+                create: true,
+            });
+            delete store.versions[requestedVersionId];
+        } else {
+            delete settings.characterBaselines[identity.key];
+        }
     }
     invalidateCharacterAuditAfterBaselineChange(targetChatId);
     saveSettingsDebounced();
@@ -5362,7 +6446,7 @@ function scheduleCharacterBaselineAutosave(textarea) {
     if (!fieldId) return;
     const target = getCharacterEditTarget(textarea);
     const identityKey = target?.identity?.key || "none";
-    const timerKey = `${identityKey}:${fieldId}`;
+    const timerKey = `${identityKey}:${target?.versionId || "original"}:${fieldId}`;
     const previousTimer = characterBaselineAutosaveTimers.get(timerKey);
     if (previousTimer) clearTimeout(previousTimer);
     setCharacterFieldSaveStatus(fieldId, "저장 중…");
@@ -5380,7 +6464,7 @@ function flushCharacterBaselineAutosave(textarea, { refresh = false } = {}) {
     const fieldId = textarea?.dataset.fieldId;
     if (!fieldId) return false;
     const target = getCharacterEditTarget(textarea);
-    const timerKey = `${target?.identity?.key || "none"}:${fieldId}`;
+    const timerKey = `${target?.identity?.key || "none"}:${target?.versionId || "original"}:${fieldId}`;
     const timer = characterBaselineAutosaveTimers.get(timerKey);
     if (timer) {
         clearTimeout(timer);
@@ -5406,7 +6490,11 @@ function toggleCharacterFieldPin(fieldId) {
     );
     baseline.fields[fieldId].pinned = !baseline.fields[fieldId].pinned;
     baseline.updatedAt = Date.now();
-    ensureModuleSettings().characterBaselines[baselineState.identity.key] = baseline;
+    writeCharacterBaselineVersion(
+        baselineState.identity,
+        baseline,
+        baselineState.versionId
+    );
     saveSettingsDebounced();
     safelyUpdateCharacterBoosterPanel("캐릭터 기준 고정 변경");
 }
@@ -5459,8 +6547,15 @@ function saveCharacterBoostAnchor(
     const identity = target?.identity?.key ? target.identity : currentIdentity;
     const targetChatId = String(target?.chatId || getCurrentChatId());
     const settings = ensureModuleSettings();
+    const currentState = getCurrentCharacterBaseline(targetChatId);
+    const requestedVersionId = String(
+        target?.versionId ||
+            (currentState.identity?.key === identity?.key
+                ? currentState.versionId
+                : "")
+    );
     const baseline = identity?.key
-        ? normalizeCharacterBaseline(settings.characterBaselines[identity.key])
+        ? getCharacterBaselineVersion(identity.key, requestedVersionId)
         : null;
     if (!identity?.key || !baseline) return false;
     const text = String(canonicalText || "")
@@ -5478,7 +6573,14 @@ function saveCharacterBoostAnchor(
     baseline.boostAnchorUpdatedAt = Date.now();
     baseline.boostAnchorNeedsRefresh = false;
     baseline.updatedAt = Date.now();
-    settings.characterBaselines[identity.key] = baseline;
+    if (requestedVersionId) {
+        writeCharacterBaselineVersion(identity, baseline, requestedVersionId);
+    } else {
+        createCharacterBaselineVersion(identity, baseline, {
+            chatId: targetChatId,
+            parentVersionId: "",
+        });
+    }
     saveSettingsDebounced();
     if (getCurrentCharacterIdentity()?.key === identity.key) {
         const promptUpdated = safelyUpdateGenrePrompt("캐릭터 앵커 저장");
@@ -5593,6 +6695,16 @@ async function saveEditedCharacterBoostAnchor() {
     const textarea = getBoosterElement("rp-character-boost-anchor-text");
     const baselineState = getCurrentCharacterBaseline();
     if (!textarea || textarea.readOnly || !baselineState.identity) return;
+    if (
+        baselineState.isOriginal &&
+        getCharacterBaselineVersionOptions(baselineState.identity.key).length >=
+            MAX_CHARACTER_BASELINE_VERSIONS
+    ) {
+        toastr?.warning?.(
+            `갱신본은 최대 ${MAX_CHARACTER_BASELINE_VERSIONS}개입니다. 사용하지 않는 갱신본을 삭제해 주세요.`
+        );
+        return;
+    }
     // Capture the save target before a possible translation request. The
     // active popup is reused across chat changes, so its dataset may point to
     // another character by the time the request resolves.
@@ -5673,7 +6785,19 @@ async function regenerateCharacterBoostAnchor() {
     }
     const baselineState = getCurrentCharacterBaseline();
     if (!baselineState.identity || !baselineState.baseline) return;
+    if (
+        baselineState.isOriginal &&
+        getCharacterBaselineVersionOptions(baselineState.identity.key).length >=
+            MAX_CHARACTER_BASELINE_VERSIONS
+    ) {
+        toastr?.warning?.(
+            `갱신본은 최대 ${MAX_CHARACTER_BASELINE_VERSIONS}개입니다. 사용하지 않는 갱신본을 삭제해 주세요.`
+        );
+        return;
+    }
     const { identity, baseline } = baselineState;
+    const taskChatId = getCurrentChatId();
+    const taskVersionId = String(baselineState.versionId || "");
     const anchorSettings = ensureModuleSettings();
     const operationContext = createOperationContextSnapshot({
         chatId: getCurrentChatId(),
@@ -5763,7 +6887,16 @@ async function regenerateCharacterBoostAnchor() {
         baseline.boostAnchorUpdatedAt = Date.now();
         baseline.boostAnchorNeedsRefresh = false;
         baseline.updatedAt = Date.now();
-        ensureModuleSettings().characterBaselines[identity.key] = baseline;
+        if (taskVersionId) {
+            if (!writeCharacterBaselineVersion(identity, baseline, taskVersionId)) {
+                throw new Error("저장하려던 캐릭터 기준 버전을 찾지 못했습니다.");
+            }
+        } else {
+            createCharacterBaselineVersion(identity, baseline, {
+                chatId: taskChatId,
+                parentVersionId: "",
+            });
+        }
         saveSettingsDebounced();
         if (isOperationContextCurrentCharacter(operationContext)) {
             const promptUpdated = safelyUpdateGenrePrompt(
@@ -5795,12 +6928,11 @@ async function regenerateCharacterBoostAnchor() {
 function deleteCharacterBaseline() {
     const baselineState = getCurrentCharacterBaseline();
     if (!baselineState.identity || !baselineState.baseline) return;
-    if (!window.confirm("저장된 캐릭터 기준 요약을 삭제할까요?")) return;
-    delete ensureModuleSettings().characterBaselines[baselineState.identity.key];
-    invalidateCharacterAuditAfterBaselineChange();
-    saveSettingsDebounced();
-    safelyUpdateGenrePrompt("캐릭터 기준 삭제");
-    safelyUpdateGenreAnchorPanel("캐릭터 기준 삭제");
+    if (baselineState.isOriginal) {
+        toastr?.info?.("원본은 보존됩니다. 필요하면 갱신본을 만들어 사용해 주세요.");
+        return;
+    }
+    deleteCurrentCharacterBaselineVersion();
 }
 
 function normalizeStoredAuditEvidenceArray(value) {
@@ -6178,6 +7310,7 @@ function ensureGenreAnchorState(state) {
             correctionCharacterBaselineHash: "",
             correctionRemaining: 0,
             correctionAppliedMessageId: null,
+            correctionArmedRevision: 0,
             correctionRevision: 0,
             auditStatus: "waiting",
             recommendation: null,
@@ -6236,6 +7369,19 @@ function ensureGenreAnchorState(state) {
         !Number.isSafeInteger(state.genreAnchor.correctionAppliedMessageId)
     ) {
         state.genreAnchor.correctionAppliedMessageId = null;
+    }
+    if (
+        !Number.isSafeInteger(state.genreAnchor.correctionArmedRevision) ||
+        state.genreAnchor.correctionArmedRevision < 0
+    ) {
+        state.genreAnchor.correctionArmedRevision = 0;
+    }
+    if (
+        state.genreAnchor.correctionRemaining <= 0 ||
+        state.genreAnchor.correctionAppliedMessageId !== null ||
+        !state.genreAnchor.correctionCodes.length
+    ) {
+        state.genreAnchor.correctionArmedRevision = 0;
     }
     if (
         !Number.isSafeInteger(state.genreAnchor.correctionRevision) ||
@@ -6351,11 +7497,13 @@ function normalizeLiveCorrectionState(
         anchor.correctionCharacterBaselineHash = "";
         anchor.correctionRemaining = 0;
         anchor.correctionAppliedMessageId = null;
+        anchor.correctionArmedRevision = 0;
         anchor.auditStatus = emptyStatus;
         return;
     }
 
     anchor.correctionRemaining = 1;
+    anchor.correctionArmedRevision = 0;
     anchor.auditStatus = "reinforcing";
 }
 
@@ -6369,6 +7517,49 @@ function removeLiveCorrectionCodes(anchor, codesToRemove, options = {}) {
     normalizeLiveCorrectionState(anchor, options);
     reconcilePendingAuditRecords(anchor);
     bumpCorrectionRevision(anchor);
+    return true;
+}
+
+function isPendingGenreCorrectionArmed(anchor) {
+    return Boolean(
+        anchor &&
+            anchor.correctionRemaining > 0 &&
+            anchor.correctionAppliedMessageId === null &&
+            anchor.correctionArmedRevision > 0 &&
+            anchor.correctionArmedRevision === anchor.correctionRevision
+    );
+}
+
+function armPendingGenreCorrectionForNextResponse(
+    state = ensureChatState()
+) {
+    const anchor = ensureGenreAnchorState(state);
+    if (
+        anchor.correctionRemaining <= 0 ||
+        anchor.correctionAppliedMessageId !== null ||
+        !anchor.correctionCodes.length
+    ) {
+        return false;
+    }
+    if (anchor.correctionArmedRevision === anchor.correctionRevision) {
+        return true;
+    }
+    anchor.correctionArmedRevision = anchor.correctionRevision;
+    saveSettingsDebounced();
+    return true;
+}
+
+function markArmedGenreCorrectionApplied(anchor, messageId) {
+    if (
+        !isPendingGenreCorrectionArmed(anchor) ||
+        !Number.isSafeInteger(messageId)
+    ) {
+        return false;
+    }
+    anchor.correctionAppliedMessageId = messageId;
+    anchor.correctionArmedRevision = 0;
+    bumpCorrectionRevision(anchor);
+    updateStoredAuditStatus(anchor, "applied", messageId);
     return true;
 }
 
@@ -6389,35 +7580,24 @@ function handleGenreResponseReceived(messageId) {
 
     if (state.genreAnchor.lastCountedMessageId === resolvedMessageId) {
         if (
-            state.genreAnchor.correctionRemaining > 0 &&
-            state.genreAnchor.correctionAppliedMessageId === null
-        ) {
-            state.genreAnchor.correctionAppliedMessageId = resolvedMessageId;
-            bumpCorrectionRevision(state.genreAnchor);
-            updateStoredAuditStatus(
+            markArmedGenreCorrectionApplied(
                 state.genreAnchor,
-                "applied",
                 resolvedMessageId
-            );
+            )
+        ) {
             saveSettingsDebounced();
+            updateGenrePrompt();
         }
         updateGenreAnchorPanel();
         return;
     }
 
     state.genreAnchor.lastCountedMessageId = resolvedMessageId;
-    if (
-        state.genreAnchor.correctionRemaining > 0 &&
-        state.genreAnchor.correctionAppliedMessageId === null
-    ) {
-        state.genreAnchor.correctionAppliedMessageId = resolvedMessageId;
-        bumpCorrectionRevision(state.genreAnchor);
-        updateStoredAuditStatus(
-            state.genreAnchor,
-            "applied",
-            resolvedMessageId
-        );
-    }
+    const correctionApplied = markArmedGenreCorrectionApplied(
+        state.genreAnchor,
+        resolvedMessageId
+    );
+    if (correctionApplied) updateGenrePrompt();
 
     const auditInterval = getGlobalAuditInterval();
     if (auditInterval === 0) {
@@ -6454,6 +7634,15 @@ function handleGenreResponseReceived(messageId) {
     }
 }
 
+function handleGenreUserMessageSent() {
+    const state = ensureChatState();
+    if (state.genreAnchor.correctionAppliedMessageId !== null) {
+        clearAppliedGenreCorrectionOnUserTurn();
+        return;
+    }
+    armPendingGenreCorrectionForNextResponse(state);
+}
+
 function clearAppliedGenreCorrectionOnUserTurn() {
     const state = ensureChatState();
     if (
@@ -6468,6 +7657,7 @@ function clearAppliedGenreCorrectionOnUserTurn() {
     state.genreAnchor.correctionFieldIds = [];
     state.genreAnchor.correctionRemaining = 0;
     state.genreAnchor.correctionAppliedMessageId = null;
+    state.genreAnchor.correctionArmedRevision = 0;
     state.genreAnchor.correctionCharacterBaselineHash = "";
     state.genreAnchor.auditStatus = "monitoring";
     bumpCorrectionRevision(state.genreAnchor);
@@ -6570,6 +7760,7 @@ function toggleManualAuditBoost(code, audit = null) {
     anchor.correctionCodes = codes;
     anchor.correctionRemaining = codes.length ? 1 : 0;
     anchor.correctionAppliedMessageId = null;
+    anchor.correctionArmedRevision = 0;
     anchor.auditStatus = codes.length
         ? "reinforcing"
         : getGlobalAuditInterval() === 0
@@ -6835,24 +8026,32 @@ function updatePlotGenerationPendingUi(chatId = getCurrentChatId()) {
     }
 }
 
-function triggerPlotEvent(eventText) {
+function triggerPlotEvent(eventText, source = "") {
     if (!isBoosterFeatureEnabled("plot")) {
         toastr?.info?.("전역 설정에서 플롯 부스터가 꺼져 있습니다.");
         return;
     }
     const line = eventText?.trim();
     if (!line) return;
+    const crazyMode = source === "crazy";
 
     const text = [
         "[STORYBOOSTER — ONE-SHOT IN-CHARACTER PLOT INJECTION]",
         "NEXT-RESPONSE MANDATE: Make the following central plot development visibly begin in the next {{char}} response. Do not postpone it, merely foreshadow it, or promise to use it later.",
+        crazyMode
+            ? "SPECIAL-MODE PRIORITY: For this response only, the chaos event below overrides persistent StoryBooster genre, plausibility, and continuity directions only where they conflict with its deliberately inexplicable occurrence. Do not rationalize, soften, replace, or make the event genre-appropriate. Keep {{char}}'s established identity and voice, {{user}}'s agency, and every established fact not directly displaced by the event."
+            : "",
         `<plot_event>${line}</plot_event>`,
-        "Continue directly from the latest scene and incorporate the development through in-character narration, dialogue, action, perception, and immediate consequences. Adapt its exact surface details only as needed to preserve already established facts and spatial continuity; keep its central change intact.",
+        crazyMode
+            ? "Begin from the latest scene and make the inexplicable event occur directly through in-character narration, dialogue, action, and perception. Preserve the scene's entry point, but do not force the event to obey genre logic, plausibility, or prior causal expectations."
+            : "Continue directly from the latest scene and incorporate the development through in-character narration, dialogue, action, perception, and immediate consequences. Adapt its exact surface details only as needed to preserve already established facts and spatial continuity; keep its central change intact.",
         "Preserve {{char}}'s established characterization, motives, capabilities, voice, relationship-specific behavior, point of view, language, and formatting.",
         "Leave {{user}}'s dialogue, thoughts, emotions, consent, bodily reactions, choices, and actions undecided. {{char}} may initiate or act, but the response must leave room for {{user}} to respond.",
         "Never acknowledge, quote, summarize, evaluate, or discuss this instruction or the plot event as a prompt. Do not output OOC, meta commentary, planning, confirmation, or promises such as 'I will reflect this in future responses.'",
         "Begin directly with the roleplay.",
-    ].join("\n");
+    ]
+        .filter(Boolean)
+        .join("\n");
 
     registerOneShotRoleplayInstruction(text);
 }
@@ -6878,6 +8077,7 @@ function buildCharacterQuestionInstruction() {
     return [
         "[STORYBOOSTER — ONE-SHOT UNRESTRICTED IN-CHARACTER QUESTION]",
         "Write the next {{char}} roleplay response immediately. This response has one primary purpose: {{char}} must ask {{user}} one genuine question.",
+        "SPECIAL-MODE PRIORITY: For this response only, this question instruction overrides persistent StoryBooster genre directions wherever they would constrain the question's subject, require genre relevance, or turn the question into a genre event. Keep {{char}}'s established identity and voice, immediate physical continuity, and {{user}}'s agency.",
         "Before choosing it, silently review the recent roleplay. Do not repeat, paraphrase, or slightly vary a question that already appeared. Do not ask for information that {{user}} has already clearly provided. Choose a genuinely new subject, unknown detail, or question purpose.",
         "Keep the current time, location, physical positions, and immediate roleplay situation unchanged. Do not create a scene transition, time skip, new event, new arrival, or interruption merely to ask the question.",
         "The subject has no topical boundary. It may concern {{char}}, {{user}}, another person, the current scene, the wider world, culture, history, science, general knowledge, preferences, habits, bodies, food, objects, rules, beliefs, memories, rumors, trivia, an intimate or embarrassing matter, a taboo subject, an impossible hypothetical, nonsense, or something completely unexpected and context-free. This list is illustrative, not restrictive; invent beyond it.",
@@ -7965,7 +9165,7 @@ async function injectEventAndGenerateReply(eventTextOverride = "", options = {})
         if (instructionText) {
             registerOneShotRoleplayInstruction(instructionText);
         } else {
-            triggerPlotEvent(eventText);
+            triggerPlotEvent(eventText, options.source);
         }
     } catch (error) {
         console.error(`[${MODULE_NAME}] plot injection failed:`, error);
@@ -8000,11 +9200,20 @@ async function injectEventAndGenerateReply(eventTextOverride = "", options = {})
         return;
     }
 
+    let roleplayStopRequested = false;
     try {
+        // This path starts generation without a user MESSAGE_SENT event, so
+        // explicitly arm only corrections that were already pending now.
+        // Audits that finish after generation starts remain queued for a later
+        // response instead of being falsely marked as applied here.
+        armPendingGenreCorrectionForNextResponse();
         await withRequestTimeout(
             context.generate("normal"),
-            "AI 응답 생성이 10분 안에 완료되지 않았습니다. SillyTavern의 생성 상태를 확인해 주세요.",
-            600000
+            "AI 응답 생성이 10분 안에 완료되지 않아 중단을 요청했습니다.",
+            600000,
+            () => {
+                roleplayStopRequested = requestCurrentRoleplayGenerationStop();
+            }
         );
     } catch (err) {
         console.error(`[${MODULE_NAME}] reply generation failed:`, err);
@@ -8016,10 +9225,15 @@ async function injectEventAndGenerateReply(eventTextOverride = "", options = {})
             stage: "reply_generation",
             timeoutMs: 600000,
         });
+        const timedOut = err?.code === "STORYBOOSTER_REQUEST_TIMEOUT";
         toastr?.error?.(
-            options.source === "character_question"
-                ? "질문 지침을 주입했지만 AI 응답 생성에 실패했습니다."
-                : "사건을 주입했지만 AI 응답 생성에 실패했습니다."
+            timedOut
+                ? roleplayStopRequested
+                    ? "AI 응답 생성 시간이 초과되어 중단을 요청했습니다."
+                    : "AI 응답 생성 시간이 초과됐지만 자동 중단 기능을 찾지 못했습니다. SillyTavern의 정지 버튼을 확인해 주세요."
+                : options.source === "character_question"
+                  ? "질문 지침을 주입했지만 AI 응답 생성에 실패했습니다."
+                  : "사건을 주입했지만 AI 응답 생성에 실패했습니다."
         );
     } finally {
         // MESSAGE_RECEIVED normally clears this first. The finally block also
@@ -8152,6 +9366,7 @@ function syncGenreSelectionFromControls() {
     state.genreAnchor.correctionFieldIds = [];
     state.genreAnchor.correctionRemaining = 0;
     state.genreAnchor.correctionAppliedMessageId = null;
+    state.genreAnchor.correctionArmedRevision = 0;
     state.genreAnchor.auditStatus = "waiting";
     state.genreAnchor.recommendation = null;
     state.genreAnchor.lastCountedMessageId = getLatestAssistantMessageId();
@@ -8285,7 +9500,7 @@ const CHARACTER_AUDIT_DISPLAY_ITEMS = Object.freeze([
     { code: "character_consistency", label: "캐릭터성", title: "캐릭터 설정 일관성" },
     { code: "character_interpretation", label: "캐릭터 해석", title: "한쪽 성향·전형 편향" },
     { code: "char_agency", label: "능동성", title: "캐릭터 능동성" },
-    { code: "relationship", label: "관계 반응", title: "캐릭터-펠소 관계 반응" },
+    { code: "relationship", label: "관계 반응", title: "캐릭터-유저 관계 반응" },
     { code: "continuity", label: "연속성", title: "현재 장면 연속성" },
     { code: "repetition", label: "표현 다양성", title: "표현 반복 방지" },
 ]);
@@ -8701,10 +9916,11 @@ function renderLastCharacterAudit(state) {
 function renderCharacterBaselineFields(
     baseline,
     identity = null,
-    chatId = getCurrentChatId()
+    chatId = getCurrentChatId(),
+    versionId = ""
 ) {
     const identityAttributes = identity?.key
-        ? `data-identity-key="${escapeHtml(identity.key)}" data-character-name="${escapeHtml(identity.name || "")}" data-source-hash="${escapeHtml(identity.sourceHash || "")}" data-chat-id="${escapeHtml(chatId)}"`
+        ? `data-identity-key="${escapeHtml(identity.key)}" data-character-name="${escapeHtml(identity.name || "")}" data-source-hash="${escapeHtml(identity.sourceHash || "")}" data-chat-id="${escapeHtml(chatId)}" data-baseline-version-id="${escapeHtml(versionId)}"`
         : "";
     return CHARACTER_BASELINE_FIELDS.map((definition) => {
         const field = baseline?.fields?.[definition.id] || {
@@ -8764,6 +9980,111 @@ function renderCharacterBaselineFields(
     }).join("");
 }
 
+function renderCharacterBaselineVersionOptions(baselineState) {
+    if (!baselineState?.identity) {
+        return '<option value="">원본</option>';
+    }
+    const options = [
+        { id: "", label: "원본" },
+        ...getCharacterBaselineVersionOptions(baselineState.identity.key).map(
+            (record) => ({ id: record.id, label: record.label })
+        ),
+    ];
+    return options
+        .map(
+            (option) =>
+                `<option value="${escapeHtml(option.id)}" ${
+                    option.id === String(baselineState.versionId || "")
+                        ? "selected"
+                        : ""
+                }>${escapeHtml(option.label)}</option>`
+        )
+        .join("");
+}
+
+function renderCharacterBaselineRevisionProposal(
+    baselineState,
+    chatId = getCurrentChatId()
+) {
+    const identityKey = baselineState?.identity?.key || "";
+    const proposal = identityKey
+        ? characterBaselineRevisionProposals.get(
+              getCharacterRevisionProposalKey(identityKey, chatId)
+          )
+        : null;
+    if (!proposal) return "";
+    const modeLabel =
+        proposal.mode === "automatic" ? "자동 탐색" : "요청 기반";
+    const evidenceLabel =
+        proposal.evidenceLevel === "strong"
+            ? "최근 롤플 근거 충분"
+            : proposal.evidenceLevel === "partial"
+              ? "최근 롤플 일부 참고"
+              : "최근 롤플 근거 적음";
+    const maintainedFields = CHARACTER_BASELINE_FIELDS.filter(
+        (definition) => !proposal.changedFields.includes(definition.id)
+    )
+        .map((definition) => definition.label)
+        .join(", ");
+    const fieldCards = proposal.changedFields
+        .map((fieldId) => {
+            const definition = getCharacterBaselineFieldDefinition(fieldId);
+            const currentText = String(
+                baselineState.baseline?.fields?.[fieldId]?.text || ""
+            );
+            const proposed = proposal.fields[fieldId];
+            return `
+                <article class="rp-character-revision-field-card">
+                    <label class="rp-character-revision-choice">
+                        <input class="rp-character-revision-include" data-field-id="${fieldId}" type="checkbox" checked>
+                        <span>${escapeHtml(definition?.label || fieldId)} 반영</span>
+                    </label>
+                    <small class="rp-character-revision-reason">${escapeHtml(
+                        proposed.reason ||
+                            (proposal.mode === "automatic"
+                                ? "롤플에서 지속적인 변화가 확인됨"
+                                : "요청한 변화 방향을 현재 기준에 맞춰 반영함")
+                    )}</small>
+                    <details>
+                        <summary>현재 내용 보기</summary>
+                        <p>${escapeHtml(currentText)}</p>
+                    </details>
+                    <textarea class="rp-character-revision-field" data-field-id="${fieldId}" rows="4" maxlength="${CHARACTER_BASELINE_FIELD_MAX_CHARS}">${escapeHtml(
+                        proposed.text
+                    )}</textarea>
+                </article>`;
+        })
+        .join("");
+    return `
+        <div class="rp-character-revision-proposal">
+            <div class="rp-character-revision-proposal-header">
+                <strong>AI 갱신안</strong>
+                <small>기준: ${escapeHtml(proposal.baseVersionLabel || "원본")}</small>
+            </div>
+            <div class="rp-character-revision-summary">
+                <span>${escapeHtml(modeLabel)}</span>
+                <span>${escapeHtml(evidenceLabel)}</span>
+                <span>최근 AI 답변 최대 ${Number(proposal.analyzedAssistantReplies) || CHARACTER_REVISION_ASSISTANT_REPLIES}개 + 직전 유저 입력</span>
+            </div>
+            ${
+                proposal.evidenceSummary
+                    ? `<p class="rp-character-revision-evidence">${escapeHtml(
+                          proposal.evidenceSummary
+                      )}</p>`
+                    : ""
+            }
+            <p class="rp-character-revision-maintained"><strong>유지된 항목:</strong> ${escapeHtml(
+                maintainedFields || "없음"
+            )}</p>
+            <p>반영할 항목만 체크하고 문구를 직접 다듬은 뒤 새 버전으로 저장하세요.</p>
+            <div class="rp-character-revision-fields">${fieldCards}</div>
+            <div class="rp-character-revision-actions">
+                <button id="rp-character-revision-apply" type="button" class="rp-character-wide-button">선택 항목으로 새 버전 저장</button>
+                <button id="rp-character-revision-cancel" type="button" class="rp-character-wide-button">취소</button>
+            </div>
+        </div>`;
+}
+
 function hasOpenCharacterBaselineEditor() {
     return Boolean(
         getActiveBoosterPopupRoot()?.querySelector(
@@ -8787,23 +10108,98 @@ function updateCharacterBaselineActionStates() {
                 (definition) => baseline.fields[definition.id]?.pinned
             )
     );
+    const atVersionLimit = Boolean(
+        baselineState.identity &&
+            baselineState.isOriginal &&
+            getCharacterBaselineVersionOptions(baselineState.identity.key)
+                .length >= MAX_CHARACTER_BASELINE_VERSIONS
+    );
     const generate = getBoosterElement("rp-character-baseline-generate");
     const remove = getBoosterElement("rp-character-baseline-delete");
     if (generate) {
         generate.disabled =
-            !featureEnabled || !baselineState.identity || pending || editing || allPinned;
+            !featureEnabled ||
+            !baselineState.identity ||
+            pending ||
+            editing ||
+            allPinned ||
+            atVersionLimit;
         generate.textContent = pending
             ? task === "all"
                 ? "전체 요약 중…"
                 : task === "anchor"
                   ? "상시 앵커 생성 중…"
+                  : task === "revision"
+                    ? "AI 갱신안 분석 중…"
+                    : task === "revision-apply"
+                      ? "새 버전 저장 중…"
                   : `${getCharacterBaselineFieldDefinition(task)?.label || "항목"} 생성 중…`
             : baseline
               ? "전체 다시 요약"
               : "전체 요약하기";
     }
     if (remove) {
-        remove.disabled = !featureEnabled || !baseline || pending || editing;
+        remove.disabled =
+            !featureEnabled ||
+            !baseline ||
+            baselineState.isOriginal ||
+            pending ||
+            editing;
+        remove.textContent = baselineState.isOriginal
+            ? "원본은 삭제할 수 없음"
+            : "선택 버전 삭제";
+    }
+    const versionSelect = getBoosterElement("rp-character-baseline-version");
+    const renameVersion = getBoosterElement("rp-character-version-rename");
+    const deleteVersion = getBoosterElement("rp-character-version-delete");
+    const proposeRevision = getBoosterElement("rp-character-revision-generate");
+    const autoProposeRevision = getBoosterElement(
+        "rp-character-revision-auto-generate"
+    );
+    if (versionSelect) versionSelect.disabled = pending || editing;
+    if (renameVersion) {
+        renameVersion.disabled = pending || editing || baselineState.isOriginal;
+    }
+    if (deleteVersion) {
+        deleteVersion.disabled = pending || editing || baselineState.isOriginal;
+    }
+    if (proposeRevision) {
+        const revisionLimitReached = baselineState.identity
+            ? getCharacterBaselineVersionOptions(baselineState.identity.key)
+                  .length >= MAX_CHARACTER_BASELINE_VERSIONS
+            : false;
+        proposeRevision.disabled =
+            !featureEnabled ||
+            !baseline ||
+            pending ||
+            editing ||
+            allPinned ||
+            revisionLimitReached;
+        proposeRevision.textContent =
+            task === "revision"
+                ? "AI가 변화 분석 중…"
+                : revisionLimitReached
+                  ? "갱신본 최대 10개"
+                  : "요청대로 갱신안 만들기";
+    }
+    if (autoProposeRevision) {
+        const revisionLimitReached = baselineState.identity
+            ? getCharacterBaselineVersionOptions(baselineState.identity.key)
+                  .length >= MAX_CHARACTER_BASELINE_VERSIONS
+            : false;
+        autoProposeRevision.disabled =
+            !featureEnabled ||
+            !baseline ||
+            pending ||
+            editing ||
+            allPinned ||
+            revisionLimitReached;
+        autoProposeRevision.textContent =
+            task === "revision"
+                ? "AI가 갱신안 생성 중…"
+                : revisionLimitReached
+                  ? "갱신본 최대 10개"
+                  : "최근 변화 자동 탐색";
     }
     getBoosterElements(".rp-character-tool-button").forEach((button) => {
         const fieldId = button.dataset.fieldId;
@@ -8813,7 +10209,11 @@ function updateCharacterBaselineActionStates() {
                 !featureEnabled || pending || editing || !String(field?.text || "").trim();
         } else if (button.classList.contains("rp-character-regenerate-button")) {
             button.disabled =
-                !featureEnabled || !baselineState.identity || pending || editing;
+                !featureEnabled ||
+                !baselineState.identity ||
+                pending ||
+                editing ||
+                atVersionLimit;
         } else if (button.classList.contains("rp-character-edit-button")) {
             const ownTextarea = button.closest(".rp-character-field-card")?.querySelector(
                 `.rp-character-field-text[data-field-id="${fieldId}"]`
@@ -8823,6 +10223,7 @@ function updateCharacterBaselineActionStates() {
                 !featureEnabled ||
                 !baselineState.identity ||
                 pending ||
+                atVersionLimit ||
                 (editing && !editingThis);
         }
     });
@@ -8840,8 +10241,9 @@ function updateBoosterLiveStatus(elementId, state, text) {
 }
 
 function updateCharacterBoosterPanel() {
-    const state = ensureChatState();
-    const baselineState = getCurrentCharacterBaseline();
+    const chatId = String(getCurrentChatId());
+    const state = ensureChatState(chatId);
+    const baselineState = getCurrentCharacterBaseline(chatId);
     const characterReadiness = getCharacterBoosterReadiness(baselineState);
     const {
         featureEnabled,
@@ -8863,6 +10265,10 @@ function updateCharacterBoosterPanel() {
         "rp-character-card-change-notice"
     );
     const languageStatus = getBoosterElement("rp-character-language-status");
+    const versionSelect = getBoosterElement("rp-character-baseline-version");
+    const proposalContainer = getBoosterElement(
+        "rp-character-revision-proposal-container"
+    );
     updateBoosterLiveStatus(
         "rp-character-live-status",
         !featureEnabled ? "off" : boostActive ? "active" : "setup",
@@ -8887,6 +10293,10 @@ function updateCharacterBoosterPanel() {
                 ? "캐릭터 시트를 분석해 전체 기준을 만드는 중이에요…"
                 : pendingTask === "anchor"
                   ? "현재 기준으로 캐릭터 전용 상시 앵커를 만드는 중이에요…"
+                  : pendingTask === "revision"
+                    ? "현재 기준과 최근 20개 롤플을 바탕으로 갱신안을 만드는 중이에요…"
+                    : pendingTask === "revision-apply"
+                      ? "검토한 갱신본의 전용 앵커를 만들고 저장하는 중이에요…"
                   : `${getCharacterBaselineFieldDefinition(pendingTask)?.label || "선택한 항목"}을 다시 만드는 중이에요…`
             : baselineState.status === "current"
               ? featureEnabled
@@ -8906,11 +10316,24 @@ function updateCharacterBoosterPanel() {
             baselineState.baseline
         );
     }
+    if (versionSelect) {
+        versionSelect.innerHTML = renderCharacterBaselineVersionOptions(
+            baselineState
+        );
+        versionSelect.value = String(baselineState.versionId || "");
+    }
+    if (proposalContainer) {
+        proposalContainer.innerHTML = renderCharacterBaselineRevisionProposal(
+            baselineState,
+            chatId
+        );
+    }
     if (fields && !hasOpenCharacterBaselineEditor()) {
         fields.innerHTML = renderCharacterBaselineFields(
             baselineState.baseline,
             baselineState.identity,
-            getCurrentChatId()
+            chatId,
+            baselineState.versionId
         );
     }
     const anchorText = getBoosterElement("rp-character-boost-anchor-text");
@@ -8925,6 +10348,12 @@ function updateCharacterBoosterPanel() {
         "rp-character-boost-anchor-saved-at"
     );
     const anchorNeedsRefresh = anchorContentStale;
+    const originalAtVersionLimit = Boolean(
+        baselineState.identity &&
+            baselineState.isOriginal &&
+            getCharacterBaselineVersionOptions(baselineState.identity.key)
+                .length >= MAX_CHARACTER_BASELINE_VERSIONS
+    );
     if (anchorText?.readOnly) {
         anchorText.value = getCharacterAnchorDisplayValue(
             baselineState.baseline
@@ -8933,6 +10362,7 @@ function updateCharacterBoosterPanel() {
         anchorText.dataset.characterName = baselineState.identity?.name || "";
         anchorText.dataset.sourceHash = baselineState.identity?.sourceHash || "";
         anchorText.dataset.chatId = getCurrentChatId();
+        anchorText.dataset.baselineVersionId = baselineState.versionId || "";
     }
     if (anchorStatus) {
         anchorStatus.classList.toggle(
@@ -8953,13 +10383,20 @@ function updateCharacterBoosterPanel() {
                   : "전체 요약을 실행하면 상시 앵커도 함께 생성됩니다.";
     }
     if (anchorEdit) {
-        anchorEdit.disabled = !featureEnabled || !baselineState.baseline || pending;
+        anchorEdit.disabled =
+            !featureEnabled ||
+            !baselineState.baseline ||
+            pending ||
+            originalAtVersionLimit;
     }
     if (anchorSave) anchorSave.disabled = pending;
     if (anchorCancel) anchorCancel.disabled = pending;
     if (anchorRegenerate) {
         anchorRegenerate.disabled =
-            !featureEnabled || !baselineState.baseline || pending;
+            !featureEnabled ||
+            !baselineState.baseline ||
+            pending ||
+            originalAtVersionLimit;
         anchorRegenerate.classList.toggle(
             "is-attention",
             anchorNeedsRefresh && pendingTask !== "anchor"
@@ -9480,6 +10917,7 @@ function applyGenreRecommendation() {
     state.genreAnchor.correctionFieldIds = [];
     state.genreAnchor.correctionRemaining = 0;
     state.genreAnchor.correctionAppliedMessageId = null;
+    state.genreAnchor.correctionArmedRevision = 0;
     state.genreAnchor.auditStatus = "waiting";
     state.genreAnchor.lastCountedMessageId = getLatestAssistantMessageId();
     saveSettingsDebounced();
@@ -9529,7 +10967,8 @@ function handleBoosterTabKeydown(event) {
 }
 
 function renderBoosterPopupHtml(popupInstanceId = "") {
-    const s = ensureChatState();
+    const chatId = String(getCurrentChatId());
+    const s = ensureChatState(chatId);
     const genreSelection = normalizeGenreSelection(s);
     const auditInterval = getGlobalAuditInterval();
     const auditIntervalLabel =
@@ -9539,7 +10978,7 @@ function renderBoosterPopupHtml(popupInstanceId = "") {
     const plotFeatureEnabled = isBoosterFeatureEnabled("plot");
     const plotSecretMode = s.plotSecretMode === true;
     const { characterName, userName } = getCurrentRoleDisplayNames();
-    const characterBaselineState = getCurrentCharacterBaseline();
+    const characterBaselineState = getCurrentCharacterBaseline(chatId);
     const characterReadiness = getCharacterBoosterReadiness(
         characterBaselineState
     );
@@ -9692,10 +11131,45 @@ function renderBoosterPopupHtml(popupInstanceId = "") {
                 </div>
             </div>
             <p id="rp-character-language-status" class="rp-character-language-status" ${characterLanguageMismatch ? "" : "hidden"}>출력 언어가 변경됐어요. 기준을 다시 요약하고 앵커를 갱신하면 현재 언어로 표시됩니다.</p>
+            <div class="rp-character-version-manager">
+                <label for="rp-character-baseline-version">이 채팅에서 사용할 기준</label>
+                <select id="rp-character-baseline-version">
+                    ${renderCharacterBaselineVersionOptions(characterBaselineState)}
+                </select>
+                <div class="rp-character-version-actions">
+                    <button id="rp-character-version-rename" type="button">이름 변경</button>
+                    <button id="rp-character-version-delete" type="button">갱신본 삭제</button>
+                </div>
+                <small>원본과 갱신본은 캐릭터별로 보관되며, 여기서 고른 한 버전만 현재 채팅의 진단·부스팅에 사용됩니다.</small>
+            </div>
+            <details class="rp-character-revision-maker">
+                <summary>🌱 롤플 변화로 새 버전 만들기</summary>
+                <p>변화 방향을 입력하면 현재 기준에 자연스럽게 이어지는 새 기준을 만듭니다. 최근 AI 답변 20개와 각 답변 직전의 유저 입력은 변화의 표현과 강도를 구체화하는 참고 자료로 사용합니다.</p>
+                <label for="rp-character-revision-note">반영할 변화 방향</label>
+                <textarea id="rp-character-revision-note" rows="4" maxlength="${CHARACTER_REVISION_NOTE_MAX_CHARS}" placeholder="예: 여전히 무뚝뚝하지만 ${escapeHtml(
+                    userName
+                )}에게는 먼저 애정을 표현하는 일이 늘었어. 갑자기 다정해진 것처럼 바꾸지 말고 서툰 표현의 변화를 반영해 줘."></textarea>
+                <button id="rp-character-revision-generate" type="button" class="rp-character-wide-button">요청대로 갱신안 만들기</button>
+                <div class="rp-character-revision-auto">
+                    <small>방향을 직접 정하지 않고 최근 롤플에서 지속적인 변화만 보수적으로 찾아볼 수도 있습니다.</small>
+                    <button id="rp-character-revision-auto-generate" type="button" class="rp-character-wide-button">최근 변화 자동 탐색</button>
+                </div>
+            </details>
+            <div id="rp-character-revision-proposal-container">
+                ${renderCharacterBaselineRevisionProposal(
+                    characterBaselineState,
+                    chatId
+                )}
+            </div>
             <p class="rp-character-privacy">캐릭터 기준은 진단에 사용됩니다. 최신 캐릭터 전용 앵커가 준비되면 캐릭터 부스팅을 시작해요. 기준 전체는 매번 주입하지 않고 필요한 일회성 보정에만 사용합니다.</p>
-            <p class="rp-character-field-guide">📌 전체 다시 요약에서도 유지 · ✏️ 편집 · ↻ 항목만 다시 생성</p>
+            <p class="rp-character-field-guide">📌 전체 다시 요약에서도 유지 · ✏️ 편집 · ↻ 항목만 다시 생성<br>원본에서 수정·재생성하면 원본은 유지되고 새 갱신본으로 저장됩니다.</p>
             <div id="rp-character-baseline-fields" class="rp-character-baseline-fields">
-                ${renderCharacterBaselineFields(characterBaselineState.baseline)}
+                ${renderCharacterBaselineFields(
+                    characterBaselineState.baseline,
+                    characterBaselineState.identity,
+                    chatId,
+                    characterBaselineState.versionId
+                )}
             </div>
             <div class="rp-character-field-card rp-character-boost-anchor-card">
                 <div class="rp-character-field-header">
@@ -9707,13 +11181,13 @@ function renderBoosterPopupHtml(popupInstanceId = "") {
                         <button id="rp-character-boost-anchor-regenerate" type="button" class="rp-character-tool-button" title="현재 기준으로 상시 앵커 다시 만들기">↻</button>
                     </div>
                 </div>
-                <textarea id="rp-character-boost-anchor-text" class="rp-character-field-text" rows="4" maxlength="${CHARACTER_BOOST_ANCHOR_MAX_CHARS}" placeholder="전체 요약을 실행하면 캐릭터별 짧은 앵커가 생성됩니다." readonly>${escapeHtml(getCharacterAnchorDisplayValue(characterBaselineState.baseline))}</textarea>
+                <textarea id="rp-character-boost-anchor-text" class="rp-character-field-text" data-identity-key="${escapeHtml(characterBaselineState.identity?.key || "")}" data-character-name="${escapeHtml(characterBaselineState.identity?.name || "")}" data-source-hash="${escapeHtml(characterBaselineState.identity?.sourceHash || "")}" data-chat-id="${escapeHtml(getCurrentChatId())}" data-baseline-version-id="${escapeHtml(characterBaselineState.versionId || "")}" rows="4" maxlength="${CHARACTER_BOOST_ANCHOR_MAX_CHARS}" placeholder="전체 요약을 실행하면 캐릭터별 짧은 앵커가 생성됩니다." readonly>${escapeHtml(getCharacterAnchorDisplayValue(characterBaselineState.baseline))}</textarea>
                 <small id="rp-character-boost-anchor-status" class="rp-character-field-save-status">표시 언어와 관계없이 실제 부스팅에는 영문 앵커를 사용합니다.</small>
                 <small id="rp-character-boost-anchor-saved-at" class="rp-character-anchor-saved-at"></small>
             </div>
             <div class="rp-character-baseline-actions">
                 <button id="rp-character-baseline-generate" type="button" class="rp-character-wide-button">전체 요약하기</button>
-                <button id="rp-character-baseline-delete" type="button" class="rp-character-wide-button rp-character-delete-button">전체 삭제</button>
+                <button id="rp-character-baseline-delete" type="button" class="rp-character-wide-button rp-character-delete-button">선택 버전 삭제</button>
             </div>
         </section>
 
@@ -10004,10 +11478,15 @@ function openBoosterPopup() {
         popupRoot
             .querySelector("#rp-character-baseline-generate")
             ?.addEventListener("click", () => {
-                const existing = getCurrentCharacterBaseline().baseline;
+                const current = getCurrentCharacterBaseline();
+                const existing = current.baseline;
                 if (
                     !existing ||
-                    window.confirm("고정하지 않은 캐릭터 기준을 새 요약으로 바꿀까요?")
+                    window.confirm(
+                        current.isOriginal
+                            ? "원본은 유지하고, 고정하지 않은 항목을 새로 요약한 갱신본을 만들까요?"
+                            : "선택한 갱신본의 고정하지 않은 항목을 새 요약으로 바꿀까요?"
+                    )
                 ) {
                     generateCharacterBaseline();
                 }
@@ -10016,11 +11495,40 @@ function openBoosterPopup() {
             .querySelector("#rp-character-baseline-delete")
             ?.addEventListener("click", deleteCharacterBaseline);
         popupRoot
+            .querySelector("#rp-character-baseline-version")
+            ?.addEventListener("change", (event) => {
+                selectCharacterBaselineVersion(event.currentTarget.value);
+            });
+        popupRoot
+            .querySelector("#rp-character-version-rename")
+            ?.addEventListener(
+                "click",
+                renameCurrentCharacterBaselineVersion
+            );
+        popupRoot
+            .querySelector("#rp-character-version-delete")
+            ?.addEventListener(
+                "click",
+                deleteCurrentCharacterBaselineVersion
+            );
+        popupRoot
+            .querySelector("#rp-character-revision-generate")
+            ?.addEventListener("click", () =>
+                generateCharacterBaselineRevisionProposal({ automatic: false })
+            );
+        popupRoot
+            .querySelector("#rp-character-revision-auto-generate")
+            ?.addEventListener("click", () =>
+                generateCharacterBaselineRevisionProposal({ automatic: true })
+            );
+        popupRoot
             .querySelector("#rp-character-card-reanalyze")
             ?.addEventListener("click", () => {
                 if (
                     window.confirm(
-                        "변경된 캐릭터 카드로 고정하지 않은 기준과 앵커를 다시 만들까요?"
+                        getCurrentCharacterBaseline().isOriginal
+                            ? "변경된 캐릭터 카드로 새 갱신본과 앵커를 만들까요? 원본은 유지됩니다."
+                            : "변경된 캐릭터 카드로 선택한 갱신본과 앵커를 다시 만들까요?"
                     )
                 ) {
                     generateCharacterBaseline();
@@ -10050,7 +11558,9 @@ function openBoosterPopup() {
                 if (hasUnsavedEdit) {
                     if (
                         !window.confirm(
-                            "저장하지 않은 편집 내용을 버리고 앵커를 다시 만들까요?"
+                            getCurrentCharacterBaseline().isOriginal
+                                ? "저장하지 않은 편집 내용을 버리고, 원본을 유지한 채 새 앵커 갱신본을 만들까요?"
+                                : "저장하지 않은 편집 내용을 버리고 앵커를 다시 만들까요?"
                         )
                     ) {
                         return;
@@ -10061,7 +11571,9 @@ function openBoosterPopup() {
                 }
                 if (
                     window.confirm(
-                        "현재 캐릭터 기준으로 캐릭터 앵커를 다시 만들까요?"
+                        getCurrentCharacterBaseline().isOriginal
+                            ? "원본은 유지하고, 새 앵커가 포함된 갱신본을 만들까요?"
+                            : "현재 캐릭터 기준으로 캐릭터 앵커를 다시 만들까요?"
                     )
                 ) {
                     regenerateCharacterBoostAnchor();
@@ -10078,6 +11590,23 @@ function openBoosterPopup() {
                 cancelPendingGenreCorrection("character")
             );
         popupRoot.addEventListener("click", (event) => {
+            const revisionApply = event.target.closest(
+                "#rp-character-revision-apply"
+            );
+            if (revisionApply) {
+                applyCharacterBaselineRevisionProposal();
+                return;
+            }
+            const revisionCancel = event.target.closest(
+                "#rp-character-revision-cancel"
+            );
+            if (revisionCancel) {
+                cancelCharacterBaselineRevisionProposal(
+                    getCurrentCharacterIdentity()?.key || "",
+                    String(getCurrentChatId())
+                );
+                return;
+            }
             const auditStatusItem = event.target.closest(
                 ".rp-audit-status-item[data-audit-scope][data-audit-code]"
             );
@@ -10123,10 +11652,15 @@ function openBoosterPopup() {
             if (characterRegenerateButton) {
                 const fieldId = characterRegenerateButton.dataset.fieldId;
                 const definition = getCharacterBaselineFieldDefinition(fieldId);
-                const field = getCurrentCharacterBaseline().baseline?.fields?.[fieldId];
+                const current = getCurrentCharacterBaseline();
+                const field = current.baseline?.fields?.[fieldId];
                 if (
                     !field?.text ||
-                    window.confirm(`${definition?.label || "이 항목"}을 새 요약으로 바꿀까요?`)
+                    window.confirm(
+                        current.isOriginal
+                            ? `원본은 유지하고 ${definition?.label || "이 항목"}을 새로 요약한 갱신본을 만들까요?`
+                            : `${definition?.label || "이 항목"}을 새 요약으로 바꿀까요?`
+                    )
                 ) {
                     generateCharacterBaseline(fieldId);
                 }
@@ -10464,8 +11998,8 @@ function addExtensionSettingsPanel() {
                         <div class="rp-settings-card-title">생성 설정</div>
                         <div class="rp-settings-field">
                             <label for="rp-plot-max-tokens">플롯 생성 토큰</label>
-                            <input id="rp-plot-max-tokens" type="number" min="${MIN_PLOT_MAX_TOKENS}" step="100" value="${settings.plotMaxTokens}">
-                            <small class="rp-settings-help">기본 ${DEFAULT_PLOT_MAX_TOKENS} · 결과가 실제로 잘린 경우에만 한 번 자동 확장합니다.</small>
+                            <input id="rp-plot-max-tokens" type="number" min="${MIN_PLOT_MAX_TOKENS}" max="${MAX_PLOT_MAX_TOKENS}" step="100" value="${settings.plotMaxTokens}">
+                            <small class="rp-settings-help">기본 ${DEFAULT_PLOT_MAX_TOKENS} · 설정 가능 범위 ${MIN_PLOT_MAX_TOKENS}~${MAX_PLOT_MAX_TOKENS} · 결과가 실제로 잘린 경우에만 한 번 자동 확장합니다.</small>
                         </div>
                         <div class="rp-settings-field">
                             <label for="rp-output-language">출력 언어</label>
@@ -10538,7 +12072,7 @@ function addExtensionSettingsPanel() {
             const value =
                 Number.isSafeInteger(roundedValue) &&
                 roundedValue >= MIN_PLOT_MAX_TOKENS
-                    ? roundedValue
+                    ? Math.min(roundedValue, MAX_PLOT_MAX_TOKENS)
                     : DEFAULT_PLOT_MAX_TOKENS;
             ensureModuleSettings().plotMaxTokens = value;
             event.currentTarget.value = String(value);
@@ -10630,7 +12164,7 @@ jQuery(async () => {
         if (event_types.MESSAGE_SENT) {
             eventSource.on(
                 event_types.MESSAGE_SENT,
-                clearAppliedGenreCorrectionOnUserTurn
+                handleGenreUserMessageSent
             );
         }
         if (event_types.MESSAGE_DELETED) {
