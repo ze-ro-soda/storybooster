@@ -924,6 +924,13 @@
     opacity: 0.45;
 }
 
+#rp-booster-popup .rp-character-revision-divider {
+    margin: 12px 0;
+    border: 0;
+    border-top: 1px dashed var(--sb-blue-border);
+    opacity: 0.8;
+}
+
 #rp-booster-popup .rp-character-delete-button {
     color: var(--sb-danger);
     opacity: 0.8;
