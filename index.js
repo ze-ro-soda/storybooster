@@ -191,6 +191,8 @@ function getErrorDiagnosticStage(error, fallback = "unknown") {
     if (code.includes("TRUNCATED") || code.includes("INCOMPLETE_JSON")) {
         return "response_completion";
     }
+    if (code.includes("EMPTY_STRUCTURED_OUTPUT")) return "response_empty";
+    if (code.includes("REASONING_ONLY_OUTPUT")) return "response_reasoning";
     if (
         code.includes("INCOMPLETE_RATINGS") ||
         code.includes("BASELINE_INCOMPLETE") ||
@@ -2558,6 +2560,8 @@ const CHARACTER_BOOST_CORRECTION_CODES = new Set([
 
 const THINKING_OUTPUT_ERROR =
     "선택한 thinking 모델이 결과를 일반 응답이 아닌 추론 영역에만 반환했습니다. SillyTavern을 업데이트하거나 추론 강도를 최소/끔으로 바꾼 뒤 다시 시도해 주세요.";
+const EMPTY_STRUCTURED_OUTPUT_ERROR =
+    "모델 또는 연결에서 빈 구조화 응답을 반환했습니다.";
 
 function clipTranscriptMessage(value, maxChars = 0) {
     const text = String(value || "").trim();
@@ -2831,7 +2835,7 @@ function normalizeGeneratedText(value) {
     return "";
 }
 
-function extractTextFromGenerationData(data) {
+function extractVisibleTextFromGenerationData(data) {
     if (typeof data === "string") return data.trim();
 
     const message = data?.choices?.[0]?.message;
@@ -2842,6 +2846,35 @@ function extractTextFromGenerationData(data) {
         data?.response?.candidates?.[0]?.content?.parts,
         data?.content,
         data?.response,
+    ];
+
+    for (const candidate of candidates) {
+        const text = normalizeGeneratedText(candidate);
+        if (text) return text;
+    }
+
+    const knownEnvelope =
+        data &&
+        typeof data === "object" &&
+        [
+            "choices",
+            "candidates",
+            "content",
+            "response",
+            "reasoning",
+            "reasoning_content",
+        ].some((key) => Object.hasOwn(data, key));
+    if (data && typeof data === "object" && !knownEnvelope) {
+        return normalizeGeneratedText(data);
+    }
+
+    return "";
+}
+
+function extractReasoningTextFromGenerationData(data) {
+    if (!data || typeof data !== "object") return "";
+    const message = data?.choices?.[0]?.message;
+    const candidates = [
         message?.reasoning,
         message?.reasoning_content,
         data?.reasoning,
@@ -2854,6 +2887,28 @@ function extractTextFromGenerationData(data) {
     }
 
     return "";
+}
+
+function extractTextFromGenerationData(data) {
+    const visibleText = extractVisibleTextFromGenerationData(data);
+    if (visibleText) return visibleText;
+    return extractReasoningTextFromGenerationData(data);
+}
+
+function assertStructuredOutputPresent(data, extractedText) {
+    const visibleText = extractVisibleTextFromGenerationData(data);
+    const reasoningText = extractReasoningTextFromGenerationData(data);
+    if (!visibleText && reasoningText) {
+        const error = new Error(THINKING_OUTPUT_ERROR);
+        error.code = "STORYBOOSTER_REASONING_ONLY_OUTPUT";
+        throw error;
+    }
+    if (!extractedText || extractedText === "{}") {
+        const error = new Error(EMPTY_STRUCTURED_OUTPUT_ERROR);
+        error.code = "STORYBOOSTER_EMPTY_STRUCTURED_OUTPUT";
+        throw error;
+    }
+
 }
 
 function isLengthLimitedGeneration(data) {
@@ -3082,7 +3137,7 @@ async function generateWithBackgroundProfile({
     );
 
     const text = extractTextFromGenerationData(result);
-    if (!text) throw new Error(THINKING_OUTPUT_ERROR);
+    assertStructuredOutputPresent(result, text);
     throwIfStructuredResultWasTruncated(result, text);
     throwIfStructuredJsonIsIncomplete(text);
     return text;
@@ -3172,7 +3227,7 @@ async function generateStructuredAnalysis({
                 rawText,
                 "generateRawData"
             );
-            if (!rawText) throw new Error(THINKING_OUTPUT_ERROR);
+            assertStructuredOutputPresent(rawData, rawText);
             throwIfStructuredResultWasTruncated(rawData, rawText);
             throwIfStructuredJsonIsIncomplete(rawText);
             return rawText;
@@ -3202,9 +3257,7 @@ async function generateStructuredAnalysis({
                 rawText,
                 "generateRaw"
             );
-            if (!rawText || rawText === "{}") {
-                throw new Error(THINKING_OUTPUT_ERROR);
-            }
+            assertStructuredOutputPresent(rawResult, rawText);
             throwIfStructuredJsonIsIncomplete(rawText);
             return rawText;
         }
@@ -3244,7 +3297,7 @@ async function generateStructuredAnalysis({
             text,
             "generateQuietPrompt"
         );
-        if (!text || text === "{}") throw new Error(THINKING_OUTPUT_ERROR);
+        assertStructuredOutputPresent(result, text);
         throwIfStructuredResultWasTruncated(result, text);
         throwIfStructuredJsonIsIncomplete(text);
         return text;
@@ -5566,7 +5619,6 @@ function parseCharacterBoostAnchorResult(result, outputLanguage) {
 }
 
 function shouldRetryCharacterAnchorWithoutSchema(error, connectionSnapshot) {
-    if (connectionSnapshot?.source !== "profile") return false;
     const code = String(error?.code || "").toUpperCase();
     if (
         [
@@ -5574,6 +5626,7 @@ function shouldRetryCharacterAnchorWithoutSchema(error, connectionSnapshot) {
             "PROFILE",
             "CONTEXT_CHANGED",
             "ABORT",
+            "REASONING_ONLY_OUTPUT",
         ].some((marker) => code.includes(marker))
     ) {
         return false;
@@ -5584,7 +5637,18 @@ function shouldRetryCharacterAnchorWithoutSchema(error, connectionSnapshot) {
     }
     const status = Number(error?.status || error?.statusCode) || 0;
     if (status && ![400, 415, 422].includes(status)) return false;
-    return true;
+    if ([400, 415, 422].includes(status)) return true;
+    if (
+        [
+            "EMPTY_STRUCTURED_OUTPUT",
+            "REQUIRED_FIELDS_MISSING",
+            "INVALID_FIELDS",
+            "INCOMPLETE_JSON",
+        ].some((marker) => code.includes(marker))
+    ) {
+        return true;
+    }
+    return connectionSnapshot?.source === "profile";
 }
 
 async function requestCharacterBoostAnchor({
@@ -5657,7 +5721,9 @@ async function requestCharacterBoostAnchor({
             ? "필수 앵커 필드 누락"
             : error?.invalidFields?.length
               ? "앵커 필드 길이 오류"
-              : "구조화 출력 요청 오류";
+              : error?.code === "STORYBOOSTER_EMPTY_STRUCTURED_OUTPUT"
+                ? "빈 구조화 응답"
+                : "구조화 출력 요청 오류";
         return runAttempt({ withoutSchema: true });
     }
 }
@@ -6820,41 +6886,13 @@ async function regenerateCharacterBoostAnchor() {
             operationContext.profileId
         );
         updateOperationDiagnosticConnection(anchorDiagnostic, connectionSnapshot);
-        const result = await generateStructuredAnalysis({
-            prompt: [
-                `Create a compact persistent roleplay anchor for ${identity.name} from the supplied baseline only. Do not invent or reinterpret traits.`,
-                getCharacterBoostAnchorRequirements(outputLanguage),
-                outputLanguage === "ko"
-                    ? 'Return JSON only: {"boost_anchor":"English character-specific anchor","boost_anchor_display":"한국어 표시용 앵커"}.'
-                    : 'Return JSON only: {"boost_anchor":"English character-specific anchor"}.',
-            ].join("\n"),
-            transcript: `<character_baseline>\n${serializeCharacterBaseline(
-                baseline
-            )}\n</character_baseline>`,
-            jsonSchema: {
-                name: "storybooster_character_boost_anchor",
-                strict: true,
-                schema: {
-                    type: "object",
-                    properties: {
-                        boost_anchor: { type: "string" },
-                        ...(outputLanguage === "ko"
-                            ? { boost_anchor_display: { type: "string" } }
-                            : {}),
-                    },
-                    required: [
-                        "boost_anchor",
-                        ...(outputLanguage === "ko"
-                            ? ["boost_anchor_display"]
-                            : []),
-                    ],
-                    additionalProperties: false,
-                },
-            },
-            responseLength: operationContext.responseLength,
+        const anchor = await requestCharacterBoostAnchor({
+            identity,
+            baseline,
+            outputLanguage,
             connectionSnapshot,
-            task: anchorDiagnostic.task,
             diagnostic: anchorDiagnostic,
+            responseLength: operationContext.responseLength,
         });
         if (!isBoosterFeatureEnabled("character")) {
             toastr?.info?.(
@@ -6862,27 +6900,8 @@ async function regenerateCharacterBoostAnchor() {
             );
             return;
         }
-        const parsed = extractJsonObject(
-            result,
-            "Character boost anchor returned no JSON object."
-        );
-        const boostAnchor = String(parsed.boost_anchor || "")
-            .trim()
-            .slice(0, CHARACTER_BOOST_ANCHOR_MAX_CHARS);
-        if (boostAnchor.length < 30) {
-            throw new Error("캐릭터 앵커가 지나치게 짧습니다.");
-        }
-        const boostAnchorDisplay =
-            outputLanguage === "ko"
-                ? String(parsed.boost_anchor_display || "")
-                      .trim()
-                      .slice(0, CHARACTER_BOOST_ANCHOR_MAX_CHARS)
-                : boostAnchor;
-        if (outputLanguage === "ko" && boostAnchorDisplay.length < 15) {
-            throw new Error("한국어 표시용 캐릭터 앵커가 지나치게 짧습니다.");
-        }
-        baseline.boostAnchor = boostAnchor;
-        baseline.boostAnchorDisplay = boostAnchorDisplay;
+        baseline.boostAnchor = anchor.boostAnchor;
+        baseline.boostAnchorDisplay = anchor.boostAnchorDisplay;
         baseline.boostAnchorDisplayLanguage = outputLanguage;
         baseline.boostAnchorUpdatedAt = Date.now();
         baseline.boostAnchorNeedsRefresh = false;
