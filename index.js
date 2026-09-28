@@ -28,7 +28,7 @@ import {
 } from "../../../../script.js";
 
 const MODULE_NAME = "rp-genre-plot-booster";
-const STORYBOOSTER_VERSION = "1.5.4";
+const STORYBOOSTER_VERSION = "1.5.5";
 const GENRE_PROMPT_KEY = "rp_genre_boost";
 const PLOT_PROMPT_KEY = "rp_plot_trigger";
 const DEFAULT_AUDIT_INTERVAL = 10;
@@ -3409,6 +3409,128 @@ async function generateStructuredAnalysis({
     }
 }
 
+function shouldRetryStructuredJsonCompatibility(error, connectionSnapshot) {
+    const code = String(error?.code || "").toUpperCase();
+    if (
+        [
+            "TIMEOUT",
+            "PROFILE",
+            "CONTEXT_CHANGED",
+            "ABORT",
+            "REASONING_ONLY_OUTPUT",
+        ].some((marker) => code.includes(marker))
+    ) {
+        return false;
+    }
+    const message = String(error?.message || "");
+    if (/unauthorized|forbidden|invalid api key|authentication/i.test(message)) {
+        return false;
+    }
+    const status = Number(error?.status || error?.statusCode) || 0;
+    if (status && ![400, 415, 422].includes(status)) return false;
+    if ([400, 415, 422].includes(status)) return true;
+    if (
+        [
+            "EMPTY_STRUCTURED_OUTPUT",
+            "INCOMPLETE_JSON",
+            "INCOMPLETE_RATINGS",
+            "BASELINE_INCOMPLETE",
+            "REQUIRED_FIELDS_MISSING",
+            "INVALID_FIELDS",
+        ].some((marker) => code.includes(marker))
+    ) {
+        return true;
+    }
+    if (error instanceof SyntaxError) return true;
+    if (
+        /no json|returned no|missing|required field|필수|누락|지나치게 짧/i.test(
+            message
+        )
+    ) {
+        return true;
+    }
+    return connectionSnapshot?.source === "profile";
+}
+
+function getStructuredJsonCompatibilityReason(error) {
+    if (error?.missingFields?.length) return "필수 응답 필드 누락";
+    if (error?.invalidFields?.length) return "응답 필드 형식 오류";
+    const code = String(error?.code || "").toUpperCase();
+    if (code.includes("EMPTY_STRUCTURED_OUTPUT")) return "빈 구조화 응답";
+    if (code.includes("INCOMPLETE_JSON")) return "불완전한 JSON 응답";
+    if (code.includes("INCOMPLETE_RATINGS")) return "진단 필드 누락";
+    if (code.includes("BASELINE_INCOMPLETE")) return "캐릭터 기준 필드 누락";
+    return "구조화 출력 요청 오류";
+}
+
+async function requestStructuredJsonWithCompatibility({
+    prompt,
+    transcript,
+    jsonSchema,
+    responseLength,
+    connectionSnapshot,
+    task,
+    diagnostic,
+    parseResult,
+    onFallback = null,
+}) {
+    const runAttempt = async ({ withoutSchema = false, repair = false } = {}) => {
+        const result = await generateStructuredAnalysis({
+            prompt: [
+                prompt,
+                withoutSchema
+                    ? "COMPATIBILITY FALLBACK: The provider did not return a usable structured result. Do not use Markdown or commentary. Return the complete non-empty JSON object directly, using every exact key and type already requested."
+                    : "",
+                repair
+                    ? "FINAL REPAIR: The previous schema-free JSON response was empty, incomplete, or invalid. Minimize internal reasoning and return one complete valid JSON object immediately."
+                    : "",
+            ]
+                .filter(Boolean)
+                .join("\n"),
+            transcript,
+            jsonSchema: withoutSchema ? null : jsonSchema,
+            responseLength: repair
+                ? Math.max(4800, Number(responseLength || 0) * 2)
+                : responseLength,
+            retryOnLength: false,
+            connectionSnapshot,
+            task,
+            diagnostic,
+            recordErrors: false,
+            validateJson: true,
+        });
+        return parseResult(result);
+    };
+
+    try {
+        return await runAttempt();
+    } catch (error) {
+        if (!shouldRetryStructuredJsonCompatibility(error, connectionSnapshot)) {
+            throw error;
+        }
+        diagnostic.retryCount += 1;
+        diagnostic.compatibilityFallback = true;
+        diagnostic.retryReason = getStructuredJsonCompatibilityReason(error);
+        onFallback?.({ repair: false, error });
+        try {
+            return await runAttempt({ withoutSchema: true });
+        } catch (fallbackError) {
+            if (
+                !shouldRetryStructuredJsonCompatibility(
+                    fallbackError,
+                    connectionSnapshot
+                )
+            ) {
+                throw fallbackError;
+            }
+            diagnostic.retryCount += 1;
+            diagnostic.retryReason = `${diagnostic.retryReason} · 일반 JSON 복구`;
+            onFallback?.({ repair: true, error: fallbackError });
+            return runAttempt({ withoutSchema: true, repair: true });
+        }
+    }
+}
+
 const GENRE_CORRECTION_LABELS = Object.freeze({
     primary_genre: "주 장르 정체성",
     genre_expression: "장르 표현",
@@ -5065,7 +5187,7 @@ async function runGenreDriftAudit(
         );
         auditDiagnostic.responseLength = operationContext.responseLength;
         updateOperationDiagnosticConnection(auditDiagnostic, connectionSnapshot);
-        let result = await generateStructuredAnalysis({
+        const auditResult = await requestStructuredJsonWithCompatibility({
             prompt: auditPrompt,
             transcript: auditTranscript,
             jsonSchema: auditJsonSchema,
@@ -5073,52 +5195,22 @@ async function runGenreDriftAudit(
             connectionSnapshot,
             task: auditDiagnostic.task,
             diagnostic: auditDiagnostic,
-        });
-        let auditResult;
-        try {
-            auditResult = parseGenreAuditResult(
-                result,
-                Boolean(selection.supportGenre),
-                reviewedResponses,
-                scope,
-                auditOutputLanguage
-            );
-        } catch (error) {
-            if (error?.code !== "STORYBOOSTER_INCOMPLETE_RATINGS") {
-                throw error;
-            }
-            console.warn(
-                `[${MODULE_NAME}] ${auditLabel} 진단 형식이 불완전해 한 번 다시 요청합니다.`,
-                error?.missingFields || []
-            );
-            if (isOperationContextCurrentChat(operationContext)) {
+            parseResult: (result) =>
+                parseGenreAuditResult(
+                    result,
+                    Boolean(selection.supportGenre),
+                    reviewedResponses,
+                    scope,
+                    auditOutputLanguage
+                ),
+            onFallback: () => {
+                if (!isOperationContextCurrentChat(operationContext)) return;
                 showGenreAuditToast(
                     "info",
-                    `🔄 ${auditLabel} 진단 형식을 보정해 한 번 다시 확인하고 있어요…`
+                    `🔄 ${auditLabel} 진단 형식을 보정해 다시 확인하고 있어요…`
                 );
-            }
-            auditDiagnostic.retryCount += 1;
-            result = await generateStructuredAnalysis({
-                prompt: [
-                    auditPrompt,
-                    "RETRY REQUIREMENT: The previous result omitted or mistyped one or more required JSON fields. Do not write a prose analysis or place the result only in reasoning. Emit the complete required JSON object in the final answer immediately, with every exact key and type.",
-                ].join("\n"),
-                transcript: auditTranscript,
-                jsonSchema: auditJsonSchema,
-                responseLength: Math.max(3200, operationContext.responseLength),
-                retryOnLength: false,
-                connectionSnapshot,
-                task: auditDiagnostic.task,
-                diagnostic: auditDiagnostic,
-            });
-            auditResult = parseGenreAuditResult(
-                result,
-                Boolean(selection.supportGenre),
-                reviewedResponses,
-                scope,
-                auditOutputLanguage
-            );
-        }
+            },
+        });
         const {
             ratings,
             correctionCodes,
@@ -5954,7 +6046,7 @@ async function generateCharacterBaselineRevisionProposal({ automatic = false } =
                 { type: "string" },
             ])
         );
-        const result = await generateStructuredAnalysis({
+        const normalized = await requestStructuredJsonWithCompatibility({
             prompt: resolveRoleMacrosForDisplay(
                 buildCharacterBaselineRevisionPrompt(
                     baseline,
@@ -6031,15 +6123,28 @@ async function generateCharacterBaselineRevisionProposal({ automatic = false } =
             connectionSnapshot,
             task: diagnostic.task,
             diagnostic,
+            parseResult: (result) => {
+                try {
+                    return normalizeCharacterBaselineRevisionPayload(
+                        extractJsonObject(
+                            result,
+                            "Character baseline revision returned no JSON object."
+                        ),
+                        baseline
+                    );
+                } catch (error) {
+                    if (!error.code) {
+                        error.code = "STORYBOOSTER_INVALID_FIELDS";
+                    }
+                    throw error;
+                }
+            },
+            onFallback: () =>
+                toastr?.info?.(
+                    "캐릭터 갱신안 응답 형식을 보정해 다시 확인하고 있어요…"
+                ),
         });
         if (!isBoosterFeatureEnabled("character")) return;
-        const normalized = normalizeCharacterBaselineRevisionPayload(
-            extractJsonObject(
-                result,
-                "Character baseline revision returned no JSON object."
-            ),
-            baseline
-        );
         if (!normalized.changedFields.length) {
             characterBaselineRevisionProposals.delete(
                 getCharacterRevisionProposalKey(identity.key, chatId)
@@ -6380,74 +6485,48 @@ async function generateCharacterBaseline(fieldId = null) {
                     additionalProperties: false,
                 },
             };
-        const requestBaseline = (prompt, retryOnLength = true) =>
-            generateStructuredAnalysis({
-                prompt,
-                transcript: baselineTranscript,
-                jsonSchema: baselineJsonSchema,
-                responseLength: operationContext.responseLength,
-                retryOnLength,
-                connectionSnapshot,
-                task: baselineDiagnostic.task,
-                diagnostic: baselineDiagnostic,
-            });
-
-        let result = await requestBaseline(baselinePrompt);
-        let parsed = normalizeCharacterBaselineGenerationPayload(
-            extractJsonObject(
-                result,
-                "Character baseline returned no JSON object."
-            ),
-            targetFields
-        );
-        let formatIssues = getCharacterBaselineGenerationIssues(
-            parsed,
-            targetFields,
-            {
-                includeBoostAnchor: !requestedField,
-                outputLanguage,
-            }
-        );
-        if (formatIssues.length) {
-            toastr?.info?.(
-                "캐릭터 기준 형식이 불완전해 한 번 다시 요청하고 있어요…"
-            );
-            baselineDiagnostic.retryCount += 1;
-            result = await requestBaseline(
-                [
-                    baselinePrompt,
-                    `FORMAT RETRY: The previous response omitted or shortened these required items: ${formatIssues.join(
-                        ", "
-                    )}. Return the complete exact JSON shape now. Put every requested character field inside the fields object and include every required anchor field. Do not omit, rename, or abbreviate any key.`,
-                ].join("\n"),
-                false
-            );
-            parsed = normalizeCharacterBaselineGenerationPayload(
-                extractJsonObject(
-                    result,
-                    "Character baseline returned no JSON object."
-                ),
-                targetFields
-            );
-            formatIssues = getCharacterBaselineGenerationIssues(
-                parsed,
-                targetFields,
-                {
-                    includeBoostAnchor: !requestedField,
-                    outputLanguage,
+        const parsed = await requestStructuredJsonWithCompatibility({
+            prompt: baselinePrompt,
+            transcript: baselineTranscript,
+            jsonSchema: baselineJsonSchema,
+            responseLength: operationContext.responseLength,
+            connectionSnapshot,
+            task: baselineDiagnostic.task,
+            diagnostic: baselineDiagnostic,
+            parseResult: (result) => {
+                const normalized = normalizeCharacterBaselineGenerationPayload(
+                    extractJsonObject(
+                        result,
+                        "Character baseline returned no JSON object."
+                    ),
+                    targetFields
+                );
+                const formatIssues = getCharacterBaselineGenerationIssues(
+                    normalized,
+                    targetFields,
+                    {
+                        includeBoostAnchor: !requestedField,
+                        outputLanguage,
+                    }
+                );
+                if (formatIssues.length) {
+                    const formatError = new Error(
+                        `캐릭터 기준 응답에 필수 항목이 누락되었습니다: ${formatIssues.join(
+                            ", "
+                        )}`
+                    );
+                    formatError.code =
+                        "STORYBOOSTER_CHARACTER_BASELINE_INCOMPLETE";
+                    formatError.missingFields = [...formatIssues];
+                    throw formatError;
                 }
-            );
-        }
-        if (formatIssues.length) {
-            const formatError = new Error(
-                `캐릭터 기준 응답에 필수 항목이 누락되었습니다: ${formatIssues.join(
-                    ", "
-                )}`
-            );
-            formatError.code = "STORYBOOSTER_CHARACTER_BASELINE_INCOMPLETE";
-            formatError.missingFields = [...formatIssues];
-            throw formatError;
-        }
+                return normalized;
+            },
+            onFallback: () =>
+                toastr?.info?.(
+                    "캐릭터 기준 응답 형식을 보정해 다시 요청하고 있어요…"
+                ),
+        });
         if (!isBoosterFeatureEnabled("character")) {
             toastr?.info?.(
                 "캐릭터 부스터가 꺼져 있어 생성 결과를 저장하지 않았어요."
@@ -6846,43 +6925,58 @@ async function convertCharacterAnchorDisplayToEnglish(displayText) {
         anchorConversionDiagnostic,
         connectionSnapshot
     );
-    const result = await generateStructuredAnalysis({
-        prompt: [
-            "Convert the supplied user-edited Korean character anchor into a concise English roleplay instruction.",
-            "Preserve every character-specific trait, tension, value, boundary, motive, speech pattern, and relationship response. Do not add, soften, intensify, interpret, or omit content.",
-            `Use complete grammatical English and stay within ${CHARACTER_BOOST_ANCHOR_MAX_CHARS} characters.`,
-            'Return JSON only: {"boost_anchor":"English character-specific anchor"}.',
-        ].join("\n"),
-        transcript: `<display_anchor>\n${String(displayText || "").slice(
-            0,
-            CHARACTER_BOOST_ANCHOR_MAX_CHARS
-        )}\n</display_anchor>`,
-        jsonSchema: {
-            name: "storybooster_character_anchor_conversion",
-            strict: true,
-            schema: {
-                type: "object",
-                properties: { boost_anchor: { type: "string" } },
-                required: ["boost_anchor"],
-                additionalProperties: false,
+    try {
+        return await requestStructuredJsonWithCompatibility({
+            prompt: [
+                "Convert the supplied user-edited Korean character anchor into a concise English roleplay instruction.",
+                "Preserve every character-specific trait, tension, value, boundary, motive, speech pattern, and relationship response. Do not add, soften, intensify, interpret, or omit content.",
+                `Use complete grammatical English and stay within ${CHARACTER_BOOST_ANCHOR_MAX_CHARS} characters.`,
+                'Return JSON only: {"boost_anchor":"English character-specific anchor"}.',
+            ].join("\n"),
+            transcript: `<display_anchor>\n${String(displayText || "").slice(
+                0,
+                CHARACTER_BOOST_ANCHOR_MAX_CHARS
+            )}\n</display_anchor>`,
+            jsonSchema: {
+                name: "storybooster_character_anchor_conversion",
+                strict: true,
+                schema: {
+                    type: "object",
+                    properties: { boost_anchor: { type: "string" } },
+                    required: ["boost_anchor"],
+                    additionalProperties: false,
+                },
             },
-        },
-        responseLength: operationContext.responseLength,
-        connectionSnapshot,
-        task: anchorConversionDiagnostic.task,
-        diagnostic: anchorConversionDiagnostic,
-    });
-    const parsed = extractJsonObject(
-        result,
-        "Character anchor conversion returned no JSON object."
-    );
-    const translated = String(parsed.boost_anchor || "")
-        .trim()
-        .slice(0, CHARACTER_BOOST_ANCHOR_MAX_CHARS);
-    if (translated.length < 15) {
-        throw new Error("영문 주입용 앵커가 지나치게 짧습니다.");
+            responseLength: operationContext.responseLength,
+            connectionSnapshot,
+            task: anchorConversionDiagnostic.task,
+            diagnostic: anchorConversionDiagnostic,
+            parseResult: (result) => {
+                const parsed = extractJsonObject(
+                    result,
+                    "Character anchor conversion returned no JSON object."
+                );
+                const text = String(parsed.boost_anchor || "")
+                    .trim()
+                    .slice(0, CHARACTER_BOOST_ANCHOR_MAX_CHARS);
+                if (text.length < 15) {
+                    const error = new Error(
+                        "영문 주입용 앵커가 지나치게 짧습니다."
+                    );
+                    error.code = "STORYBOOSTER_INVALID_FIELDS";
+                    error.invalidFields = ["boost_anchor"];
+                    throw error;
+                }
+                return text;
+            },
+        });
+    } catch (error) {
+        recordStoryBoosterError(error, {
+            task: anchorConversionDiagnostic.task,
+            diagnostic: anchorConversionDiagnostic,
+        });
+        throw error;
     }
-    return translated;
 }
 
 function setCharacterBoostAnchorEditMode(editing) {
@@ -8902,11 +8996,107 @@ function buildEventGenerationPrompt(
             ? "Before returning the candidate, silently ask whether it feels coherent, useful, tasteful, foreshadowed, or like a familiar plot device. If so, discard it and choose something stranger. Verify only that it is a concrete in-world occurrence, contains no metagaming, and leaves {{user}}'s response open. Output only the candidate, not the check."
             : "Before returning the candidate, silently verify that its central development belongs more clearly to the selected category than to any other built-in category, is grounded in the supplied roleplay, and leaves a usable next step. If another category fits better, rewrite the candidate instead of relabeling it. Output only the candidate, not the check.",
         getPlotOutputInstruction(outputLanguage),
-        'Return exactly one JSON object: {"event":"event text"}.',
-        "Do not output a title, number, category label, Markdown fence, or commentary outside the JSON.",
     ]
         .filter(Boolean)
         .join("\n");
+}
+
+function extractTaggedPlotEventResult(result) {
+    const text = extractTextFromGenerationData(result);
+    const completeMatch = text.match(
+        /<plot_event\b[^>]*>([\s\S]*?)<\/plot_event>/i
+    );
+    if (completeMatch) return String(completeMatch[1] || "").trim();
+    if (/<plot_event\b[^>]*>/i.test(text)) {
+        const error = new Error(
+            "플롯 태그 응답이 끝나기 전에 중단되었습니다."
+        );
+        error.code = "STORYBOOSTER_INCOMPLETE_TAGGED_OUTPUT";
+        error.invalidFields = ["event"];
+        throw error;
+    }
+    return "";
+}
+
+function parsePlotEventResult(result, { allowTagged = false } = {}) {
+    let eventText = "";
+    try {
+        const parsed = extractJsonObject(
+            result,
+            "AI가 사건 후보 JSON을 반환하지 않았습니다."
+        );
+        eventText = String(parsed?.event ?? "").trim();
+    } catch (jsonError) {
+        if (!allowTagged) throw jsonError;
+        eventText = extractTaggedPlotEventResult(result);
+    }
+    if (!eventText) {
+        const error = new Error("AI가 빈 사건 후보를 반환했습니다.");
+        error.code = "STORYBOOSTER_REQUIRED_FIELDS_MISSING";
+        error.missingFields = ["event"];
+        throw error;
+    }
+    return eventText;
+}
+
+function shouldRetryPlotEventWithoutSchema(error, connectionSnapshot) {
+    const code = String(error?.code || "").toUpperCase();
+    if (
+        [
+            "TIMEOUT",
+            "PROFILE",
+            "CONTEXT_CHANGED",
+            "ABORT",
+            "REASONING_ONLY_OUTPUT",
+        ].some((marker) => code.includes(marker))
+    ) {
+        return false;
+    }
+    const message = String(error?.message || "");
+    if (/unauthorized|forbidden|invalid api key|authentication/i.test(message)) {
+        return false;
+    }
+    const status = Number(error?.status || error?.statusCode) || 0;
+    if (status && ![400, 415, 422].includes(status)) return false;
+    if ([400, 415, 422].includes(status)) return true;
+    if (
+        [
+            "EMPTY_STRUCTURED_OUTPUT",
+            "REQUIRED_FIELDS_MISSING",
+            "INVALID_FIELDS",
+            "INCOMPLETE_JSON",
+        ].some((marker) => code.includes(marker))
+    ) {
+        return true;
+    }
+    return connectionSnapshot?.source === "profile";
+}
+
+function shouldRetryTaggedPlotEvent(error) {
+    const code = String(error?.code || "").toUpperCase();
+    if (
+        [
+            "TIMEOUT",
+            "PROFILE",
+            "CONTEXT_CHANGED",
+            "ABORT",
+            "REASONING_ONLY_OUTPUT",
+        ].some((marker) => code.includes(marker))
+    ) {
+        return false;
+    }
+    const message = String(error?.message || "");
+    if (/unauthorized|forbidden|invalid api key|authentication/i.test(message)) {
+        return false;
+    }
+    const status = Number(error?.status || error?.statusCode) || 0;
+    if (status) return false;
+    return [
+        "EMPTY_STRUCTURED_OUTPUT",
+        "INCOMPLETE_TAGGED_OUTPUT",
+        "REQUIRED_FIELDS_MISSING",
+        "INVALID_FIELDS",
+    ].some((marker) => code.includes(marker));
 }
 
 async function generateEventCandidate(operation = "generate", options = {}) {
@@ -9069,34 +9259,88 @@ async function generateEventCandidate(operation = "generate", options = {}) {
                 additionalProperties: false,
             },
         };
-        const requestPlotCandidate = (extraRequirement = "") =>
-            generateStructuredAnalysis({
-                prompt: [plotPrompt, extraRequirement].filter(Boolean).join("\n"),
-                transcript: plotTranscript,
-                jsonSchema: plotJsonSchema,
-                // Use the visible setting for the first attempt. A confirmed
-                // length truncation receives one larger automatic retry.
-                responseLength: plotTokenBudget,
-                connectionSnapshot,
-                task: plotDiagnostic.task,
-                diagnostic: plotDiagnostic,
-            });
+        const plotJsonOutputInstruction = [
+            'Return exactly one JSON object: {"event":"event text"}.',
+            "Do not output a title, number, category label, Markdown fence, or commentary outside the JSON.",
+        ].join("\n");
+        const plotTaggedOutputInstruction = [
+            "COMPATIBILITY FALLBACK: Ignore any earlier JSON formatting instruction. Do not return JSON, Markdown, a title, a number, a category label, or commentary.",
+            "Return exactly <plot_event>event text</plot_event> and nothing outside the tag.",
+            "Close the tag completely and keep the whole event inside it.",
+        ].join("\n");
+        const requestPlotCandidate = async (extraRequirement = "") => {
+            const runAttempt = async ({ tagged = false, repair = false } = {}) => {
+                const result = await generateStructuredAnalysis({
+                    prompt: [
+                        plotPrompt,
+                        extraRequirement,
+                        tagged
+                            ? plotTaggedOutputInstruction
+                            : plotJsonOutputInstruction,
+                        repair
+                            ? "FINAL REPAIR: The previous tagged response was empty, incomplete, or invalid. Return one complete non-empty plot_event tag immediately."
+                            : "",
+                    ]
+                        .filter(Boolean)
+                        .join("\n"),
+                    transcript: plotTranscript,
+                    jsonSchema: tagged ? null : plotJsonSchema,
+                    responseLength: repair
+                        ? Math.max(2400, plotTokenBudget * 2)
+                        : plotTokenBudget,
+                    retryOnLength: false,
+                    connectionSnapshot,
+                    task: plotDiagnostic.task,
+                    diagnostic: plotDiagnostic,
+                    recordErrors: false,
+                    validateJson: !tagged,
+                });
+                return parsePlotEventResult(result, {
+                    allowTagged: tagged,
+                });
+            };
 
-        let result = await requestPlotCandidate();
-        let parsed = extractJsonObject(
-            result,
-            "AI가 사건 후보 JSON을 반환하지 않았습니다."
-        );
-        let eventText = String(parsed.event ?? "").trim();
+            try {
+                return await runAttempt();
+            } catch (error) {
+                if (
+                    !shouldRetryPlotEventWithoutSchema(
+                        error,
+                        connectionSnapshot
+                    )
+                ) {
+                    throw error;
+                }
+                plotDiagnostic.retryCount += 1;
+                plotDiagnostic.compatibilityFallback = true;
+                plotDiagnostic.retryReason = error?.missingFields?.length
+                    ? "필수 사건 필드 누락"
+                    : error?.invalidFields?.length
+                      ? "사건 필드 오류"
+                      : error?.code === "STORYBOOSTER_EMPTY_STRUCTURED_OUTPUT"
+                        ? "빈 구조화 응답"
+                        : error?.code === "STORYBOOSTER_INCOMPLETE_JSON"
+                          ? "불완전한 JSON 응답"
+                          : "구조화 출력 요청 오류";
+                try {
+                    return await runAttempt({ tagged: true });
+                } catch (taggedError) {
+                    if (!shouldRetryTaggedPlotEvent(taggedError)) {
+                        throw taggedError;
+                    }
+                    plotDiagnostic.retryCount += 1;
+                    plotDiagnostic.retryReason = `${plotDiagnostic.retryReason} · 태그 응답 복구`;
+                    return runAttempt({ tagged: true, repair: true });
+                }
+            }
+        };
 
-        if (!eventText) {
-            throw new Error("AI가 빈 사건 후보를 반환했습니다.");
-        }
+        let eventText = await requestPlotCandidate();
         if (isRoleplayLikePlotCandidate(eventText)) {
             status.textContent =
                 "다음 플롯 자체가 바로 보이도록 형식을 다시 정리하고 있어요…";
             plotDiagnostic.retryCount += 1;
-            result = await requestPlotCandidate(
+            eventText = await requestPlotCandidate(
                 [
                     "FORMAT CORRECTION: The previous attempt resembled a performed roleplay response, a completed scene, or a meta description of an episode or scene.",
                     surpriseType === "crazy"
@@ -9108,14 +9352,8 @@ async function generateEventCandidate(operation = "generate", options = {}) {
                     "Do not use framing such as 'This episode...', 'This scene...', 'The plot...', '이 에피소드는', '이 장면은', '~한 에피소드입니다', or '~한 장면입니다'.",
                     "Do not include direct dialogue, quoted speech, internal monologue, first-person narration, roleplay actions, or scene prose.",
                     `<invalid_scene_output>${eventText}</invalid_scene_output>`,
-                    'Return exactly one JSON object: {"event":"corrected direct plot development"}.',
                 ].join("\n")
             );
-            parsed = extractJsonObject(
-                result,
-                "AI가 플롯 형식 보정 결과 JSON을 반환하지 않았습니다."
-            );
-            eventText = String(parsed.event ?? "").trim();
             if (!eventText || isRoleplayLikePlotCandidate(eventText)) {
                 throw new Error(
                     "모델이 직접적인 플롯 형식을 따르지 않았습니다. 다시 생성해 주세요."
@@ -9130,14 +9368,9 @@ async function generateEventCandidate(operation = "generate", options = {}) {
         ) {
             status.textContent = "설정한 출력 언어로 다시 맞추고 있어요…";
             plotDiagnostic.retryCount += 1;
-            result = await requestPlotCandidate(
+            eventText = await requestPlotCandidate(
                 `${getPlotOutputInstruction(plotOutputLanguage)} The previous attempt used the wrong output language. Follow this language requirement without exception.`
             );
-            parsed = extractJsonObject(
-                result,
-                "AI가 언어 보정 결과 JSON을 반환하지 않았습니다."
-            );
-            eventText = String(parsed.event ?? "").trim();
             if (
                 !eventText ||
                 isPlotOutputLanguageMismatch(
@@ -10909,7 +11142,12 @@ function parseGenreRecommendationResult(
     );
     const availableIds = new Set(availableGenres.map((genre) => genre.id));
     if (!availableIds.has(parsed.primaryId)) {
-        throw new Error("Recommended primary genre is not in the catalog.");
+        const error = new Error(
+            "Recommended primary genre is not in the catalog."
+        );
+        error.code = "STORYBOOSTER_INVALID_FIELDS";
+        error.invalidFields = ["primaryId"];
+        throw error;
     }
 
     const rawSupportId =
@@ -10970,7 +11208,7 @@ async function generateGenreRecommendation() {
             recommendationDiagnostic,
             connectionSnapshot
         );
-        const result = await generateStructuredAnalysis({
+        const recommendation = await requestStructuredJsonWithCompatibility({
             prompt: buildGenreRecommendationPrompt(
                 availableGenres,
                 outputLanguage
@@ -11010,12 +11248,13 @@ async function generateGenreRecommendation() {
             connectionSnapshot,
             task: recommendationDiagnostic.task,
             diagnostic: recommendationDiagnostic,
+            parseResult: (result) =>
+                parseGenreRecommendationResult(
+                    result,
+                    availableGenres,
+                    outputLanguage
+                ),
         });
-        const recommendation = parseGenreRecommendationResult(
-            result,
-            availableGenres,
-            outputLanguage
-        );
         if (!isBoosterFeatureEnabled("genre")) {
             toastr?.info?.(
                 "장르 부스터가 꺼져 있어 추천 결과를 적용하지 않았어요."
