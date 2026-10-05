@@ -1755,3 +1755,120 @@
         scroll-behavior: auto !important;
     }
 }
+
+/* Jev and automatic random box follow the existing StoryBooster cards. */
+#rp-booster-popup .rp-booster-heading-statuses {
+    display: flex; flex-wrap: wrap; justify-content: flex-end;
+    align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0;
+}
+#rp-booster-popup .rp-booster-heading-statuses .rp-booster-live-status { max-width: none; }
+#rp-booster-popup .rp-jev-badge[hidden] { display: none; }
+#rp-booster-popup .rp-automatic-plot-settings {
+    margin: 12px 0 16px; padding: 0; overflow: hidden;
+    border: 1px solid var(--sb-blue-border); border-radius: 14px;
+    background: var(--sb-blue-panel); color: inherit;
+}
+#rp-booster-popup .rp-automatic-plot-settings > summary {
+    padding: 14px 16px; cursor: pointer; font-weight: 750; line-height: 1.4;
+    color: inherit; background: var(--sb-blue-panel);
+}
+#rp-booster-popup .rp-automatic-plot-body { padding: 2px 16px 16px; }
+#rp-booster-popup .rp-automatic-plot-settings .rp-settings-check-row {
+    display: flex; align-items: flex-start; gap: 9px;
+    margin: 12px 0 8px; font-weight: 700; line-height: 1.45;
+}
+#rp-booster-popup .rp-automatic-plot-settings input[type="checkbox"] {
+    flex: 0 0 auto; width: auto; margin: 3px 0 0; accent-color: var(--sb-blue-strong);
+}
+#rp-booster-popup .rp-automatic-plot-settings .rp-settings-help {
+    display: block; margin: 8px 0; font-size: 0.88em; font-weight: 400; line-height: 1.6; opacity: 0.78;
+}
+#rp-booster-popup #rp-automatic-plot-status {
+    margin: 8px 0; padding: 0; font-size: 0.88em; line-height: 1.5; opacity: 0.78;
+}
+#rp-booster-popup #rp-automatic-plot-status[hidden] { display: none; }
+#rp-booster-popup #rp-automatic-plot-cancel {
+    display: flex; align-items: center; justify-content: center;
+    box-sizing: border-box; width: 100%; min-width: 0; margin: 12px 0 8px;
+    padding: 12px; border: 1px solid var(--sb-blue-border); border-radius: 11px;
+    background: var(--sb-blue-selected); color: inherit; box-shadow: none;
+    white-space: nowrap; word-break: keep-all; font-weight: 700;
+}
+#rp-storybooster-settings .rp-jev-key-field { margin: 12px 0 9px; }
+#rp-storybooster-settings #rp-jev-key {
+    width: 100%; min-width: 0; box-sizing: border-box; padding: 10px 11px;
+    border: 1px solid rgba(120, 167, 232, 0.48); border-radius: 9px;
+    background: rgba(255, 255, 255, 0.35); color: inherit;
+}
+#rp-storybooster-settings .rp-jev-key-actions {
+    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px;
+}
+#rp-storybooster-settings .rp-jev-key-actions .menu_button {
+    width: 100%; min-width: 0; margin: 0; padding: 10px 3px; box-sizing: border-box;
+    border: 1px solid rgba(120, 167, 232, 0.48); border-radius: 9px;
+    background: rgba(239, 246, 255, 0.62); color: inherit; box-shadow: none;
+    font-size: 0.84em; font-weight: 650; white-space: nowrap; word-break: keep-all;
+}
+#rp-storybooster-settings #rp-jev-status {
+    margin: 10px 0; padding: 8px 10px; border-radius: 9px;
+    background: rgba(226, 238, 255, 0.55); font-size: 0.88em; line-height: 1.5;
+}
+#rp-booster-popup #rp-automatic-plot-status,
+#rp-storybooster-settings #rp-jev-status { overflow-wrap: anywhere; }
+@media (max-width: 480px) {
+    #rp-booster-popup .rp-booster-section-heading { flex-wrap: wrap; }
+    #rp-booster-popup .rp-booster-heading-statuses { gap: 5px; }
+    #rp-booster-popup .rp-automatic-plot-body { padding: 2px 12px 12px; }
+}
+
+/* Compact diagnosis context and optional character backup tools. */
+#rp-booster-popup .rp-last-audit-meta { white-space: pre-line; overflow-wrap: anywhere; }
+#rp-booster-popup .rp-audit-comparison { font-size: .9em; color: #506b8e; margin: 8px 0 12px; }
+#rp-booster-popup .rp-audit-comparison[hidden] { display: none; }
+#rp-booster-popup .rp-baseline-backup { margin: 12px 0; padding: 12px 14px; border: 1px solid #c5d3e7; border-radius: 16px; background: #f5f8ff; }
+#rp-booster-popup .rp-baseline-backup > summary { cursor: pointer; font-weight: 700; }
+#rp-booster-popup .rp-baseline-backup p { font-size: .9em; line-height: 1.55; overflow-wrap: anywhere; }
+#rp-booster-popup .rp-baseline-backup .rp-character-version-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+#rp-booster-popup .rp-baseline-backup button { width: 100%; min-width: 0; min-height: 42px; white-space: normal; word-break: keep-all; }
+#rp-booster-popup .rp-baseline-backup button:disabled { opacity: .55; cursor: default; }
+#rp-booster-popup .rp-backup-entry { margin: 8px 0; border-top: 1px solid #dce5f2; padding: 8px 0; }
+#rp-booster-popup .rp-backup-entry summary { cursor: pointer; overflow-wrap: anywhere; }
+#rp-booster-popup .rp-backup-entry summary small { display: block; margin-left: 26px; color: #667488; }
+#rp-booster-popup .rp-backup-select { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; }
+#rp-booster-popup .rp-backup-select input { flex: 0 0 auto; width: auto; margin: 0; }
+#rp-booster-popup .rp-backup-content { white-space: pre-wrap; }
+
+/* Development controls are rendered only in the password-gated tool popup. */
+.rp-tool-popup .rp-debug-password { display: block; width: 100%; margin: 8px 0 12px; }
+.rp-tool-popup .rp-debug-unlock-error { color: #a84b4b; }
+.rp-tool-popup #rp-audit-run-status { font-size: 0.9em; overflow-wrap: anywhere; }
+
+/* Scoped tool styling also applies when the host places the popup in a dialog. */
+.rp-tool-popup.rp-debug-popup {
+    box-sizing: border-box; width: 100%; text-align: left;
+    padding: 18px; border: 1px solid rgba(120, 167, 232, .48); border-radius: 14px;
+    background: linear-gradient(145deg, rgba(229, 239, 253, .38), rgba(242, 247, 255, .2));
+}
+.rp-debug-popup h3 { text-align: left; color: #527cae; }
+.rp-debug-popup .rp-debug-unlock-form { display: grid; gap: 12px; min-width: 0; }
+.rp-debug-popup .rp-debug-unlock-form label { display: block; text-align: left; font-weight: 650; }
+.rp-debug-popup .rp-debug-password {
+    box-sizing: border-box; width: 100%; min-width: 0; margin: 8px 0 0;
+    padding: 11px 12px; border: 1px solid rgba(120, 167, 232, .48); border-radius: 10px;
+    background: rgba(255, 255, 255, .32); color: inherit;
+}
+.rp-debug-popup .menu_button {
+    display: flex; align-items: center; justify-content: center;
+    box-sizing: border-box; width: 100%; min-width: 0; min-height: 44px;
+    padding: 10px 14px; margin: 0; border: 1px solid rgba(120, 167, 232, .48);
+    border-radius: 10px; background: rgba(218, 233, 254, .4); color: inherit;
+    box-shadow: none; white-space: nowrap; word-break: keep-all;
+}
+.rp-debug-popup .rp-tool-popup-actions { display: grid; grid-template-columns: 1fr; }
+#rp-booster-popup .rp-recommend-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+#rp-booster-popup .rp-recommend-actions .menu_button {
+    box-sizing: border-box; min-width: 0; width: 100%; margin: 0; padding: 11px 8px;
+    border: 1px solid var(--sb-blue-border); border-radius: 10px; box-shadow: none;
+    background: var(--sb-blue-selected); color: inherit; white-space: nowrap; word-break: keep-all;
+}
+#rp-booster-popup #rp-automatic-plot-cancel[hidden] { display: none; }

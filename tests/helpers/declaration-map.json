@@ -1,0 +1,3397 @@
+[
+  {
+    "order": 0,
+    "owner": "core/sillytavern.js",
+    "names": [
+      "extension_settings",
+      "getContext"
+    ],
+    "kind": "ImportDeclaration",
+    "baselineHash": "3746684ec1517a52a90925933ad18a46c8fabb1130e7ea6b8790f749fb56fec7"
+  },
+  {
+    "order": 1,
+    "owner": "core/sillytavern.js",
+    "names": [
+      "saveSettingsDebounced",
+      "eventSource",
+      "event_types",
+      "setExtensionPrompt",
+      "extension_prompt_types",
+      "extension_prompt_roles"
+    ],
+    "kind": "ImportDeclaration",
+    "baselineHash": "666b46217d5ccc70b2bd2d12b9fef5bf9c3efc5aa1e0e693d17e796b5853437f"
+  },
+  {
+    "order": 2,
+    "owner": "core/constants.js",
+    "names": [
+      "MODULE_NAME"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "788a64437ed9114f0ce19f68984f9336ba1c3951b8283f6efadd01759dc0266c"
+  },
+  {
+    "order": 3,
+    "owner": "core/constants.js",
+    "names": [
+      "STORYBOOSTER_VERSION"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "c511266c883c1c6ca40b9ae4ee215d0f024a241521c33784cf9bb759471ec64c"
+  },
+  {
+    "order": 4,
+    "owner": "core/constants.js",
+    "names": [
+      "GENRE_PROMPT_KEY"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "04481cc5913ba07ac7fb72653f63ace347e5846d51e0583edf65c01ffd5c89f6"
+  },
+  {
+    "order": 5,
+    "owner": "core/constants.js",
+    "names": [
+      "PLOT_PROMPT_KEY"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "7e8bdcf39bcca019a0d935b500a089c6e079ce82ac58d00c8a2445e1a6a4071f"
+  },
+  {
+    "order": 6,
+    "owner": "core/constants.js",
+    "names": [
+      "DEFAULT_AUDIT_INTERVAL"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "78a1de8b76312c521c1359000a33b030a65a39c5ad7cbab2f55b9b0a9606a30d"
+  },
+  {
+    "order": 7,
+    "owner": "core/constants.js",
+    "names": [
+      "MIN_AUDIT_INTERVAL"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "e1a62aed1ec34198b3dc9051f7c3aae6db1c2986b905734b56d1cecbd40b7fdb"
+  },
+  {
+    "order": 8,
+    "owner": "core/constants.js",
+    "names": [
+      "MAX_AUDIT_INTERVAL"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "dd1d8783e0967da643f60f44f249f844719e6293d58df382f9a7efdadc81ea9b"
+  },
+  {
+    "order": 9,
+    "owner": "core/constants.js",
+    "names": [
+      "GENRE_AUDIT_RESPONSE_LIMIT"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "2c49933bc9df462b03cf69d5a931c40dea9623aa548e1567d9354e82164b30e9"
+  },
+  {
+    "order": 10,
+    "owner": "core/constants.js",
+    "names": [
+      "AUDIT_EVIDENCE_MAX_ITEMS"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "0d0672017eedb84b63c4a0a372ad9e1ae5252783047ce72565e1e4889460c9fa"
+  },
+  {
+    "order": 11,
+    "owner": "core/constants.js",
+    "names": [
+      "PRIMARY_GENRE_EVIDENCE_RATIO"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "ea70a7e180562779bc909467936657457455343847d5487d17761a547180e23e"
+  },
+  {
+    "order": 12,
+    "owner": "core/constants.js",
+    "names": [
+      "GENRE_EXPRESSION_EVIDENCE_MINIMUM"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "32bd70777bca65caa8a7ecab3b83413e84e832a30f24e2d8e0835ce56bd8a041"
+  },
+  {
+    "order": 13,
+    "owner": "core/constants.js",
+    "names": [
+      "SCENE_DENSITY_EVIDENCE_MINIMUM"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "cb91d6ccdc015a19904b29c3933ff464fc1f66e7fa630a0f3adaec14b18252c6"
+  },
+  {
+    "order": 14,
+    "owner": "core/constants.js",
+    "names": [
+      "SUPPORT_GENRE_EVIDENCE_MINIMUM"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "34f0c9b50a6babbda92eb9551cef3c3c5849e2696abed5b6a5439757056c05fe"
+  },
+  {
+    "order": 15,
+    "owner": "core/constants.js",
+    "names": [
+      "CHARACTER_CONSISTENCY_POSITIVE_EVIDENCE_MINIMUM"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "501709c36f0011307520e7e3af06b6a08185edeff58ea03ac6b8958e36242a26"
+  },
+  {
+    "order": 16,
+    "owner": "core/constants.js",
+    "names": [
+      "CHARACTER_INTERPRETATION_POSITIVE_EVIDENCE_MINIMUM"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "479e3171dc484e2aa6152ad793ac7857692efad3d7c7f5007be1f484f6327ca7"
+  },
+  {
+    "order": 17,
+    "owner": "core/constants.js",
+    "names": [
+      "CHARACTER_INTERPRETATION_FAILURE_EVIDENCE_MINIMUM"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "868cf1b357c497e10c530f573e6aaf65ddaf202bbdf702a5d5f97f13c85bec9f"
+  },
+  {
+    "order": 18,
+    "owner": "core/constants.js",
+    "names": [
+      "CHARACTER_AGENCY_EVIDENCE_MINIMUM"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "dfaa13876eab77bdc6b5a0101c45ee09f66d3c33f80986b5b10c14c3b582f8d7"
+  },
+  {
+    "order": 19,
+    "owner": "core/constants.js",
+    "names": [
+      "CHARACTER_RELATIONSHIP_EVIDENCE_MINIMUM"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "4577690135d35d0a05834b1df670d3154b1238c9068b1a03e44c886a9df78208"
+  },
+  {
+    "order": 20,
+    "owner": "core/constants.js",
+    "names": [
+      "CHARACTER_CONTINUITY_EVIDENCE_MINIMUM"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "27ff9b46c94dbf17e47adad53cd268e5ea31b2d4c760ab47ec235112cfea1852"
+  },
+  {
+    "order": 21,
+    "owner": "core/constants.js",
+    "names": [
+      "GENRE_FAILURE_EVIDENCE_MINIMUM"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "6e64cae343aeb0a13967d26ce3645515b43b3b5abd627d80870ad32b5c41ad97"
+  },
+  {
+    "order": 22,
+    "owner": "core/constants.js",
+    "names": [
+      "CHARACTER_FAILURE_EVIDENCE_MINIMUM"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "cb97f69082abef19239896ca2675463962f29aa1992010a69f7b319c5d3fc992"
+  },
+  {
+    "order": 23,
+    "owner": "core/constants.js",
+    "names": [
+      "RELATIONSHIP_FAILURE_EVIDENCE_MINIMUM"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "08f3dcd587a994715b405765e10e8b66d466f19004f40e86e986d4dd96550832"
+  },
+  {
+    "order": 24,
+    "owner": "core/constants.js",
+    "names": [
+      "CONTINUITY_FAILURE_EVIDENCE_MINIMUM"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "ea1ff8c05ebe0bf0178330ce66b93f852943e90da4ddadee9c3d02e3c4f2e9d8"
+  },
+  {
+    "order": 25,
+    "owner": "core/constants.js",
+    "names": [
+      "REPETITION_GENERAL_EVIDENCE_MINIMUM"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "78899c41826fb1bcd1ab93e36d47c9d7b2c311fd2f440d18a9eb375ad7ee41ab"
+  },
+  {
+    "order": 26,
+    "owner": "core/constants.js",
+    "names": [
+      "REPETITION_EXACT_EVIDENCE_MINIMUM"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "a1162f7971b86137ed9dc65700e9706520bceee889bdc6fa596171b234ae6462"
+  },
+  {
+    "order": 27,
+    "owner": "core/constants.js",
+    "names": [
+      "CHARACTER_BASELINE_FIELD_MAX_CHARS"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "3b125bf62b8bfb9499ddb7a77a02020ec18e66aa82de902b9ea7cbc6a8069c68"
+  },
+  {
+    "order": 28,
+    "owner": "core/constants.js",
+    "names": [
+      "CHARACTER_BOOST_ANCHOR_MAX_CHARS"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "ab92bd2ab24602efbbc4142e2097771cdd2c44ede141c0ee3816341652a1d031"
+  },
+  {
+    "order": 29,
+    "owner": "core/constants.js",
+    "names": [
+      "CHARACTER_CORRECTION_MAX_CHARS"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "de4138cb2e484b1dc5aa7c63d41c3f802b6d7488dbbd47f8c39990643109c32f"
+  },
+  {
+    "order": 30,
+    "owner": "core/constants.js",
+    "names": [
+      "CHARACTER_CORRECTION_MAX_WORDS"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "1f2e85dc6a3c2676197c2fea6dd6aec7afc8f8518d777c788868550e3cc3a5bb"
+  },
+  {
+    "order": 31,
+    "owner": "core/constants.js",
+    "names": [
+      "CHARACTER_BASELINE_AUTOSAVE_DELAY"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "9ad55b08581670afdc3c1d71e3bdb62ff449096d92ef8623f169758092c52b9e"
+  },
+  {
+    "order": 32,
+    "owner": "core/constants.js",
+    "names": [
+      "CHARACTER_CARD_INPUT_MAX_CHARS"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "8ba8699d0b600d6420451ba1a03609269d66a391c24d935cdca7b53dcbd13feb"
+  },
+  {
+    "order": 33,
+    "owner": "core/constants.js",
+    "names": [
+      "CHARACTER_REVISION_TRANSCRIPT_MAX_CHARS"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "b0d4da7fd8fa2b3e1f211314570caceb3e97819f5bbda41730eaff97fe7024c5"
+  },
+  {
+    "order": 34,
+    "owner": "core/constants.js",
+    "names": [
+      "CHARACTER_REVISION_ASSISTANT_REPLIES"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "190342998b673b9d78fe61c4d1e7690b2d41b58476da43dcbe0626e291011ac8"
+  },
+  {
+    "order": 35,
+    "owner": "core/constants.js",
+    "names": [
+      "CHARACTER_REVISION_NOTE_MAX_CHARS"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "60b6430de836e8baa603f937b95ce3739a1aa37337150706448d227067ccfa40"
+  },
+  {
+    "order": 36,
+    "owner": "core/constants.js",
+    "names": [
+      "CHARACTER_BASELINE_VERSION_LABEL_MAX_CHARS"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "5aa958ab4182531b22f454fb24ed6dbf43b7c607fe57329510387ab8fef4ee7b"
+  },
+  {
+    "order": 37,
+    "owner": "core/constants.js",
+    "names": [
+      "MAX_CHARACTER_BASELINE_VERSIONS"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "2b68f64d273e5e7fc2d26f8723c1dec3564cd2a099a35cc63fd57da65bd7163f"
+  },
+  {
+    "order": 38,
+    "owner": "core/constants.js",
+    "names": [
+      "DEFAULT_PLOT_MAX_TOKENS"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "010a2066ac515a18d20db24ac1c84553b9b0966bd82573dadd06829d393feccb"
+  },
+  {
+    "order": 39,
+    "owner": "core/constants.js",
+    "names": [
+      "MIN_PLOT_MAX_TOKENS"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "b84ae4cf77acd90887a896035183e6b3a2a0db8a3ded89d76fa200657b7bdebb"
+  },
+  {
+    "order": 40,
+    "owner": "core/constants.js",
+    "names": [
+      "MAX_PLOT_MAX_TOKENS"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "2b539b3acb866286548b9f6fbe6493223a8638ae37f9429080ae6e46ef5e859b"
+  },
+  {
+    "order": 41,
+    "owner": "core/constants.js",
+    "names": [
+      "MAX_PLOT_HISTORY"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "ea3502d75c9a0bd7557e0178db5d74d0702268463a3bcd549b504ef21e78bf72"
+  },
+  {
+    "order": 42,
+    "owner": "core/constants.js",
+    "names": [
+      "MAX_PLOT_GENERATION_ATTEMPTS"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "74f11993c1f98f78db3c444b9d591a37e0dae4bc706f2eb54d1e2780e4cb1aa3"
+  },
+  {
+    "order": 43,
+    "owner": "core/constants.js",
+    "names": [
+      "AUDIT_MESSAGE_MAX_CHARS"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "ebe4a9ec282a3c68b36fda14e01454ad973024298dc6cdf366ab0a347616b5c8"
+  },
+  {
+    "order": 44,
+    "owner": "core/constants.js",
+    "names": [
+      "PLOT_CONTEXT_MESSAGE_LIMIT"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "b739a0355ba23b8a2f29f4d2a3484b651b03bd2b645bcedeea828247916cb79a"
+  },
+  {
+    "order": 45,
+    "owner": "core/constants.js",
+    "names": [
+      "PLOT_MESSAGE_MAX_CHARS"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "05e0a6ab615c2a437b4c0359eb498be0327d65c9d95a5f21107c4238027aa4cb"
+  },
+  {
+    "order": 46,
+    "owner": "core/constants.js",
+    "names": [
+      "GENRE_RECOMMENDATION_MESSAGE_LIMIT"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "11b51d3be097cec4700f3abc81117c2218e9ad786352d1f20215c939372a8897"
+  },
+  {
+    "order": 47,
+    "owner": "core/constants.js",
+    "names": [
+      "GENRE_RECOMMENDATION_MESSAGE_MAX_CHARS"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "d14196de35016cdab41417eaac3153aa1ef9ca8b72f335fd96d4005a9ea5a518"
+  },
+  {
+    "order": 48,
+    "owner": "core/constants.js",
+    "names": [
+      "BACKGROUND_REQUEST_TIMEOUT_MS"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "b4e2a0027c3f40eaf488f2245c4b45e4467f4f47fdd8a86fad98c464aed2ad2a"
+  },
+  {
+    "order": 49,
+    "owner": "core/constants.js",
+    "names": [
+      "ERROR_LOG_STORAGE_KEY"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "1cc8b6fed72d764f143477a80c04b83e417460f8130ff5f4d9f8276f96c92b6c"
+  },
+  {
+    "order": 50,
+    "owner": "core/constants.js",
+    "names": [
+      "MAX_ERROR_LOG_ENTRIES"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "869b6822a7a463bf30c2d80eb90e2043178a49589bd6d0ec355eeafe5b64350d"
+  },
+  {
+    "order": 90,
+    "owner": "core/constants.js",
+    "names": [
+      "CHARACTER_BASELINE_FIELDS"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "c74cd93d992e077e69ba3d6446f69c45be3c982e5edfe3f7b8af93fa8df09cd5"
+  },
+  {
+    "order": 91,
+    "owner": "core/constants.js",
+    "names": [
+      "CHARACTER_BASELINE_FIELD_IDS"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "b8c9e6c7db351902b0f078d53e5dcf4b1af49f380ddafc560c51ca8f979667b5"
+  },
+  {
+    "order": 92,
+    "owner": "core/constants.js",
+    "names": [
+      "CHARACTER_BASELINE_FIELD_ID_SET"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "0a777202e8d2fc13c4074b3b10a01c1345896a2b2ca813134e9318631a401d74"
+  },
+  {
+    "order": 93,
+    "owner": "core/constants.js",
+    "names": [
+      "CHARACTER_BASELINE_CORRECTION_CODES"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "0f527ebd79f8244a99f370645a336e166b9f5929d6e9e3d362c3f55cb48e32b5"
+  },
+  {
+    "order": 94,
+    "owner": "core/constants.js",
+    "names": [
+      "CHARACTER_CORRECTION_FIELD_FALLBACKS"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "1103f27419a799e07a395ba03b4d9ae087522dd9464a69ddbb7bcd5592a3c3a7"
+  },
+  {
+    "order": 96,
+    "owner": "core/constants.js",
+    "names": [
+      "DEFAULT_GENRES"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "fa864ef6bdef81563eccf5a2cadda48066db81dbb85ddaef226bf4b0be2c25a7"
+  },
+  {
+    "order": 97,
+    "owner": "core/constants.js",
+    "names": [
+      "GENRE_GROUPS"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "09a8207e49462198528572f6dd6bd7fcc671fb2198a28d61311354a99f077716"
+  },
+  {
+    "order": 98,
+    "owner": "core/constants.js",
+    "names": [
+      "GENRE_PROFILES"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "4f97ac70ff0683581d0d081aafcfc2ab17c94eb657940f8d95b4ceccb8d2a513"
+  },
+  {
+    "order": 99,
+    "owner": "core/constants.js",
+    "names": [
+      "EVENT_CATEGORIES"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "74ea74a09da84432be9eb4247a7ae2f9bd3a786f835ac175f355b9bfbeaa4e6f"
+  },
+  {
+    "order": 100,
+    "owner": "core/constants.js",
+    "names": [
+      "EVENT_CATEGORY_DESCRIPTIONS"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "eda83dc8a1fc884d73026b45500311a15f0749a7e3f686d4ea5471e0ecb6ccf4"
+  },
+  {
+    "order": 101,
+    "owner": "core/constants.js",
+    "names": [
+      "EVENT_CATEGORY_GUIDANCE"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "72701e6dcc428edf6afcc850e10738bf23c4966fe5a69ab3d305b2c2896a01b3"
+  },
+  {
+    "order": 152,
+    "owner": "core/constants.js",
+    "names": [
+      "GENRE_AUDIT_CODES"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "ab1b98e1d5651777f3a77a8bac44a5f6bf1f24ef664604afdcf8ff0181c31881"
+  },
+  {
+    "order": 153,
+    "owner": "core/constants.js",
+    "names": [
+      "AUDIT_REASON_MAX_CHARS_KO"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "6e40b08ff325d5bc51ad14b76f496236b87d49efacd3f46af76888615a605f44"
+  },
+  {
+    "order": 154,
+    "owner": "core/constants.js",
+    "names": [
+      "AUDIT_REASON_MAX_CHARS_EN"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "0e31a3c8d8d5ec1f54cda80ac81e1769ef3e1f54e7ff9490608047cbdb25dde0"
+  },
+  {
+    "order": 155,
+    "owner": "core/constants.js",
+    "names": [
+      "AUDIT_REASON_MAX_SENTENCES"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "7d0e830f17ee349b23389bc6748567e41f56409be0cb10a246faecdf67328ec5"
+  },
+  {
+    "order": 156,
+    "owner": "core/constants.js",
+    "names": [
+      "AUDIT_REASON_SCHEMA_MAX_CHARS_KO"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "0a39b9ff7e86ab5424683b2de6b0f756e2b7e5198de9d00b183e78646e59d100"
+  },
+  {
+    "order": 157,
+    "owner": "core/constants.js",
+    "names": [
+      "AUDIT_REASON_SCHEMA_MAX_CHARS_EN"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "c3455a92df52d79bea5f23449d8ebaad0035a3f5d1f264e5d15f14342cc452bd"
+  },
+  {
+    "order": 158,
+    "owner": "core/constants.js",
+    "names": [
+      "AUDIT_REASON_DISPLAY_HARD_LIMIT"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "8ddd7fccae66f3d31197d60ad70b754ecbc7b2871ddaf5e7acdfb309b0567249"
+  },
+  {
+    "order": 159,
+    "owner": "core/constants.js",
+    "names": [
+      "AUDIT_RESPONSE_LENGTHS"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "40e17f47de590a57a91b8591ae2d878faa9f969ed99c1b0e74a7e3eccf2a4295"
+  },
+  {
+    "order": 160,
+    "owner": "core/constants.js",
+    "names": [
+      "GENRE_BOOST_CORRECTION_CODES"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "1e1827e0523ad4e54490a1a362def9d75fd9d1cc3ae76efff6219cc6a3a6dbc9"
+  },
+  {
+    "order": 161,
+    "owner": "core/constants.js",
+    "names": [
+      "CHARACTER_BOOST_CORRECTION_CODES"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "152b0c1be90366dea26df4c7e080c0af78e165382b5fed782fd0c690619e0cd1"
+  },
+  {
+    "order": 162,
+    "owner": "core/constants.js",
+    "names": [
+      "THINKING_OUTPUT_ERROR"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "7982e37a70f18df2b6aa6484253fa21aeb69c3c908dc32fd58661159cafba4cb"
+  },
+  {
+    "order": 163,
+    "owner": "core/constants.js",
+    "names": [
+      "EMPTY_STRUCTURED_OUTPUT_ERROR"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "c9127f778765b842fa4a7301f939f2ee9abbc53db5f67ec6f3d4745aa60c41fd"
+  },
+  {
+    "order": 192,
+    "owner": "core/constants.js",
+    "names": [
+      "GENRE_CORRECTION_LABELS"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "fbc4f3cdeb38765dd4634dd168b4093e7ff96e367a1dedb9a98a30bd1f3651c1"
+  },
+  {
+    "order": 193,
+    "owner": "core/constants.js",
+    "names": [
+      "GENRE_CORRECTION_MODULES"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "0f69dd6310c7972dc1dc57a6c880718c22fabbf87c99f0104a4df8dc11c13141"
+  },
+  {
+    "order": 194,
+    "owner": "core/constants.js",
+    "names": [
+      "GENRE_CORRECTION_DESCRIPTIONS"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "6544954f38087c2b8f88230753061886ebe340ad5d54d96d7db5f2c82fbdf8fe"
+  },
+  {
+    "order": 339,
+    "owner": "core/constants.js",
+    "names": [
+      "GENRE_AUDIT_DISPLAY_ITEMS"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "589fa670f4c9dcab469e316f8569c6a1f5d09fea5a72ecd299498f0836008813"
+  },
+  {
+    "order": 340,
+    "owner": "core/constants.js",
+    "names": [
+      "CHARACTER_AUDIT_DISPLAY_ITEMS"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "96573ccaab1a6de01117963bef871782e8372c176300140b6c883d99c65175e9"
+  },
+  {
+    "order": 361,
+    "owner": "core/constants.js",
+    "names": [
+      "GENRE_RECOMMENDATION_NO_SUPPORT_ID"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "21c41e094322f4d67d1a9a6a2ba39f2541f604db1957c112d5cad62c13a78430"
+  },
+  {
+    "order": 51,
+    "owner": "core/runtime.js",
+    "names": [
+      "activeBoosterPopupRoot"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "953ae6a0331eb72cce194d9ec21161ea29dd076bf08e19389306f5af4df3e36d"
+  },
+  {
+    "order": 52,
+    "owner": "core/runtime.js",
+    "names": [
+      "currentStoryInjectionText"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "0d5ba6f7cb075d81374d272d455f85bc874517abcc5bfb49b4dcd1200b80ee92"
+  },
+  {
+    "order": 53,
+    "owner": "core/runtime.js",
+    "names": [
+      "currentPlotInjectionText"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "c04ef07a35b749f81aa912ed9557a849b26aed4f64b4cde37822d8378a667252"
+  },
+  {
+    "order": 54,
+    "owner": "core/runtime.js",
+    "names": [
+      "recordedErrorObjects"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "f06dfb3088bb05b1a194594db82156477aaae44ad3b0b0e4840ae4c4e6d7c0cf"
+  },
+  {
+    "order": 55,
+    "owner": "core/runtime.js",
+    "names": [
+      "preparedModuleSettings"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "f5e5929aa38fd1aec5ae6f7137a941bf51a49087ed633c8a85fef8c10268cbbd"
+  },
+  {
+    "order": 56,
+    "owner": "core/runtime.js",
+    "names": [
+      "preparedChatStates"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "ca187040360abd2a26eab55087ae6b8391700b198e11be83e5f63a831c0fd401"
+  },
+  {
+    "order": 57,
+    "owner": "core/runtime.js",
+    "names": [
+      "preparedGenreAnchors"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "2c9351ccd6eb77dcddaf3ccdcd232afdf0998ea19a6e55187af23638b5831c9a"
+  },
+  {
+    "order": 58,
+    "owner": "core/runtime.js",
+    "names": [
+      "lastErrorLogHintAt"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "61844322abcfc4384463968f3d4be859efc5b3c21dde5941ccda8d45dc540b14"
+  },
+  {
+    "order": 195,
+    "owner": "core/runtime.js",
+    "names": [
+      "genreAuditPendingChats"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "b930e33145f78fcdce02c3cb3f9c2c1af99a186d1bd579da4fab143910cf408a"
+  },
+  {
+    "order": 213,
+    "owner": "core/runtime.js",
+    "names": [
+      "characterBaselinePendingTasks"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "1cf8ccdbf6d163997a63b0daefd7af3560588b21143fcc9f839c1429d99ca1c8"
+  },
+  {
+    "order": 214,
+    "owner": "core/runtime.js",
+    "names": [
+      "characterBaselineAutosaveTimers"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "ee29a155c1cbd04e4e7fd8d4ed5adfc536ec7adaad9f77e20eb18e65c17aef33"
+  },
+  {
+    "order": 215,
+    "owner": "core/runtime.js",
+    "names": [
+      "characterBaselineRevisionProposals"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "15e2f31198f60d50beb6cbd546556772223500d57ec16db75e7c2d5a9aeca3f6"
+  },
+  {
+    "order": 277,
+    "owner": "core/runtime.js",
+    "names": [
+      "plotPending"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "40329ec925edb56b633765d1d4645d740434499651323766b106481a0d1ceb7b"
+  },
+  {
+    "order": 278,
+    "owner": "core/runtime.js",
+    "names": [
+      "eventGenerationPendingTasks"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "278f385fd7e090511860efb0031d979ed185d7e9a36a01cc6d7d40f388b6f98a"
+  },
+  {
+    "order": 279,
+    "owner": "core/runtime.js",
+    "names": [
+      "plotModeDraftsByChat"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "4a25e50afabf33fa8a7a435df1ef13893a9fcf52a32f9ec0e062e8cba9c5531a"
+  },
+  {
+    "order": 338,
+    "owner": "core/runtime.js",
+    "names": [
+      "genreRecommendationPendingChats"
+    ],
+    "kind": "VariableDeclaration",
+    "baselineHash": "caf6d9a43715445f86f0abed14f8dde18add0b61e8331a98a3f981955ed91bb7"
+  },
+  {
+    "order": 59,
+    "owner": "core/dom.js",
+    "names": [
+      "getActiveBoosterPopupRoot"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "f0a1fbb496a4331ec79dd0e389e4feba1895145135e525675b8454fa1a8c3048"
+  },
+  {
+    "order": 60,
+    "owner": "core/dom.js",
+    "names": [
+      "getBoosterElement"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "b0d3e6e8c240e42bdc908571fb87940220b631704158b223b78e09fa709e818f"
+  },
+  {
+    "order": 61,
+    "owner": "core/dom.js",
+    "names": [
+      "getBoosterElements"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "824814f371fe37c92b9027420f617402746ede4aeab1c4d1d96170caf60f86c7"
+  },
+  {
+    "order": 331,
+    "owner": "core/dom.js",
+    "names": [
+      "escapeHtml"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "0f222165e56cdcdb8344655220b887049f49f47062e2fd02ddb93944d195c309"
+  },
+  {
+    "order": 62,
+    "owner": "core/diagnostics.js",
+    "names": [
+      "getDiagnosticSessionStorage"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "5a8107dd730052225b7b41e81e075c294fe25c4d1e2fb029523445282321a6ba"
+  },
+  {
+    "order": 63,
+    "owner": "core/diagnostics.js",
+    "names": [
+      "sanitizeDiagnosticText"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "bd3b6e29c1f66324cae1ab791ad4ca81d19da4c8ca480560e8bce225bab5b510"
+  },
+  {
+    "order": 64,
+    "owner": "core/diagnostics.js",
+    "names": [
+      "getSillyTavernDiagnosticVersion"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "c78e235bbe64bf70784da33f3341ada7f33431cb933ec9e46b3966593bd6aea0"
+  },
+  {
+    "order": 65,
+    "owner": "core/diagnostics.js",
+    "names": [
+      "getErrorDiagnosticStage"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "423a66959db5ed225d84f2cb53bfbb0e43bd288f3388f66112de82ca2a35b59e"
+  },
+  {
+    "order": 66,
+    "owner": "core/diagnostics.js",
+    "names": [
+      "getErrorDiagnosticLocation"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "03d1e8ac4e21796af2f3558410a0b95ceff22d86d984fbfb9cc0347964d51950"
+  },
+  {
+    "order": 67,
+    "owner": "core/diagnostics.js",
+    "names": [
+      "describeDiagnosticValue"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "baacd3dca55f12510c9fa79c97da0c872fafaaffbc1a42fa09269559db6c3689"
+  },
+  {
+    "order": 68,
+    "owner": "core/diagnostics.js",
+    "names": [
+      "getGenerationFinishReason"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "8fecaa69cbc0b9df831424ac4bd1e3760c043ffd82cae73a6e203f623ac45e7c"
+  },
+  {
+    "order": 69,
+    "owner": "core/diagnostics.js",
+    "names": [
+      "createOperationDiagnostic"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "eddf37d774e52ac093a9a08d41b0803ebb4aa797deb116a60b8b287b6b3d0a84"
+  },
+  {
+    "order": 70,
+    "owner": "core/diagnostics.js",
+    "names": [
+      "updateOperationDiagnosticInput"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "60f3ec43f0acfca1c56daf2972e0a580d54cc13044e10c49185e4709585b30ef"
+  },
+  {
+    "order": 71,
+    "owner": "core/diagnostics.js",
+    "names": [
+      "updateOperationDiagnosticConnection"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "0b512321da379b5556db32470e16d903bd4389e0169e64bc5d3f4e23c1961b14"
+  },
+  {
+    "order": 72,
+    "owner": "core/diagnostics.js",
+    "names": [
+      "captureOperationResponseDiagnostic"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "156ee069aae8e282d333dd3c97e027306436b650faf37b539d73428be5102532"
+  },
+  {
+    "order": 73,
+    "owner": "core/diagnostics.js",
+    "names": [
+      "readStoryBoosterErrorLog"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "b3337c7d9f466eb08aeabeb630f674cd0903c55a1c7eb9fb1cbc2475b04cc915"
+  },
+  {
+    "order": 74,
+    "owner": "core/diagnostics.js",
+    "names": [
+      "writeStoryBoosterErrorLog"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "556e96b9e61e8c08a075eb664e0c7d6453cb8e2aa6ca4de1a0c85c4b42d46b1f"
+  },
+  {
+    "order": 75,
+    "owner": "core/diagnostics.js",
+    "names": [
+      "refreshStoryBoosterErrorLogBadge"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "0312afff31300b6c54000ed67c70ab6698b166184514fcb02463288a2079d769"
+  },
+  {
+    "order": 76,
+    "owner": "core/diagnostics.js",
+    "names": [
+      "recordStoryBoosterError"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "04d7e5dfc05e1680eeb6899519d20ddf6a256940fe63eba177dddb8c989b0413"
+  },
+  {
+    "order": 77,
+    "owner": "core/diagnostics.js",
+    "names": [
+      "clearStoryBoosterErrorLog"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "2036a9ec8843a48a95a7621ca3c473178e0b67b85c6b58afb6b69b75b261534c"
+  },
+  {
+    "order": 78,
+    "owner": "core/diagnostics.js",
+    "names": [
+      "formatStoryBoosterErrorEntry"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "dbf03037c9f55e5fbc7fe38f367f365cb10c0692954ccac817ad0b6ed750e6db"
+  },
+  {
+    "order": 79,
+    "owner": "ui/tools.js",
+    "names": [
+      "buildStoryBoosterErrorReport"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "ef8507397c7448bd987b6a5eda5d10907d67cb03ff3c5a5b3607465e294e84c5"
+  },
+  {
+    "order": 80,
+    "owner": "ui/tools.js",
+    "names": [
+      "copyStoryBoosterText"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "c2f29ca147c6e400cd7d20b100413c8b76f8014707f0b6c9cf82229be9e05f14"
+  },
+  {
+    "order": 81,
+    "owner": "ui/tools.js",
+    "names": [
+      "callStoryBoosterToolPopup"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "2b80f79951f81148000772ae8dcb0465a56927a7248c16200b5e0f3d74638f9d"
+  },
+  {
+    "order": 82,
+    "owner": "ui/tools.js",
+    "names": [
+      "wireStoryBoosterToolPopup"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "899c76298c8aee0b1dbe521210dabc8f8e96c9f95ac0fa4486c49879b49d3687"
+  },
+  {
+    "order": 83,
+    "owner": "ui/tools.js",
+    "names": [
+      "openStoryBoosterErrorLog"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "232f9a82e8ce4e49e6864acb546eca097adf9c57aa88a8e9a9b727d536169695"
+  },
+  {
+    "order": 84,
+    "owner": "ui/tools.js",
+    "names": [
+      "estimatePromptTokens"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "3e879b14e4eb92aa902fc5df6e190d549f4fd896ae75bcb178cbcbfa5c1cf8aa"
+  },
+  {
+    "order": 85,
+    "owner": "ui/tools.js",
+    "names": [
+      "countPromptTokens"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "2167ec2771f67bd93b6de55b12bf4165f4952ba4fda94f1616dc75227d3204e8"
+  },
+  {
+    "order": 86,
+    "owner": "ui/tools.js",
+    "names": [
+      "getCurrentInjectionPromptSnapshot"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "83a63de2d03dd012bc367ad79efbb1cfac295ec0cf318228b0e6565e64ccc081"
+  },
+  {
+    "order": 87,
+    "owner": "ui/tools.js",
+    "names": [
+      "openCurrentInjectionPromptViewer"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "8e68442d10c31b214c6404fe59698ef6e96b144edf9cefdd4290466f59a16527"
+  },
+  {
+    "order": 88,
+    "owner": "core/requests.js",
+    "names": [
+      "withRequestTimeout"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "de156db07cdd83bf96559915cf8ad3336d2841ba60f1d649e36bfc62dbaf4179"
+  },
+  {
+    "order": 89,
+    "owner": "core/requests.js",
+    "names": [
+      "requestCurrentRoleplayGenerationStop"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "de8453b0213b34b11bae83151686feb70e8ba3c5691a6ac0a06cc6c55749a6d2"
+  },
+  {
+    "order": 184,
+    "owner": "core/requests.js",
+    "names": [
+      "getConnectionProfileService"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "a2776c4201aa89f0c5f4534f54ed08572f7246431736b218a21aec0a7b51f321"
+  },
+  {
+    "order": 185,
+    "owner": "core/requests.js",
+    "names": [
+      "createBackgroundConnectionSnapshot"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "f7c345e6ca2fe6249542c09200dc32c371edd19db5c15734e4e41a0d5ebb2eaf"
+  },
+  {
+    "order": 186,
+    "owner": "core/requests.js",
+    "names": [
+      "resolveBackgroundConnectionSnapshot"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "a41399b7e54efb1b0982bc0f86cbf24f61fedc939712792280a352a79066a46c"
+  },
+  {
+    "order": 187,
+    "owner": "core/requests.js",
+    "names": [
+      "generateWithBackgroundProfile"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "5f1ae5837bbce3d83ce06fbf0fc5cc6666cf9162e29ffd97fb3f223b16f2924f"
+  },
+  {
+    "order": 188,
+    "owner": "core/requests.js",
+    "names": [
+      "generateStructuredAnalysis"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "1da96b94917145367d7b0b8fecea859acd8ac757f703ca817a57f04fe880dd9c"
+  },
+  {
+    "order": 189,
+    "owner": "core/requests.js",
+    "names": [
+      "shouldRetryStructuredJsonCompatibility"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "5fe6bc6a620635e3bf752f283038d914ddda7b5bd4b5e585e184ab7002b52c92"
+  },
+  {
+    "order": 190,
+    "owner": "core/requests.js",
+    "names": [
+      "getStructuredJsonCompatibilityReason"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "a232b1daa47afe63d993d26ba387d65df167251a045d89391634499156ac29be"
+  },
+  {
+    "order": 191,
+    "owner": "core/requests.js",
+    "names": [
+      "requestStructuredJsonWithCompatibility"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "28c79b7ef4560cc90b7b376c959268416987b17d9d42ab61c99205549ecbd2b1"
+  },
+  {
+    "order": 95,
+    "owner": "app/bootstrap.js",
+    "names": [],
+    "kind": "ExpressionStatement",
+    "baselineHash": "e72baa29f2773de1a3275bce6164542ced01cadaf7f8701ef3207bcc789df4e8"
+  },
+  {
+    "order": 376,
+    "owner": "app/bootstrap.js",
+    "names": [],
+    "kind": "ExpressionStatement",
+    "baselineHash": "d605ec4fe07050dbb745eca8fb44187fd8ba686d7f612ae51764c3e23c96ff57"
+  },
+  {
+    "order": 102,
+    "owner": "core/context.js",
+    "names": [
+      "getCurrentChatId"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "3053a0c5983d1b401fb14e02a69db819ab6155052daaec29cd267da4cee06c1f"
+  },
+  {
+    "order": 103,
+    "owner": "core/context.js",
+    "names": [
+      "getCurrentRoleDisplayNames"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "3c541c56c5f4d8ad498f2c2d93395bde9ea140957cb3204eeacdfe070917737b"
+  },
+  {
+    "order": 104,
+    "owner": "core/context.js",
+    "names": [
+      "resolveRoleMacrosForDisplay"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "08e5a6078709c8bede05d6b76b005b8bb3cf6e8865828ea269587b1f30fb2c9f"
+  },
+  {
+    "order": 111,
+    "owner": "core/context.js",
+    "names": [
+      "getLatestAssistantMessageId"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "b87976bf390fb91f1b40f1b4b536b024f8c61260d28be610376f7885f58e1eac"
+  },
+  {
+    "order": 121,
+    "owner": "core/context.js",
+    "names": [
+      "getCurrentCharacterRecord"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "f46a3541778698f0d10abb973c1be960a30d8fa469edaad5f1de9ab650886f46"
+  },
+  {
+    "order": 122,
+    "owner": "core/context.js",
+    "names": [
+      "getCharacterField"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "5f3542ab7eea189861b4ebb81a6d9234e034c49a7ec03fe3595d1d21e1a2ad6d"
+  },
+  {
+    "order": 123,
+    "owner": "core/context.js",
+    "names": [
+      "buildCharacterCardSource"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "914cf1049bb9de3f5937bca669760de8257500519a839c0d43d544d0fb933742"
+  },
+  {
+    "order": 125,
+    "owner": "core/context.js",
+    "names": [
+      "getCurrentCharacterIdentity"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "ad9b3b770b13aac622f895534adc4dd090dd1610d9127753ccfaf17d35cf0e14"
+  },
+  {
+    "order": 164,
+    "owner": "core/context.js",
+    "names": [
+      "clipTranscriptMessage"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "fa0892f50855687c774cdf6a18cffe961eb1ecf997f0e5a6687d7cda92ba5a6b"
+  },
+  {
+    "order": 169,
+    "owner": "core/context.js",
+    "names": [
+      "getRoleplayTranscript"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "4d9e50b824a32f56080a08c07cec3023bacca04d53f05f36243c8490f4d2d60a"
+  },
+  {
+    "order": 170,
+    "owner": "core/context.js",
+    "names": [
+      "snapshotCurrentChatMessages"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "b574305f2ee3db3f6dd0d62cff8fc2b707ab9f1aa027129f07b0e70ae3c8edf1"
+  },
+  {
+    "order": 171,
+    "owner": "core/context.js",
+    "names": [
+      "createOperationContextSnapshot"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "d8bfe218e2524bb077574d45435c56f4a0388daa5de9250100f02db61f17421a"
+  },
+  {
+    "order": 172,
+    "owner": "core/context.js",
+    "names": [
+      "isOperationContextCurrentChat"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "254ac1480459e103b9c781c0e4e92feeadbc900de993b6a87f452bf63eb053b6"
+  },
+  {
+    "order": 173,
+    "owner": "core/context.js",
+    "names": [
+      "isOperationContextCurrentCharacter"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "5962354001defb434fd52abe501036b43bcfccb4233ce775015e934f832a298a"
+  },
+  {
+    "order": 105,
+    "owner": "core/storage.js",
+    "names": [
+      "createDefaultModuleSettings"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "361412f199f65de7cc96e86ed8c6af00d5f419d59f35e14caa3e021242b9834e"
+  },
+  {
+    "order": 106,
+    "owner": "core/storage.js",
+    "names": [
+      "migrateModuleSettings"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "5aacb02fdc4712deaacafb7408e9da125534672be97aa990b86ec9db531f4376"
+  },
+  {
+    "order": 107,
+    "owner": "core/storage.js",
+    "names": [
+      "normalizeModuleSettings"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "781155064fed22b249b3ef4586e445caddbaecfca47b3af04f4b19329858091f"
+  },
+  {
+    "order": 108,
+    "owner": "core/storage.js",
+    "names": [
+      "ensureModuleSettings"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "fc9f8c8286728a4cddd0bee1aa77ca2454d6837184428577bfb8560fd05efbc7"
+  },
+  {
+    "order": 109,
+    "owner": "core/storage.js",
+    "names": [
+      "isBoosterFeatureEnabled"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "3555bd91a02fc90fbe449f9203a16e9e84bd97f0ad97f6ebdd3580325f0af153"
+  },
+  {
+    "order": 110,
+    "owner": "core/storage.js",
+    "names": [
+      "getGlobalAuditInterval"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "2c4401c2f730cb8456bddc0d92760dbb2fe9f151582d54c25d38597c67d8e4d3"
+  },
+  {
+    "order": 112,
+    "owner": "core/storage.js",
+    "names": [
+      "getAvailableGenres"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "cddd3b38f0c43718c4cde21d5c11ca27d458073d72726e8b895417a9ccae9352"
+  },
+  {
+    "order": 113,
+    "owner": "core/storage.js",
+    "names": [
+      "getGenrePromptLabel"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "6d59e764f481dbde780247f2da7b2aa2883884e8a984cd23d89b180202d24969"
+  },
+  {
+    "order": 114,
+    "owner": "core/storage.js",
+    "names": [
+      "getAvailablePlotCategories"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "64b1f730da05868c4df35c09cd68fb3d9329e3297c86dce075d4e3f3e6c87250"
+  },
+  {
+    "order": 115,
+    "owner": "core/storage.js",
+    "names": [
+      "getSelectedPlotCategory"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "c039aa3c68a73615d00b30695a750e5649653414181552e754d47326df79fec0"
+  },
+  {
+    "order": 116,
+    "owner": "core/storage.js",
+    "names": [
+      "getRandomPlotCategory"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "8f673b3b5c8964d5e9bc7600259dfa0ca944603b1a5cbf0c8b50d16660004dda"
+  },
+  {
+    "order": 117,
+    "owner": "core/storage.js",
+    "names": [
+      "normalizeGenreSelection"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "c20573023cf8e2e254d2fc11705f32c50ac547d89782c9ac559a76cf80338a1a"
+  },
+  {
+    "order": 118,
+    "owner": "core/storage.js",
+    "names": [
+      "normalizePlotHistory"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "51ed74b39c1b6048ef8d1eccbf31865b349bda8a11d0c3084a4773aed677c85c"
+  },
+  {
+    "order": 119,
+    "owner": "core/storage.js",
+    "names": [
+      "ensureChatState"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "d1046997e4f90629a8de64b3aca818513aad477751a0f0b551d4669d3f1f8855"
+  },
+  {
+    "order": 120,
+    "owner": "core/storage.js",
+    "names": [
+      "ensureCharacterBoostState"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "c66fdfaa8eeb05646adce9cd8e0fcd223396c554bf6cac291745aa891d35d118"
+  },
+  {
+    "order": 126,
+    "owner": "core/storage.js",
+    "names": [
+      "normalizeCharacterBaseline"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "103adae9629e5506c44b5f97c295eef0b5ea7381b4217af7ffe0068ded3d0ba6"
+  },
+  {
+    "order": 127,
+    "owner": "core/storage.js",
+    "names": [
+      "normalizeCharacterBaselineVersionStore"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "8004bda5f398e821c328718a6c995a977da5355187b129bca40028e1c5c8298a"
+  },
+  {
+    "order": 128,
+    "owner": "core/storage.js",
+    "names": [
+      "getCharacterBaselineVersionStore"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "8548bcc54414292fa582b77877aa0dd133dedc8ac1e7ddcd19544910729f5ea1"
+  },
+  {
+    "order": 129,
+    "owner": "core/storage.js",
+    "names": [
+      "getCharacterBaselineVersion"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "38f3c405b51ced2b4a7bb0b392d1fb84e2b8d81e541ee16cc5d7b300fa5ff0ee"
+  },
+  {
+    "order": 130,
+    "owner": "core/storage.js",
+    "names": [
+      "writeCharacterBaselineVersion"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "6a84d630cc5db5e92f40fe46deab17fef70f03b835b65c901535424f08ff05b5"
+  },
+  {
+    "order": 131,
+    "owner": "core/storage.js",
+    "names": [
+      "createCharacterBaselineVersion"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "0a1e2e74ae18372febfe140f00e3446d301b85a29810a31cf16ca85522529b8d"
+  },
+  {
+    "order": 132,
+    "owner": "core/storage.js",
+    "names": [
+      "getCharacterBaselineVersionOptions"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "ae2fedee2540c9351b2793580af3ebcf3c57e8b66554328973db9a0abee66edf"
+  },
+  {
+    "order": 133,
+    "owner": "core/storage.js",
+    "names": [
+      "createEmptyCharacterBaseline"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "05fd30e083985ef668eeb0126ec29f203e20bb658f206aaa7dfcf962fcb40169"
+  },
+  {
+    "order": 134,
+    "owner": "core/storage.js",
+    "names": [
+      "serializeCharacterBaseline"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "dd46395bc7a57daeeb643bffa073dd0b7479d4ea918906ee21dd9a78158a3c72"
+  },
+  {
+    "order": 135,
+    "owner": "core/storage.js",
+    "names": [
+      "resolveCharacterCorrectionFieldIds"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "f637b97a319a58eabdf9d29c178ebaf24ecb33321ef431e2b04b54e72cd04fc9"
+  },
+  {
+    "order": 136,
+    "owner": "core/storage.js",
+    "names": [
+      "getCurrentCharacterBaseline"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "968c644413a028ec7b144c0dc288b059461731e3e396b461f8c514218ab93da3"
+  },
+  {
+    "order": 141,
+    "owner": "core/storage.js",
+    "names": [
+      "getCharacterCardChangeStatus"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "02cad1a3136e06d1b276f6d6b734e24e1d65c206af882937dcaf6c45afff0ecb"
+  },
+  {
+    "order": 144,
+    "owner": "core/storage.js",
+    "names": [
+      "getCharacterAnchorDisplayValue"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "10fa05f9abbe3417c9e23a5f507d032a859d4422fa764658401d19acf0b5b0b3"
+  },
+  {
+    "order": 145,
+    "owner": "core/storage.js",
+    "names": [
+      "hasCharacterDisplayLanguageMismatch"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "f9c08fad58dd83fa17be0c5ab5d50e2e717f769b8f374f97cfe31033dd7d3c1f"
+  },
+  {
+    "order": 146,
+    "owner": "core/storage.js",
+    "names": [
+      "formatSavedAt"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "c965950b1d3010ad14b03d5cec02d3b628fb3cdbe6212621d380748fca726978"
+  },
+  {
+    "order": 147,
+    "owner": "core/storage.js",
+    "names": [
+      "getCharacterBoosterReadiness"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "82acb8dc5430aa290d0c3c037c6e76fc56aa2ddfd6caf7943c79c1bee8a97852"
+  },
+  {
+    "order": 257,
+    "owner": "core/storage.js",
+    "names": [
+      "normalizeStoredAuditEvidenceArray"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "88488ea300426d25ebaa280abc19e306ef7087a4c1bc6fd0fc4afb4649cbec07"
+  },
+  {
+    "order": 258,
+    "owner": "core/storage.js",
+    "names": [
+      "normalizeGenreAuditRecord"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "994c9e24c82d59fced64b607fa0bb2472493076b04ecd61fed54231359ac4177"
+  },
+  {
+    "order": 259,
+    "owner": "core/storage.js",
+    "names": [
+      "storeLastAuditRecord"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "a13bbd0657dcf7c9bb51d22c7adc5a2c7c0f9398f1bd0fec9753809ea85151a1"
+  },
+  {
+    "order": 260,
+    "owner": "core/storage.js",
+    "names": [
+      "updateStoredAuditStatus"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "c15aa4c09ba46d1aec1c84ca9e7aa08fb11ca640416620ef49049b4469b74442"
+  },
+  {
+    "order": 261,
+    "owner": "core/storage.js",
+    "names": [
+      "ensureGenreAnchorState"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "787ff6e1262739386e64b018dbb555aac2c1481f40f53bad6abe5fceba3136fd"
+  },
+  {
+    "order": 262,
+    "owner": "core/storage.js",
+    "names": [
+      "bumpCorrectionRevision"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "d4ffd8788e3679c2732fb8bcd76297ac109aed1750c78351e37478f5694505a5"
+  },
+  {
+    "order": 263,
+    "owner": "core/storage.js",
+    "names": [
+      "reconcilePendingAuditRecords"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "b97389e73a8633f0a4e87a18d9b0d333d65f52bb8cbd2b9cdd754c6c5780b7bf"
+  },
+  {
+    "order": 264,
+    "owner": "core/storage.js",
+    "names": [
+      "normalizeLiveCorrectionState"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "db97f162ef02251b294a6c12c3de30c4afa1ca1e004fde59a776797e57594599"
+  },
+  {
+    "order": 265,
+    "owner": "core/storage.js",
+    "names": [
+      "removeLiveCorrectionCodes"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "2d14473b097273dd5eae73e782b68a9958bd5adbfe06de015509dc51b5f9574c"
+  },
+  {
+    "order": 266,
+    "owner": "core/storage.js",
+    "names": [
+      "isPendingGenreCorrectionArmed"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "41827e464de85b174b49b0bfc9db1af93767977434ec9393677dbbcbf4ef3af3"
+  },
+  {
+    "order": 267,
+    "owner": "core/storage.js",
+    "names": [
+      "armPendingGenreCorrectionForNextResponse"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "845486815d37afd7992de37669f84043dafc51d9d0436b6d322e6caafc5bb6f5"
+  },
+  {
+    "order": 268,
+    "owner": "core/storage.js",
+    "names": [
+      "markArmedGenreCorrectionApplied"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "767662711c9d4cbdc97bd69bc4b974caf008e524eea19cfa007fd1648d051ed2"
+  },
+  {
+    "order": 124,
+    "owner": "core/text.js",
+    "names": [
+      "hashStableText"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "f6765f2fb1a46ab541096733971e21b26780537cecc93aa7dcbb614ba8bc90f1"
+  },
+  {
+    "order": 165,
+    "owner": "core/text.js",
+    "names": [
+      "getAuditReasonMaxChars"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "fcc8d8796dac4c1b0ef3210d008c75451bb0905a64e16f4d7c02aeab83f4da9d"
+  },
+  {
+    "order": 166,
+    "owner": "core/text.js",
+    "names": [
+      "getAuditReasonSchemaMaxChars"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "8c59efd4e1311d932c57836c750f571d751b8945f9061e321b1fde2514ca70bc"
+  },
+  {
+    "order": 167,
+    "owner": "core/text.js",
+    "names": [
+      "normalizeAuditReason"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "8f294dfb4f02eed66919afe49e3df0876d3771d5cd1ad67386c493470a2d673c"
+  },
+  {
+    "order": 168,
+    "owner": "core/text.js",
+    "names": [
+      "normalizeCharacterCorrectionText"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "66b50595dc999a959a40e0e9edb1226f3bedb50591c8bd002e451a567b877bed"
+  },
+  {
+    "order": 137,
+    "owner": "features/character.js",
+    "names": [
+      "selectCharacterBaselineVersion"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "1c1cb4ef80c417158ae46381ce01345848f11b2389bdfa3cd23eb283b86e0e1c"
+  },
+  {
+    "order": 138,
+    "owner": "features/character.js",
+    "names": [
+      "duplicateCurrentCharacterBaselineVersion"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "122449bcd822eeba92664b31a9458fe97d23c5b91a87d2e4366531489300f6b2"
+  },
+  {
+    "order": 139,
+    "owner": "features/character.js",
+    "names": [
+      "renameCurrentCharacterBaselineVersion"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "41fb7af2e5e4e4555593430be2d77342cc2cb62f61daa6ff23005cf8feee431c"
+  },
+  {
+    "order": 140,
+    "owner": "features/character.js",
+    "names": [
+      "deleteCurrentCharacterBaselineVersion"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "8d0dfbd9799bea08297c845d1e5019c21a6375c91c020999f151ada175cd1faf"
+  },
+  {
+    "order": 142,
+    "owner": "features/character.js",
+    "names": [
+      "notifyCharacterCardChangeIfNeeded"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "af69fe4b12119c56dd970794d464144e137560466f918592a5a5a842d1c3a62c"
+  },
+  {
+    "order": 143,
+    "owner": "features/character.js",
+    "names": [
+      "acknowledgeCharacterCardChange"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "cac457a3feb93f7b9ba25866638a92653f7e820bb0b9242be9293e52a2e1bd6e"
+  },
+  {
+    "order": 216,
+    "owner": "features/character.js",
+    "names": [
+      "getCharacterRevisionBaselineSignature"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "8440b232df8405c036807e2e3eb59d8f4a575d149e4949332d0ca84302167fc4"
+  },
+  {
+    "order": 217,
+    "owner": "features/character.js",
+    "names": [
+      "ensureCharacterRevisionReview"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "65a2fdc2a4c78ab210220d8d3c175bd1e8d1d8b941c542f69d35d84bbef706db"
+  },
+  {
+    "order": 218,
+    "owner": "features/character.js",
+    "names": [
+      "captureCharacterRevisionReview"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "b61eb7a3d978c040e21ff71cef229be33ff2efdc7c94239229e8846753951bd1"
+  },
+  {
+    "order": 219,
+    "owner": "features/character.js",
+    "names": [
+      "invalidateCharacterAuditAfterBaselineChange"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "e58e38d5baff2bf52fad0dab4160c6ebeee813b35c90f1d6178e35fdb182860c"
+  },
+  {
+    "order": 220,
+    "owner": "features/character.js",
+    "names": [
+      "getCharacterBaselineFieldDefinition"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "0ca3ce6fb7be7cd50ebbd93aaa66d0fa6778eb4f709f4273fdee0ebeaa54196c"
+  },
+  {
+    "order": 221,
+    "owner": "features/character.js",
+    "names": [
+      "getCharacterBoostAnchorRequirements"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "71863265c738510a0e82cc105e3d86f121159e82cd07bc365c0f4834e570efbf"
+  },
+  {
+    "order": 222,
+    "owner": "features/character.js",
+    "names": [
+      "buildCharacterBaselinePrompt"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "d13fdf900eead01cf428f90958e127bbc8001c973d7bbc62c0b3cf46894183a4"
+  },
+  {
+    "order": 223,
+    "owner": "features/character.js",
+    "names": [
+      "normalizeCharacterBaselineGenerationPayload"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "7828358d7a44dab4b10e77614263e5b2a8d6c798a4eefc868a0ce88fe3d02023"
+  },
+  {
+    "order": 224,
+    "owner": "features/character.js",
+    "names": [
+      "getCharacterBaselineGenerationIssues"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "5680294dfd192edf40b62d3177a08de3344d38f0ed8a24a5fb4d0e84ffb4b50c"
+  },
+  {
+    "order": 225,
+    "owner": "features/character.js",
+    "names": [
+      "getCharacterRevisionProposalKey"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "9211e721ff5c066ea5b42d57910bb666c8e687e722ee30dad33a59b760880447"
+  },
+  {
+    "order": 226,
+    "owner": "features/character.js",
+    "names": [
+      "buildCharacterBaselineRevisionPrompt"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "46ccbc2b5680db2c9c213c09019fabeac0a6728f4f23fd55e22c5867b26a92ee"
+  },
+  {
+    "order": 227,
+    "owner": "features/character.js",
+    "names": [
+      "normalizeCharacterBaselineRevisionPayload"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "9477cc7cc81e15cec17a76a4c511bd0c1479f1d666ce06b41f57a1e92b95b4b9"
+  },
+  {
+    "order": 230,
+    "owner": "features/character.js",
+    "names": [
+      "extractTaggedCharacterAnchorResult"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "69d40db391dafbe87f985450ffeba0b474c7ba42e06981b528ecb79c9a83b0fc"
+  },
+  {
+    "order": 231,
+    "owner": "features/character.js",
+    "names": [
+      "parseCharacterBoostAnchorResult"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "9eab99b76b4ca9bf50864410097d37c9b870e9f3b2ca76a3a3e1bfeba16b03fa"
+  },
+  {
+    "order": 232,
+    "owner": "features/character.js",
+    "names": [
+      "shouldRetryCharacterAnchorWithoutSchema"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "c04f793d58631238f142904d81f2274e855430709048ecc5142c9331642de4f5"
+  },
+  {
+    "order": 233,
+    "owner": "features/character.js",
+    "names": [
+      "shouldRetryTaggedCharacterAnchor"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "a18b09b7e8bf4d9085e112a8eed819b58b39182f7643a721396971cf8ccf9de8"
+  },
+  {
+    "order": 234,
+    "owner": "features/character.js",
+    "names": [
+      "requestCharacterBoostAnchor"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "0e37bef7395e140621d00981c0719cd1183cddc0275bda991ccccfb685907d68"
+  },
+  {
+    "order": 235,
+    "owner": "features/character.js",
+    "names": [
+      "generateCharacterBaselineRevisionProposal"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "4a97ae60fbb1014b1a3d884e93fdb3057e77aeb924cf8d1dd49f9d370415783a"
+  },
+  {
+    "order": 236,
+    "owner": "features/character.js",
+    "names": [
+      "cancelCharacterBaselineRevisionProposal"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "cd88fb15668cfc7d0d5908730191916395cd513f29e21807a2d023b8190d3187"
+  },
+  {
+    "order": 237,
+    "owner": "features/character.js",
+    "names": [
+      "applyCharacterBaselineRevisionProposal"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "0e1bba224f1950369298c8dfab6681c1d6fa6d52f2344ceb32d00ea1c93ce053"
+  },
+  {
+    "order": 238,
+    "owner": "features/character.js",
+    "names": [
+      "generateCharacterBaseline"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "21105a488ee15281857f6abffa29a1c47e49dc2ca462e59e2288b314467190a0"
+  },
+  {
+    "order": 239,
+    "owner": "features/character.js",
+    "names": [
+      "setCharacterFieldSaveStatus"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "13a239e31cf21e20ab29cc445eba347afd8e46e7543cbef648fc38e74d90b1f9"
+  },
+  {
+    "order": 240,
+    "owner": "features/character.js",
+    "names": [
+      "getCharacterEditTarget"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "d15a8797af8c9fa1687357427005e902bb900018db0040805ff64e582c6e162a"
+  },
+  {
+    "order": 241,
+    "owner": "features/character.js",
+    "names": [
+      "resolveCharacterSaveTarget"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "002d098a4c979d498062ce698c7ac60daba1ccbf8b97387c52ce9e22be8e34f5"
+  },
+  {
+    "order": 242,
+    "owner": "features/character.js",
+    "names": [
+      "updateCharacterEditorSaveTarget"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "77aef103733541f7ba28ca1c9eabb79d809a68ed0ff7dbbeed598610f3def556"
+  },
+  {
+    "order": 243,
+    "owner": "features/character.js",
+    "names": [
+      "saveCharacterBaselineField"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "f98969e05fecd41eb8b627379db8e516371ba2c44d247d51ab7cefadd8788d72"
+  },
+  {
+    "order": 244,
+    "owner": "features/character.js",
+    "names": [
+      "scheduleCharacterBaselineAutosave"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "b90983456bdcc10923e2a923f541629c3237d944bebdb456dc1f67fd6333a0af"
+  },
+  {
+    "order": 245,
+    "owner": "features/character.js",
+    "names": [
+      "flushCharacterBaselineAutosave"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "0df236d2302679c1846f299c70b963a46dabc1d913a9b90be2a80b66131559c8"
+  },
+  {
+    "order": 246,
+    "owner": "features/character.js",
+    "names": [
+      "toggleCharacterFieldPin"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "cfd56aed4fe4f052404cfa554fcb48b8b47017fa0eeec345e6eb3828fe4e3bfb"
+  },
+  {
+    "order": 247,
+    "owner": "features/character.js",
+    "names": [
+      "toggleCharacterFieldEditing"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "28ccf4051bee47d60470060d447dfd674ce39eeb06037b00440dc7b07f230b1b"
+  },
+  {
+    "order": 248,
+    "owner": "features/character.js",
+    "names": [
+      "saveCharacterBoostAnchor"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "25a613e3f89f434310d107cde24ca96956241800d8e2de590e214b9474ad0363"
+  },
+  {
+    "order": 249,
+    "owner": "features/character.js",
+    "names": [
+      "convertCharacterAnchorDisplayToEnglish"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "ea00fe2c0b62bf54d5edcd8b1f5638151e04fb67b646ef876c39fac1825ba081"
+  },
+  {
+    "order": 250,
+    "owner": "features/character.js",
+    "names": [
+      "setCharacterBoostAnchorEditMode"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "964591956ffab3cd4aabec0a5aef4ce35f97e7a310c0d32412cb4c0be7de9bc8"
+  },
+  {
+    "order": 251,
+    "owner": "features/character.js",
+    "names": [
+      "beginCharacterBoostAnchorEditing"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "2f68cf8748b57799d806b2350da894f9016049ed8cbf09a2e537d58d3a96c76d"
+  },
+  {
+    "order": 252,
+    "owner": "features/character.js",
+    "names": [
+      "cancelCharacterBoostAnchorEditing"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "6cfde34946671f98b669be13ecd6193d5c35fbe1482122d93b6d10e3df9f346f"
+  },
+  {
+    "order": 253,
+    "owner": "features/character.js",
+    "names": [
+      "saveEditedCharacterBoostAnchor"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "36fe2c76ff6397bbd20c4a4e491693e13fb3bd3a60ab15a6d2cd6d0bfef82eb0"
+  },
+  {
+    "order": 254,
+    "owner": "features/character.js",
+    "names": [
+      "closeCharacterEditorsForChatChange"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "5437c24c13bc95ca6dd23a1f9964150375dd644e526bc7d13c0ea843952051a9"
+  },
+  {
+    "order": 255,
+    "owner": "features/character.js",
+    "names": [
+      "regenerateCharacterBoostAnchor"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "8e3421aa8eede001f31481c59c8e6aaba2a05a18131feafc5c70ac81694f89b6"
+  },
+  {
+    "order": 256,
+    "owner": "features/character.js",
+    "names": [
+      "deleteCharacterBaseline"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "342d5b46029b36d6a8f26602785eef0d635ca1f1b1f751f702443b3e87eebf15"
+  },
+  {
+    "order": 148,
+    "owner": "features/genre-model.js",
+    "names": [
+      "getGenreProfile"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "18436a7922e2c2d934c763d2aae5f1ba7beef21d3c73464aa930c032712a4a87"
+  },
+  {
+    "order": 149,
+    "owner": "features/genre-model.js",
+    "names": [
+      "getGenreProfileSummary"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "1582681b10c72e58c79fc56d069e97a904c140c48ccbad7ce03993884eda47ad"
+  },
+  {
+    "order": 150,
+    "owner": "features/genre-model.js",
+    "names": [
+      "getGenreProfileAuditStandard"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "5fcd7d5aa2edfd3fd71199c2e62f65fa5f5d0bbdcdb01ebfa4e50d2266272d09"
+  },
+  {
+    "order": 151,
+    "owner": "features/genre-model.js",
+    "names": [
+      "getGenreSelectionSignature"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "924d58c55319a1a7efcdba09979581c8e14b80fb598a8ab58266fff0a4398147"
+  },
+  {
+    "order": 174,
+    "owner": "core/responses.js",
+    "names": [
+      "normalizeGeneratedText"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "18c7f1291f91cf0709c3e0136b7d2a5b08d42158c7a485f6127eda8860eed68a"
+  },
+  {
+    "order": 175,
+    "owner": "core/responses.js",
+    "names": [
+      "extractVisibleTextFromGenerationData"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "a30467eb83af4cd5c554c95c5589f4053da0f23ca7df74512efe76e881291bd7"
+  },
+  {
+    "order": 176,
+    "owner": "core/responses.js",
+    "names": [
+      "extractReasoningTextFromGenerationData"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "081047052a121fc4edaa9a22ca320278ff5f162e092583ddbf6a7063501233f3"
+  },
+  {
+    "order": 177,
+    "owner": "core/responses.js",
+    "names": [
+      "extractTextFromGenerationData"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "89cec5fefbce99a2e3b5eede33e7adb28a20c92a905b02f6e7e8d40632bd85cf"
+  },
+  {
+    "order": 178,
+    "owner": "core/responses.js",
+    "names": [
+      "assertStructuredOutputPresent"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "88ea048dba4869153c7f3bb545654de71e83479dd563b0421f8b2346ba211f52"
+  },
+  {
+    "order": 179,
+    "owner": "core/responses.js",
+    "names": [
+      "isLengthLimitedGeneration"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "7adc9ace661d8fd90e0a113965668cc0d1f0c44769fecce0990960a600b34b42"
+  },
+  {
+    "order": 180,
+    "owner": "core/responses.js",
+    "names": [
+      "throwIfStructuredResultWasTruncated"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "e8e45ba82a446cccd9bd2a2d39727d3a6e295dfcb6ad7dc86509a3e7b942e151"
+  },
+  {
+    "order": 181,
+    "owner": "core/responses.js",
+    "names": [
+      "throwIfStructuredJsonIsIncomplete"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "f42edf71a08ce5d2d573d85783959fb1e312678edef58ca4c2397ad3b3e4403c"
+  },
+  {
+    "order": 182,
+    "owner": "core/responses.js",
+    "names": [
+      "extractJsonObject"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "baadf713ea130548ed32a9366b9284b9c924c0c202ade8f262c2a2fd6a159728"
+  },
+  {
+    "order": 183,
+    "owner": "core/responses.js",
+    "names": [
+      "normalizeSillyTavernJsonSchema"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "8307f4389b9b06c719a3836b4e70d23186041b06b043c1900c3b6a89ece7acb7"
+  },
+  {
+    "order": 228,
+    "owner": "core/responses.js",
+    "names": [
+      "requireStructuredTextFields"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "f5e9046be2821549125feaf14f9bcdfcaf9d3f30b282d8ec9f68499bf52fb4e0"
+  },
+  {
+    "order": 229,
+    "owner": "core/responses.js",
+    "names": [
+      "parseJsonOrTaggedPayload"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "99dfe62ee0d47e7bf490c783ae6a7333f00ca5b1803a87346c5523d33b70187a"
+  },
+  {
+    "order": 196,
+    "owner": "features/audit.js",
+    "names": [
+      "showGenreAuditToast"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "465a8fd96968915a0a687579b05745d64578b5814ebaed36f2b4ce5322e4df98"
+  },
+  {
+    "order": 197,
+    "owner": "features/audit.js",
+    "names": [
+      "getGenreAnchorSelection"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "1e8594517cb99831ee140c7e52f986d5abd4edd3075679a9d806803aa85d4f38"
+  },
+  {
+    "order": 198,
+    "owner": "features/audit.js",
+    "names": [
+      "getBoosterSelection"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "cf55524158f64b890d6497bbc886559762cc513b52fdba8aff03cb886736b355"
+  },
+  {
+    "order": 199,
+    "owner": "features/audit.js",
+    "names": [
+      "buildGenrePromptText"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "487b58ad61a3ed4e48931ce68f8b05549c4befafb2ed6e083c77d70204dea74c"
+  },
+  {
+    "order": 200,
+    "owner": "features/audit.js",
+    "names": [
+      "updateGenrePrompt"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "8170872fec284ccaeaf6cca213516e17dcacaf79e9f8709f5075c6ce395f3801"
+  },
+  {
+    "order": 201,
+    "owner": "features/audit.js",
+    "names": [
+      "safelyUpdateGenrePrompt"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "bad74c6f69ba38e7e5f204b4edd417b54c64a5877dcb59a3fd85bd3865bc72e4"
+  },
+  {
+    "order": 204,
+    "owner": "features/audit.js",
+    "names": [
+      "getAutomaticAuditScope"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "11dc4df2a348e71432917f364bd07e0098965dc5bb7090bd704594de727843b9"
+  },
+  {
+    "order": 205,
+    "owner": "features/audit.js",
+    "names": [
+      "getScopedAuditSelection"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "5ec482216cea0eca8fabaf0d99578f8ebee47e5cc899295a16b2e808903ba780"
+  },
+  {
+    "order": 206,
+    "owner": "features/audit.js",
+    "names": [
+      "getAuditOutputInstructions"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "89763dc08227d38ef3d340dcb951ede21a908798d5ebd12b5a60787424e95383"
+  },
+  {
+    "order": 207,
+    "owner": "features/audit.js",
+    "names": [
+      "buildGenreAuditPrompt"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "c0ffdb05f4cca5f283a1b5485b54d06e04b1fb7a38bcb1cd7198c5914cddbf64"
+  },
+  {
+    "order": 208,
+    "owner": "features/audit.js",
+    "names": [
+      "buildGenreAuditJsonSchema"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "7125562a816b7ff30625a5da8f17049d0fa084fe99aedd56dc9cf90bfa07ab9d"
+  },
+  {
+    "order": 209,
+    "owner": "features/audit.js",
+    "names": [
+      "parseGenreAuditResult"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "1fee57fe9cc061777f533079f136dc1df7c747c069f2c4d075159de0f113ef59"
+  },
+  {
+    "order": 210,
+    "owner": "features/audit.js",
+    "names": [
+      "createGenreAuditRecord"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "e8dcc6ef8664e433e7e56ed015d5685484b26f15c71ac8fde5ffb10d3935464e"
+  },
+  {
+    "order": 211,
+    "owner": "features/audit.js",
+    "names": [
+      "runGenreDriftAudit"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "55970e8b13fb991c3c57eb024484ea53377b6ef10615b624cb2b032632a3d42d"
+  },
+  {
+    "order": 212,
+    "owner": "features/audit.js",
+    "names": [
+      "runManualGenreAudit"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "dc65c152f5779ea5eba19a43a150ce18cd6f250952da20be2d26e51817db43cb"
+  },
+  {
+    "order": 269,
+    "owner": "features/audit.js",
+    "names": [
+      "handleGenreResponseReceived"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "f4f10d9423de35399c46e673438c1c45335c914c930d1619b036b7a1a279fd51"
+  },
+  {
+    "order": 270,
+    "owner": "features/audit.js",
+    "names": [
+      "handleGenreUserMessageSent"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "20b51214e22a6597e24d090578be032d95d5f7e600c70f6ac36f657abc5bbe2f"
+  },
+  {
+    "order": 271,
+    "owner": "features/audit.js",
+    "names": [
+      "clearAppliedGenreCorrectionOnUserTurn"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "3551c0f19e11a71b2881b651e425152b38b5b227c965784119feeea57e6a041d"
+  },
+  {
+    "order": 272,
+    "owner": "features/audit.js",
+    "names": [
+      "markPendingGenreAuditCancelled"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "4341bb3781c61bd9d716c687c5c179761604ae6fd23007545257c954930edb09"
+  },
+  {
+    "order": 273,
+    "owner": "features/audit.js",
+    "names": [
+      "cancelPendingGenreCorrection"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "a4990e7471a7b10cd094af5b317499c0277ae9095802284c06dd3b17ea09678d"
+  },
+  {
+    "order": 274,
+    "owner": "features/audit.js",
+    "names": [
+      "canQueueManualAuditBoost"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "1bb9dba042665139c7aea1aaf6195b28632cfd88ffa293a94132200bfcd169a7"
+  },
+  {
+    "order": 275,
+    "owner": "features/audit.js",
+    "names": [
+      "toggleManualAuditBoost"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "2edcccebce9c1a433977e921fa143d2559f744c0843ee809b67803446d9c0793"
+  },
+  {
+    "order": 276,
+    "owner": "features/audit.js",
+    "names": [
+      "resyncLastCountedMessageId"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "dbd45be55aa4bab05d6ae807decc1063fd447fc869be1633116f4a1b68ada22b"
+  },
+  {
+    "order": 202,
+    "owner": "ui/panels.js",
+    "names": [
+      "safelyUpdateGenreAnchorPanel"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "673758fcc309ff145c4718569e4506238d69e2d444adc3b443e0f726e160e803"
+  },
+  {
+    "order": 203,
+    "owner": "ui/panels.js",
+    "names": [
+      "safelyUpdateCharacterBoosterPanel"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "f4f830d9587ac09f9619d998bee9f0c026b0ad8da1df8b9fc2461585af743972"
+  },
+  {
+    "order": 341,
+    "owner": "ui/panels.js",
+    "names": [
+      "getGenreAuditDisplayStatus"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "20991abd53d760a8d90363ca75b35f5b33b171be8fe713ff6d516631a41145a3"
+  },
+  {
+    "order": 342,
+    "owner": "ui/panels.js",
+    "names": [
+      "getAuditRecordForScope"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "ce189477d96c0487844d56545d943119409452ef91403070ed8ac1e133f32ee7"
+  },
+  {
+    "order": 343,
+    "owner": "ui/panels.js",
+    "names": [
+      "getAuditDetailPanel"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "c68ab73e3e46e6781115f325dae44a6df0a270f8b64c8ed3824b61379f36147a"
+  },
+  {
+    "order": 344,
+    "owner": "ui/panels.js",
+    "names": [
+      "renderAuditDetailPanel"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "e3c241d4ed7ca49a2a38b37cfc8bc6fef61fc9833f460d233d740012e9985a5d"
+  },
+  {
+    "order": 345,
+    "owner": "ui/panels.js",
+    "names": [
+      "renderAuditStatusGrid"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "3b3b77ed219462ac0f5d90762f0151bf982a68e4fa6b45a25d7b3e5f32635ec9"
+  },
+  {
+    "order": 346,
+    "owner": "ui/panels.js",
+    "names": [
+      "selectAuditDetail"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "a6396ee3d0a64e7f5b13979a553c59bfdf3c793a851e4902987183755f27626e"
+  },
+  {
+    "order": 347,
+    "owner": "ui/panels.js",
+    "names": [
+      "getGenreAuditResultStatusText"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "a5a42068d718a7a84c48c28e84a4c4b9b0d075034edb782ee3732c32bee828b9"
+  },
+  {
+    "order": 348,
+    "owner": "ui/panels.js",
+    "names": [
+      "renderLastGenreAudit"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "e30340621e95676e59c1a66535303b84cae1f50d7622e09a6e1441f4acfead17"
+  },
+  {
+    "order": 349,
+    "owner": "ui/panels.js",
+    "names": [
+      "renderLastCharacterAudit"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "14c69edc8604a35f049f15d1745003acbd22386a3f40d334e80298eaa60b95a4"
+  },
+  {
+    "order": 350,
+    "owner": "ui/panels.js",
+    "names": [
+      "renderCharacterBaselineFields"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "f4fe53d6af9e052deb166ad1c67ea509988cd1bd67436ed42dc40847fdc1b19c"
+  },
+  {
+    "order": 351,
+    "owner": "ui/panels.js",
+    "names": [
+      "renderCharacterBaselineVersionOptions"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "aaff3290ff4c91133cda9d170b4216c2c804f4c2f003ea56355418bb8a0e79a0"
+  },
+  {
+    "order": 352,
+    "owner": "ui/panels.js",
+    "names": [
+      "renderCharacterBaselineRevisionProposal"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "d3d897d28e299c299c8abaa4b76595439a16c5f11236ab099d4cafed65ef6ddf"
+  },
+  {
+    "order": 353,
+    "owner": "ui/panels.js",
+    "names": [
+      "hasOpenCharacterBaselineEditor"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "96a4178615e7f658adcd98aafea650b0dca773ae33ea9a944af574e6345884a2"
+  },
+  {
+    "order": 354,
+    "owner": "ui/panels.js",
+    "names": [
+      "updateCharacterBaselineActionStates"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "9601a4ea9cb02accb7de3054ab9676c410292e3b3f3936799f34aee3d837ee29"
+  },
+  {
+    "order": 355,
+    "owner": "ui/panels.js",
+    "names": [
+      "updateBoosterLiveStatus"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "e9516c6fa2b4bc970dd231e13e0e1bc3e020b89aa2f6af2268e67821a65619dc"
+  },
+  {
+    "order": 356,
+    "owner": "ui/panels.js",
+    "names": [
+      "updateCharacterBoosterPanel"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "a5292870e2971523e1b9f49e2c3494b14d8a8b2f74c99232ab8aa86e3ae96adb"
+  },
+  {
+    "order": 357,
+    "owner": "ui/panels.js",
+    "names": [
+      "getGenreAuditStatusText"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "4e711915fdc952aff00b946bbe5ee5662d50b5712942e8340dbaa057175f1a02"
+  },
+  {
+    "order": 358,
+    "owner": "ui/panels.js",
+    "names": [
+      "updateGenreAnchorPanel"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "6e4854a4afc763394975c4c36a59092dfe2442e638ef349fa6e23511c58795ec"
+  },
+  {
+    "order": 359,
+    "owner": "ui/panels.js",
+    "names": [
+      "changeGlobalAuditInterval"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "c3e7c4735d084c3a298a8b11a0c017a939edeb75a05b7b3732fd1526e02ab4d3"
+  },
+  {
+    "order": 360,
+    "owner": "ui/panels.js",
+    "names": [
+      "changeBoosterFeature"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "548333e39822aa0f46950e004e3ea32da920af1a7ecd2a581fd7bae3268bdaec"
+  },
+  {
+    "order": 280,
+    "owner": "features/plot.js",
+    "names": [
+      "isPlotSecretMode"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "0b49fda00e5ea1d7b2684071228805ab820311900e16989d6f1f8049218b02f4"
+  },
+  {
+    "order": 281,
+    "owner": "features/plot.js",
+    "names": [
+      "getSelectedSecretPlotAction"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "d8b6ec3722746e98175e3ce5d02e92c9891464db2e79e02c6b27f86b862d3f32"
+  },
+  {
+    "order": 282,
+    "owner": "features/plot.js",
+    "names": [
+      "getPlotGenerateButtonLabel"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "6eeee6bf2627c087a838eb3ff02598b827b52b1636525952ccc62cc2fb7482bb"
+  },
+  {
+    "order": 283,
+    "owner": "features/plot.js",
+    "names": [
+      "selectSecretPlotAction"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "2899391adb97eb7b422725fac9c1b5144c91c691fcdc24a2b8fee17fe943a107"
+  },
+  {
+    "order": 284,
+    "owner": "features/plot.js",
+    "names": [
+      "clearSecretPlotAction"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "7598387b71ea8215bac2fb704e5491d67bab396e1feb0b193c7bf28c5aeb4ee5"
+  },
+  {
+    "order": 285,
+    "owner": "features/plot.js",
+    "names": [
+      "updatePlotSecretModeUi"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "1d650a128858f697f1ad6e84b06a1c49b0081b9bd4404b6fb09fc0964fa6a600"
+  },
+  {
+    "order": 286,
+    "owner": "features/plot.js",
+    "names": [
+      "setPlotSecretMode"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "69f8ceb6c680d0fe6ce62d13a716a9991253bb602de4e72080aebf478b1f142b"
+  },
+  {
+    "order": 287,
+    "owner": "features/plot.js",
+    "names": [
+      "launchSecretSurprise"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "18c855393f2db1a7af6c67a3fd8ca342a7eaf32791a84be04f4eb15361258764"
+  },
+  {
+    "order": 288,
+    "owner": "features/plot.js",
+    "names": [
+      "runSelectedPlotGenerationAction"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "69273641be6b94e0157f2b69e34941c034fc92cdfc685888524d2026672f4265"
+  },
+  {
+    "order": 289,
+    "owner": "features/plot.js",
+    "names": [
+      "showPlotGenerationToast"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "0f6914a16385f5885ce6e9f27660520fc694af84318770a6f6e9b901e41e500f"
+  },
+  {
+    "order": 290,
+    "owner": "features/plot.js",
+    "names": [
+      "createEmptyPlotModeDrafts"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "6b22fc810f40f203373e4cad1de92ca535d3df5533e1f5d5ece9b94ba9b2eacf"
+  },
+  {
+    "order": 291,
+    "owner": "features/plot.js",
+    "names": [
+      "getPlotModeDrafts"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "151e9fbf5729433379a1cf9641b6cb56b25b7a412def000bd32e995a48b1aeff"
+  },
+  {
+    "order": 292,
+    "owner": "features/plot.js",
+    "names": [
+      "updatePlotGenerationPendingUi"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "6b9403371665ba6c46231e903a002305f8c2f1cbdc0c56c20b97b7ab81fbe129"
+  },
+  {
+    "order": 293,
+    "owner": "features/plot.js",
+    "names": [
+      "triggerPlotEvent"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "26d3caf861d7174ddea31186e7b257decf8f4f6b6a593cb51b632228c932dff2"
+  },
+  {
+    "order": 294,
+    "owner": "features/plot.js",
+    "names": [
+      "registerOneShotRoleplayInstruction"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "df3df51c246ba66da2b694d874e4752fffcf9e5920dcc4a067960dfd2a373f3f"
+  },
+  {
+    "order": 295,
+    "owner": "features/plot.js",
+    "names": [
+      "buildCharacterQuestionInstruction"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "a5577f656891f7705cfb0e313b610a0ba0e5dfb9b6511c9cf0a5c8e475c63228"
+  },
+  {
+    "order": 296,
+    "owner": "features/plot.js",
+    "names": [
+      "clearPlotPromptIfPending"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "1634da2ded17e335c94a162dce171b7ec754c8718a2b6c684fe9a47ef7f32dfe"
+  },
+  {
+    "order": 297,
+    "owner": "features/plot.js",
+    "names": [
+      "renderPlotCategoryCards"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "d8eb559993d0955435a507ac7b9da2991a9c1ea41b30694c6ab109521f79abc2"
+  },
+  {
+    "order": 298,
+    "owner": "features/plot.js",
+    "names": [
+      "selectPlotCategory"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "b5a51e87fce38d56668e498a39402140857eba5e0259476d7ba44853b7179e9e"
+  },
+  {
+    "order": 299,
+    "owner": "features/plot.js",
+    "names": [
+      "refreshPlotCategoryCards"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "0bda0568fb9beed081c6ff45cf4a0cd428a38e7c959027a74e21228ff56f02c2"
+  },
+  {
+    "order": 300,
+    "owner": "features/plot.js",
+    "names": [
+      "addCustomPlotCategory"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "1274838a1e7d412763226e96e5ea476d68f453632cf9e113b9957d837dc827fc"
+  },
+  {
+    "order": 301,
+    "owner": "features/plot.js",
+    "names": [
+      "deleteCustomPlotCategory"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "a7ab0727d49dcf78c1a5265ce6f93a8e9b5f248dd025c73019513f5e2f1c4d38"
+  },
+  {
+    "order": 302,
+    "owner": "features/plot.js",
+    "names": [
+      "activatePlotGenerationMode"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "00b13f4c83af23dba0cc2263f30286d6b2c44de8c6005fd711240517c672a20d"
+  },
+  {
+    "order": 303,
+    "owner": "features/plot.js",
+    "names": [
+      "capturePlotModeDraft"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "cd4fdb2af36d92def18f54cf18510a57b71eadcd48527f7cf2e39a9023d2904f"
+  },
+  {
+    "order": 304,
+    "owner": "features/plot.js",
+    "names": [
+      "restorePlotModeDraft"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "783765b0d25790ce6ced60fa77e2e65c386f52aa5b3507360667d5f0539d9881"
+  },
+  {
+    "order": 305,
+    "owner": "features/plot.js",
+    "names": [
+      "getPlotOutputInstruction"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "f81d4fbc151210675868467ef3498a9632bd01da472352c826223b5729d22e58"
+  },
+  {
+    "order": 306,
+    "owner": "features/plot.js",
+    "names": [
+      "getPlotCandidateFormatIssues"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "6a16c28022dc2010dee611e5b772d82b18ecbb8d2e31e9ef25c307722da8c063"
+  },
+  {
+    "order": 307,
+    "owner": "features/plot.js",
+    "names": [
+      "isRoleplayLikePlotCandidate"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "397aa20bd83b2b949b3055eca8211370268ca56f766251ef5e20825efa0f424f"
+  },
+  {
+    "order": 308,
+    "owner": "features/plot.js",
+    "names": [
+      "isPlotOutputLanguageMismatch"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "a7a13855b371b72105a1635978748ce2a3d0cbdbac9e1e1d0a8f89c4162d6dab"
+  },
+  {
+    "order": 309,
+    "owner": "features/plot.js",
+    "names": [
+      "getPlotHistory"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "ae15aab5ab82ed44616c707f227453df7794bb257a048d6315c52ab7dc5422bc"
+  },
+  {
+    "order": 310,
+    "owner": "features/plot.js",
+    "names": [
+      "recordPlotHistory"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "838c13561a174dbda50f0aa3cbb40593c2a233bacc5153a74cf591c09adae5ac"
+  },
+  {
+    "order": 311,
+    "owner": "features/plot.js",
+    "names": [
+      "getPlotHistoryModeLabel"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "a2de4ef3de44167b6cd17ec032c632739bf78b0db69a5727e6cdec8005044c33"
+  },
+  {
+    "order": 312,
+    "owner": "features/plot.js",
+    "names": [
+      "renderPlotHistoryCards"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "43531b48acbc06c4fffb8b11b6de2045ba2fcaf3f54a3e188c87cfcc46b13bd8"
+  },
+  {
+    "order": 313,
+    "owner": "features/plot.js",
+    "names": [
+      "updatePlotHistoryUI"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "524ee58792786656bbd1c7c557bc9e9b80f54c19e16725e82cc2e75e0727277c"
+  },
+  {
+    "order": 314,
+    "owner": "features/plot.js",
+    "names": [
+      "togglePlotHistoryDrawer"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "46ced3e0d7fb8d590c49bbd48babce691d722d1cb23d86241031f15df35cbd6c"
+  },
+  {
+    "order": 315,
+    "owner": "features/plot.js",
+    "names": [
+      "loadPlotHistoryItem"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "51ba3bac3fdf7f16ea197b666832e90d87feae279f05709aaad34256aceaefa5"
+  },
+  {
+    "order": 316,
+    "owner": "features/plot.js",
+    "names": [
+      "deletePlotHistoryItem"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "5a957c6437d2a9dc55972c1c2e7f0a5c9829ec26f8cc245a41ebcc326d8e8df6"
+  },
+  {
+    "order": 317,
+    "owner": "features/plot.js",
+    "names": [
+      "clearPlotHistory"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "6fbfa96a7710f029d104dbc1373e1cd5456c3839b9b1762a813201a92dbf7e66"
+  },
+  {
+    "order": 318,
+    "owner": "features/plot.js",
+    "names": [
+      "buildEventGenerationPrompt"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "d9d573433a5ca0f2031aa9d2c7bca715782ec06ffd06c53f00e7ec85b34b1a5f"
+  },
+  {
+    "order": 319,
+    "owner": "features/plot.js",
+    "names": [
+      "extractTaggedPlotEventResult"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "45482bfff97821b4a42dd22cbca39abde4f8faff62e17cd9f5025b1937a0c9fa"
+  },
+  {
+    "order": 320,
+    "owner": "features/plot.js",
+    "names": [
+      "parsePlotEventResult"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "56f5256d9edda5bdadbf545700b1a12ebace86c7e144b4786f374718be8a51a5"
+  },
+  {
+    "order": 321,
+    "owner": "features/plot.js",
+    "names": [
+      "shouldRetryPlotEventWithoutSchema"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "52b7317a25ab69308e7aa414f926dc2ee20b1a63eb2d857fd7cedfb07f207237"
+  },
+  {
+    "order": 322,
+    "owner": "features/plot.js",
+    "names": [
+      "shouldRetryTaggedPlotEvent"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "bb8724c8a3c0e21c10bc70645da35050af5acd9d8d2c0da9939c5fa6e6388f77"
+  },
+  {
+    "order": 323,
+    "owner": "features/plot.js",
+    "names": [
+      "generateEventCandidate"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "4c7ae243d6050792f7e9e99ae87712ad1e94b1e842ca3ea470a7266897c1e781"
+  },
+  {
+    "order": 324,
+    "owner": "features/plot.js",
+    "names": [
+      "clearGeneratedEventResult"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "8ef842385b64fb975176a298a0b14791e166661864d4ace124cc030a6ba5c9fc"
+  },
+  {
+    "order": 325,
+    "owner": "features/plot.js",
+    "names": [
+      "getGeneratedEventText"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "01717e32b75b390d2585218022cb2aaa2aef061c627755bddc6868ce2908add6"
+  },
+  {
+    "order": 326,
+    "owner": "features/plot.js",
+    "names": [
+      "closeBoosterPopup"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "6b0f5839d054801f12682fd559524966ecd930caba390c90359f8e1671246ee9"
+  },
+  {
+    "order": 327,
+    "owner": "features/plot.js",
+    "names": [
+      "waitForBoosterPopupToClose"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "7cd9549efdc09552a54bc43680a9b16df3351c955f8908ba4ea8a789e0ee4ff5"
+  },
+  {
+    "order": 328,
+    "owner": "features/plot.js",
+    "names": [
+      "insertEventIntoComposer"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "33846f0044693da90ec449d652e1df1fd13aeb027966bd20a91e0aa309fd38f6"
+  },
+  {
+    "order": 329,
+    "owner": "features/plot.js",
+    "names": [
+      "injectEventAndGenerateReply"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "2b6d5245d89ba2fa1905cef1859d37823555dc4c19acda7752830ae8ef2bb2c5"
+  },
+  {
+    "order": 330,
+    "owner": "features/plot.js",
+    "names": [
+      "generateCharacterQuestionReply"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "9be11852c9f6e7086ccfbc1a9ccf331e5fd9aac177d89efb99376000f3f795ad"
+  },
+  {
+    "order": 332,
+    "owner": "ui/genre-controls.js",
+    "names": [
+      "renderGenreOptions"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "c38381a53696d47594494684796a2b78adb06c653c3fbd3a9c698ec9afa006a5"
+  },
+  {
+    "order": 333,
+    "owner": "ui/genre-controls.js",
+    "names": [
+      "renderCustomGenreList"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "542cfcaff05433fa4e78ea50683a9ddaf9bb173ef5fea9ec3871650dbcb4026d"
+  },
+  {
+    "order": 334,
+    "owner": "ui/genre-controls.js",
+    "names": [
+      "populateGenreSelectionControls"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "4922d7270f6af613ad3cff96b865c1cc903a285a7f250ee0099d366fcae84c0e"
+  },
+  {
+    "order": 335,
+    "owner": "ui/genre-controls.js",
+    "names": [
+      "syncGenreSelectionFromControls"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "eeb2e9cadff2ca1b464976fd3a498ee9f456baa4fb905c10213e446a1ebfbc3a"
+  },
+  {
+    "order": 336,
+    "owner": "ui/genre-controls.js",
+    "names": [
+      "addCustomGenre"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "af8fb2ff7d6ec0980f6910fed0953d8a3eca91f155bb2cb2f2068f5d0717f5a3"
+  },
+  {
+    "order": 337,
+    "owner": "ui/genre-controls.js",
+    "names": [
+      "deleteCustomGenre"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "1ca69dec9bcca82db9b49513b467466e1ee413f4f669ab8f042afe5162331df7"
+  },
+  {
+    "order": 362,
+    "owner": "features/recommendation.js",
+    "names": [
+      "buildGenreRecommendationPrompt"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "d169304e8c0387b05dda14bf08cac9938579b61dce524c11fda206d87b9821f0"
+  },
+  {
+    "order": 363,
+    "owner": "features/recommendation.js",
+    "names": [
+      "parseGenreRecommendationResult"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "91e840fe874ad0bc26841e45582eaf5ad06804e9b70228ee591cb610ad770c0e"
+  },
+  {
+    "order": 364,
+    "owner": "features/recommendation.js",
+    "names": [
+      "generateGenreRecommendation"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "ce703dc9f2f0c0be9a3ea2c92d3061044a9f41deb552611a7d17a8f8171759c3"
+  },
+  {
+    "order": 365,
+    "owner": "features/recommendation.js",
+    "names": [
+      "renderGenreRecommendation"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "07384f051d320bba1fd5f6bead5d3fc991003e357dd4490a8f9880302d133dfe"
+  },
+  {
+    "order": 366,
+    "owner": "features/recommendation.js",
+    "names": [
+      "applyGenreRecommendation"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "b3c39686c49e26c2f3baa4455ca45e7a73c447c9235270ff98ce78a74c163ad2"
+  },
+  {
+    "order": 367,
+    "owner": "ui/popup.js",
+    "names": [
+      "activateBoosterTab"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "70a203f2e0d9dcb50602bdd3fb8486f533d32c668b5875ae74783eeb666c043d"
+  },
+  {
+    "order": 368,
+    "owner": "ui/popup.js",
+    "names": [
+      "handleBoosterTabKeydown"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "7a9eb08203e4f4e6ae133dea3727f78f65569e4f304b6839902b05010901a1f2"
+  },
+  {
+    "order": 369,
+    "owner": "ui/popup.js",
+    "names": [
+      "renderBoosterPopupHtml"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "212c7d432dd0e842f32fd2e4f84c0fa76fe237f1b4bdf4ab54092e85316d5343"
+  },
+  {
+    "order": 370,
+    "owner": "ui/popup.js",
+    "names": [
+      "openBoosterPopup"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "5ca068462676f96295a0436e4cade408585ae915916c66d5e9b95a6e4e2cc20a"
+  },
+  {
+    "order": 371,
+    "owner": "ui/popup.js",
+    "names": [
+      "addWandMenuButton"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "ffe6c06a8b6e71d9db42398910663eed6e6a5a13d320467510ea575ab0846f89"
+  },
+  {
+    "order": 372,
+    "owner": "ui/popup.js",
+    "names": [
+      "attachWandMenuButtonWithRetry"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "56f13ee65087ac61d4d043db117092204bfe5ff08f930fa1757c8e67409c3af9"
+  },
+  {
+    "order": 373,
+    "owner": "ui/popup.js",
+    "names": [
+      "refreshConnectionProfileSelects"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "ef36cdfe5777e53cb13ffd42eaad9c73480061d4ef2453cc3ae4960ba5aef6ff"
+  },
+  {
+    "order": 374,
+    "owner": "ui/popup.js",
+    "names": [
+      "addExtensionSettingsPanel"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "fe1483ddb92666e8dd261e6481300d69240a341105305d95959dadd1871ba5e7"
+  },
+  {
+    "order": 375,
+    "owner": "ui/popup.js",
+    "names": [
+      "attachExtensionSettingsWithRetry"
+    ],
+    "kind": "FunctionDeclaration",
+    "baselineHash": "78614ad9c566d91f690556d53a4c0d843a28cd6bb2d5ee5d8b4ffc65196ab435"
+  }
+]
