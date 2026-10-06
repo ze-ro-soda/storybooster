@@ -19,7 +19,7 @@ const css = fs.readFileSync(new URL("style.css", root), "utf8");
 const readme = fs.readFileSync(new URL("README.md", root), "utf8");
 const manifest = JSON.parse(fs.readFileSync(new URL("manifest.json", root), "utf8"));
 
-assert.equal(manifest.version, "1.7.1");
+assert.equal(manifest.version, "1.7.2");
 function functionSource(name) {
     const start = source.search(new RegExp(`^(?:async )?function ${name}\\(`, "m"));
     assert.ok(start >= 0, `Missing function: ${name}`);
@@ -1045,7 +1045,7 @@ assert.match(
     source,
     /evidence\.repetition\.length >= repetitionEvidenceMinimum/
 );
-assert.match(readme, /현재 버전: \*\*1\.7\.1\*\*/);
+assert.match(readme, /현재 버전: \*\*1\.7\.2\*\*/);
 assert.doesNotMatch(readme, /배포 파일에는 검토용 회귀 테스트가 포함/);
 
 const auditParserStart = source.indexOf("function parseGenreAuditResult");

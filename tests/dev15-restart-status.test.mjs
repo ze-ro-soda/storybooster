@@ -1,3 +1,4 @@
+import { sharedBrowserStorage } from './helpers/browser-storage.mjs';
 import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
 import { environment, loadModules } from './vm-harness.mjs';
@@ -15,7 +16,7 @@ async function fixture(db, options = {}) {
     env.st.accountsEnabled = accountsEnabled;
     env.settings['rp-genre-plot-booster'] = { settingsSchemaVersion: 25, jevEnabled: true, jevConsentVersion: 1 };
     env.context.getRequestHeaders = () => ({ 'X-CSRF-Token': 'synthetic' });
-    Object.assign(env.globals, { crypto, indexedDB: db.indexedDB, location: { origin }, TextEncoder, TextDecoder });
+    Object.assign(env.globals, { crypto, indexedDB: db.indexedDB, localStorage: sharedBrowserStorage(db).storage, location: { origin }, TextEncoder, TextDecoder });
     env.globals.fetch = async (url, options) => {
         if (url === '/api/users/me') return { ok: true, json: async () => ({ ...account }) };
         assert.equal(url, '/api/backends/chat-completions/generate');
@@ -31,7 +32,7 @@ async function fixture(db, options = {}) {
 {
     const db = atomicIndexedDB(), before = await fixture(db, { created: 100 });
     await before.client.saveJevKey(key);
-    assert.equal([...db.records.keys()][0], stableScope);
+    assert.ok(sharedBrowserStorage(db).records.has('storybooster-jev-key-v2:' + stableScope));
     before.account.created = 200;
     await before.client.testJevConnection(); // Also survives restart in an open tab.
     assert.equal(before.client.hasJevSessionKey(), true);
@@ -41,9 +42,7 @@ async function fixture(db, options = {}) {
     assert.equal(after.client.getJevConnectionBadge(true).text, 'Jev 사용 준비됨');
     await after.client.testJevConnection();
     assert.equal(JSON.parse(after.bodies[0].custom_include_headers).Authorization, `Bearer ${key}`);
-    const encrypted = db.records.get(stableScope);
-    assert.equal(encrypted.key.extractable, false); assert.equal(encrypted.key.algorithm.length, 256);
-    assert.ok(!JSON.stringify(db.records.get(stableScope)).includes(key));
+    assert.equal(JSON.parse(sharedBrowserStorage(db).records.get('storybooster-jev-key-v2:' + stableScope)).key, key);
     assert.ok(!after.m.namespace('core/audit-run-trace.js').buildAuditRunReport().includes(key));
 }
 
@@ -60,8 +59,8 @@ async function fixture(db, options = {}) {
     const before = db.records.get(oldScope(200));
     const migrated = await fixture(db, { created: 300 });
     assert.equal(await migrated.client.restoreJevKey(), true);
-    assert.equal(await migrated.vault.readJevVaultRecord(stableScope), key);
-    assert.notDeepEqual(db.records.get(stableScope).ciphertext, before.ciphertext);
+    assert.equal(await migrated.vault.readJevVaultRecord(stableScope), '', 'Encrypted source retired after verified plaintext migration');
+    assert.ok(before.ciphertext); assert.equal(db.records.get(stableScope).deleted, true);
     assert.equal(db.records.get(oldScope(200)).deleted, true);
     assert.equal(await migrated.vault.readJevVaultRecord(foreign), 'foreign-synthetic-key');
     assert.equal(await migrated.vault.readJevVaultRecord(other), 'other-synthetic-key');

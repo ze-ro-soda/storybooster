@@ -1,10 +1,11 @@
 // Jev transport: fixed destination through SillyTavern's existing custom relay.
-// The live key stays private to this module; persistent records are encrypted
-// in browser IndexedDB, never in extension settings or SillyTavern secrets.
+// The live key stays private to this module. User-approved plaintext browser
+// storage is separate from extension settings, chat data and server secrets.
 import { getContext } from './sillytavern.js';
 import { recordCredentialEvent } from './audit-run-trace.js';
 import { ensureModuleSettings } from './storage.js';
-import { supportsJevVault, serializeJevVault, resolveJevVaultScope, saveJevVaultRecord, readJevVaultRecord, deleteJevVaultRecord } from './jev-vault.js';
+import { supportsJevVault, serializeJevVault, resolveJevVaultScope, saveJevVaultRecord, readJevVaultRecord, deleteJevVaultRecord,
+    jevStorageEventScope, getJevStorageRevision } from './jev-browser-store.js';
 
 const ENDPOINT = 'https://api.typesafe.ai/v1/systemone';
 const STRIP = ['messages', 'prompt', 'stream', 'temperature', 'max_tokens',
@@ -15,6 +16,7 @@ let sessionKey = '';
 let credentialScope = '';
 let pendingCredentialScope = '';
 let keyChannel;
+let storageListening = false;
 let restoreTask = null;
 let restoreBlocked = false;
 let credentialState = 'unknown';
@@ -46,7 +48,7 @@ export function getJevConnectionBadge(enabled) {
 
 function validatedKey(value) {
     const key = String(value || '').trim();
-    if (key.length > 512 || /[\r\n\x00-\x1f]/.test(key)) throw failure('STORYBOOSTER_JEV_KEY_FORMAT', 'Jev 키 형식을 확인해 주세요.');
+    if (key.length > 512 || /[\x00-\x1f\x7f]/.test(key)) throw failure('STORYBOOSTER_JEV_KEY_FORMAT', 'Jev 키 형식을 확인해 주세요.');
     return key;
 }
 export function isJevUsageAllowed() {
@@ -54,6 +56,17 @@ export function isJevUsageAllowed() {
     return settings.jevEnabled === true && settings.jevConsentVersion === JEV_CONSENT_VERSION;
 }
 function listenForKeyChanges() {
+    if (!storageListening && typeof globalThis.addEventListener === 'function') {
+        globalThis.addEventListener('storage', event => {
+            const scope = jevStorageEventScope(event.key);
+            if (event.key !== null && (!scope || ![credentialScope, pendingCredentialScope].includes(scope))) return;
+            // Read from storage afresh; never propagate event.newValue/key text.
+            setJevSessionKey(''); restoreBlocked = false;
+            recordCredentialEvent('tab_changed');
+            void restoreJevKey();
+        });
+        storageListening = true;
+    }
     if (keyChannel || typeof globalThis.BroadcastChannel !== 'function') return;
     try {
         keyChannel = new BroadcastChannel('storybooster-jev-credentials');
@@ -107,7 +120,7 @@ export function restoreJevKey() {
     if (!isJevUsageAllowed() || restoreBlocked) return Promise.resolve(false);
     if (!supportsJevVault()) {
         credentialState = 'error'; recordCredentialEvent('unsupported', 'unsupported');
-        updateStatus('이 브라우저에서는 키 암호화 저장을 사용할 수 없습니다.', 'error');
+        updateStatus('이 브라우저에서는 키 저장소를 사용할 수 없습니다. 사이트 저장소 설정을 확인해 주세요.', 'error');
         return Promise.resolve(false);
     }
     const revision = keyRevision;
@@ -132,7 +145,7 @@ export function restoreJevKey() {
                 if (revision !== keyRevision || !isJevUsageAllowed() || restoreBlocked) return false;
                 if (!attempt && error.vaultReason !== 'decrypt') { recordCredentialEvent('restore_retry', error.vaultReason || 'unknown'); continue; }
                 credentialState = 'error'; recordCredentialEvent('restore_failed', error.vaultReason || 'unknown');
-                updateStatus('저장된 키 복원 실패 · 저장본은 유지됩니다. 연결 테스트로 다시 시도해 주세요.', 'error');
+                updateStatus('저장된 키 복원 실패 · 저장본은 유지됩니다. 연결 확인으로 다시 시도해 주세요.', 'error');
                 return false;
             }
         }
@@ -169,16 +182,23 @@ export async function saveJevKey(value) {
         updateStatus('안내에 동의하고 Jev 사용을 체크해 주세요.', 'idle');
         throw failure('STORYBOOSTER_JEV_CONSENT_REQUIRED', '안내에 동의하고 Jev 사용을 체크해 주세요.');
     }
+    let storageRevision;
+    try { storageRevision = getJevStorageRevision(); }
+    catch (error) {
+        recordCredentialEvent('save_failed', 'storage');
+        updateStatus(error.message, 'error');
+        throw error;
+    }
     restoreBlocked = false; recordCredentialEvent('save_started');
     cancelJevRequests(); const revision = ++keyRevision;
-    updateStatus('키 암호화 저장 중', 'checking');
+    updateStatus('키 브라우저 저장 중', 'checking');
     try {
         return await serializeJevVault(async () => {
             const scope = await resolveJevVaultScope();
             if (revision !== keyRevision || !isJevUsageAllowed()) throw failure('STORYBOOSTER_JEV_CANCELLED', 'Jev 키 저장이 취소되었습니다.');
             pendingCredentialScope = scope; listenForKeyChanges();
             let committed;
-            try { committed = await saveJevVaultRecord(scope, key, { isCurrent: () => revision === keyRevision && isJevUsageAllowed() }); }
+            try { committed = await saveJevVaultRecord(scope, key, { isCurrent: () => revision === keyRevision && isJevUsageAllowed() && getJevStorageRevision() === storageRevision }); }
             finally { pendingCredentialScope = ''; }
             if (!committed) {
                 if (revision === keyRevision) {
@@ -193,17 +213,18 @@ export async function saveJevKey(value) {
             if (verified !== key) {
                 setJevSessionKey('');
                 credentialState = verified ? 'unknown' : 'missing';
-                updateStatus('저장 확인 중 키가 변경됐습니다. 연결 테스트로 다시 확인해 주세요.', 'error');
+                updateStatus('저장 확인 중 키가 변경됐습니다. 연결 확인으로 다시 확인해 주세요.', 'error');
                 recordCredentialEvent('save_failed', 'changed');
                 return false;
             }
             sessionKey = key; credentialScope = scope; credentialState = 'ready';
             recordCredentialEvent('save_verified');
             listenForKeyChanges(); publishKeyChange('changed', scope);
-            updateStatus('키 암호화 저장됨 · Jev 사용 준비됨', 'idle');
+            updateStatus('키 브라우저 저장됨 · Jev 사용 준비됨', 'idle');
             return true;
         });
     } catch (error) {
+        if (revision !== keyRevision || error.code === 'STORYBOOSTER_JEV_CANCELLED') return false;
         recordCredentialEvent('save_failed', error.vaultReason || 'unknown');
         const message = error.code === 'STORYBOOSTER_JEV_STORAGE_ERROR' ? error.message : 'Jev 키를 저장하지 못했습니다. 기존 저장본은 유지됩니다.';
         if (revision === keyRevision) updateStatus(message, 'error');

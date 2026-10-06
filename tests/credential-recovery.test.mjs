@@ -1,3 +1,4 @@
+import { sharedBrowserStorage } from './helpers/browser-storage.mjs';
 import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
 import { environment, loadModules } from './vm-harness.mjs';
@@ -15,7 +16,7 @@ async function fixture(db, { BroadcastChannel, accountRequest } = {}) {
     const env = environment(), bodies = [];
     env.settings['rp-genre-plot-booster'] = { settingsSchemaVersion: 25, jevEnabled: true, jevConsentVersion: 1 };
     env.context.getRequestHeaders = () => ({ 'X-CSRF-Token': 'synthetic' });
-    Object.assign(env.globals, { crypto: webcrypto, indexedDB: db.indexedDB, TextEncoder, TextDecoder,
+    Object.assign(env.globals, { crypto: webcrypto, indexedDB: db.indexedDB, localStorage: sharedBrowserStorage(db).storage, TextEncoder, TextDecoder,
         location: { origin: 'http://localhost:8000' }, BroadcastChannel });
     env.globals.fetch = async (url, options) => {
         if (url === '/api/users/me') {
@@ -43,15 +44,15 @@ async function fixture(db, { BroadcastChannel, accountRequest } = {}) {
     assert.equal(fresh.client.getJevConnectionBadge(true).text, 'Jev 사용 준비됨');
     assert.ok(!fresh.trace.buildAuditRunReport().includes(KEY));
 }
-// A temporary storage read failure keeps the ciphertext and reports error,
+// A temporary storage read failure keeps the saved key and reports error,
 // then a connection test can recover it without re-entering the key.
 {
     const db = atomicIndexedDB(), seed = await fixture(db); await seed.client.saveJevKey(KEY);
-    const scope = [...db.records.keys()][0];
-    const fresh = await fixture(db); db.faults.open = true;
+    const scope = [...sharedBrowserStorage(db).records.keys()].find(k => k.startsWith('storybooster-jev-key-v2:'));
+    const fresh = await fixture(db); sharedBrowserStorage(db).faults.read = true;
     assert.equal(await fresh.client.restoreJevKey(), false);
-    assert.equal(fresh.client.getJevCredentialState(), 'error'); assert.ok(db.records.get(scope).ciphertext);
-    db.faults.open = false; await fresh.client.testJevConnection();
+    assert.equal(fresh.client.getJevCredentialState(), 'error'); assert.ok(sharedBrowserStorage(db).records.get(scope).includes(KEY));
+    sharedBrowserStorage(db).faults.read = false; await fresh.client.testJevConnection();
     assert.equal(fresh.client.hasJevSessionKey(), true); assert.equal(fresh.bodies.length, 1);
 }
 // Cross-tab replacement reloads the new saved key; deletion clears live use and
@@ -68,11 +69,11 @@ async function fixture(db, { BroadcastChannel, accountRequest } = {}) {
     await a.client.deleteJevKey(); await tick();
     assert.equal(b.client.hasJevSessionKey(), false); assert.equal(await b.client.ensureJevKeyReady(), false);
     await a.client.saveJevKey(KEY); await tick(); await b.client.ensureJevKeyReady();
-    db.faults.commit = true;
+    sharedBrowserStorage(db).faults.write = true;
     await assert.rejects(b.client.deleteJevKey());
     assert.equal(await b.client.ensureJevKeyReady(), false);
     assert.equal(b.client.hasJevSessionKey(), false);
-    db.faults.commit = false;
+    sharedBrowserStorage(db).faults.write = false;
 }
 // Starting a diagnosis waits for key restoration before capturing revisions,
 // and a second start remains busy while that restoration is in flight.
@@ -94,4 +95,4 @@ async function fixture(db, { BroadcastChannel, accountRequest } = {}) {
     assert.equal(result.reason, 'messages_changed'); assert.equal(fresh.bodies.length, 0);
     assert.ok(!fresh.trace.buildAuditRunReport().includes(KEY));
 }
-console.log('Credential recovery: verified encrypted saves, deduplicated retries, read errors vs missing, cross-tab replacement/deletion, failed-delete safety, pre-audit waits, busy guards and private traces passed.');
+console.log('Credential recovery: verified browser saves, deduplicated retries, read errors vs missing, cross-tab replacement/deletion, failed-delete safety, pre-audit waits, busy guards and private traces passed.');

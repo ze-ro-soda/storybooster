@@ -1,3 +1,4 @@
+import { sharedBrowserStorage } from './helpers/browser-storage.mjs';
 import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
 import { environment, loadModules } from './vm-harness.mjs';
@@ -138,7 +139,7 @@ function vaultFixtures({ broadcast = true, db = atomicIndexedDB() } = {}) {
         const env = environment();
         env.settings['rp-genre-plot-booster'] = { settingsSchemaVersion: 25, jevEnabled: true, jevConsentVersion: 1 };
         env.context.getRequestHeaders = () => ({ 'X-CSRF-Token': 'synthetic-csrf' });
-        Object.assign(env.globals, { crypto, indexedDB: db.indexedDB, BroadcastChannel: broadcast ? Channel : undefined,
+        Object.assign(env.globals, { crypto, indexedDB: db.indexedDB, localStorage: sharedBrowserStorage(db).storage, BroadcastChannel: broadcast ? Channel : undefined,
             location: { origin: 'http://localhost:8000' }, TextEncoder, TextDecoder });
         env.globals.fetch = async url => {
             assert.equal(url, '/api/users/me'); if (accountGate) await accountGate.promise;
@@ -159,21 +160,17 @@ function vaultFixtures({ broadcast = true, db = atomicIndexedDB() } = {}) {
     gate.resolve(); await f.vault.serializeJevVault(() => {});
 }
 
-// Deletion wins over older encryption with and without BroadcastChannel.
+// Deletion wins over a pending account lookup, with or without BroadcastChannel.
 for (const broadcast of [true, false]) {
     const { create, db } = vaultFixtures({ broadcast });
-    let encryptGate;
-    const reached = deferred();
-    const crypto = { getRandomValues: a => webcrypto.getRandomValues(a), subtle: {
-        generateKey: (...args) => webcrypto.subtle.generateKey(...args), decrypt: (...args) => webcrypto.subtle.decrypt(...args),
-        encrypt: async (...args) => { if (encryptGate) { reached.resolve(); await encryptGate.promise; } return webcrypto.subtle.encrypt(...args); },
-    } };
-    const a = await create({ crypto }); await a.client.saveJevKey('synthetic-old-key');
+    const accountGate = { promise: Promise.resolve() };
+    const a = await create({ accountGate }); await a.client.saveJevKey('synthetic-old-key');
     const b = await create(); await b.client.restoreJevKey();
-    encryptGate = deferred(); const saving = a.client.saveJevKey('synthetic-new-key');
-    await reached.promise; await b.client.deleteJevKey(); await pause();
-    encryptGate.resolve(); assert.equal(await saving, false);
-    assert.ok([...db.records.values()].every(r => r.deleted && !r.key && !r.ciphertext));
+    const gate = deferred(); accountGate.promise = gate.promise;
+    const saving = a.client.saveJevKey('synthetic-new-key');
+    await pause(); await b.client.deleteJevKey(); await pause();
+    gate.resolve(); assert.equal(await saving, false);
+    assert.ok([...sharedBrowserStorage(db).records].filter(([k]) => k.startsWith('storybooster-jev-key-v2:')).every(([,r]) => JSON.parse(r).deleted));
     const c = await create(); assert.equal(await c.client.restoreJevKey(), false);
     // A deliberate new save after deletion is allowed and survives refresh.
     assert.equal(await c.client.saveJevKey('synthetic-fresh-key'), true);
