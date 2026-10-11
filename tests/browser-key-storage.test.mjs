@@ -158,7 +158,7 @@ test('the actual combined diagnosis uses a persisted HTTP key and saves the vali
 test('settings expose three buttons and plaintext notice, retain failed input, and contain no server plugin', () => {
     const ui = fs.readFileSync(new URL('../ui/popup.js', import.meta.url), 'utf8');
     for (const id of ['rp-jev-key-apply', 'rp-jev-test', 'rp-jev-key-delete']) assert.ok(ui.includes(`id="${id}"`));
-    assert.match(ui, /사이트 저장소에 평문으로 보관/);
+    assert.match(ui, /이 브라우저에 평문 저장/);
     assert.match(ui, /if \(saved && keyInput\) keyInput.value = ''/);
     for (const file of ['server-plugin', 'core/jev-server.js', 'SERVER-STORAGE.md', 'install-termux.sh'])
         assert.equal(fs.existsSync(new URL('../' + file, import.meta.url)), false);

@@ -3,6 +3,7 @@ import { BACKGROUND_REQUEST_TIMEOUT_MS, ERROR_LOG_STORAGE_KEY, MAX_ERROR_LOG_ENT
 import { extractJsonObject } from "./responses.js";
 import { recordedErrorObjects, runtime } from "./runtime.js";
 import { getContext } from "./sillytavern.js";
+import { responseValidationDetails, filterResponseValidationDetails } from './response-validation.js';
 
 // @source-order 62
 function getDiagnosticSessionStorage() {
@@ -119,8 +120,12 @@ function getErrorDiagnosticLocation(error) {
 function describeDiagnosticValue(value, prefix = "", depth = 0) {
     if (!value || typeof value !== "object" || depth > 1) return [];
     const entries = [];
-    for (const [key, child] of Object.entries(value).slice(0, 40)) {
-        const safeKey = /^[A-Za-z0-9_.-]{1,80}$/.test(key)
+    const preferred = ['character_consistency_facets', 'character_interpretation_facets'];
+    const ordered = [...preferred.filter(key => Object.hasOwn(value, key)).map(key => [key, value[key]]),
+        ...Object.entries(value).filter(([key]) => !preferred.includes(key))];
+    for (const [key, child] of ordered.slice(0, 40)) {
+        const knownFacet = !preferred.includes(prefix) || filterResponseValidationDetails({ validationField: `${prefix}.${key}` }).validationField;
+        const safeKey = knownFacet && /^[A-Za-z0-9_.-]{1,80}$/.test(key)
             ? key
             : "[비표준 필드]";
         const path = prefix ? `${prefix}.${safeKey}` : safeKey;
@@ -315,7 +320,8 @@ function recordStoryBoosterError(error, details = {}) {
         80
     );
     const code = sanitizeDiagnosticText(error?.code || details.code || "", 100);
-    const fingerprint = [task, stage, code, errorMessage].join("|");
+    const validation = responseValidationDetails(error);
+    const fingerprint = [task, stage, code, errorMessage, validation.validationCode || '', validation.validationField || ''].join("|");
     const now = Date.now();
     const entry = {
         id:
@@ -361,6 +367,7 @@ function recordStoryBoosterError(error, details = {}) {
         ),
         errorCode: code,
         errorMessage,
+        ...validation,
         responseChars: Number(details.responseChars || diagnostic.responseChars) || 0,
         responseFormat: sanitizeDiagnosticText(
             details.responseFormat || diagnostic.responseFormat || "",
@@ -442,6 +449,7 @@ function formatStoryBoosterErrorEntry(entry, index) {
         `HTTP/종료 사유: ${entry.httpStatus || "없음"} / ${entry.finishReason || "없음"}`,
         `오류 코드: ${entry.errorCode || "없음"}`,
         `오류 메시지: ${entry.errorMessage || "없음"}`,
+        `검증 분류/필드: ${entry.validationCode || "확인 불가"} / ${entry.validationField || "확인 불가"}`,
         `응답 구조: ${entry.responseFormat || "확인 불가"} · ${entry.responseChars || 0}자`,
         `반환 필드: ${entry.returnedFields?.join(", ") || "확인 불가"}`,
         `누락 필드: ${entry.missingFields?.join(", ") || "없음"}`,

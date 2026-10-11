@@ -5,7 +5,7 @@
 const MODULE_NAME = "rp-genre-plot-booster";
 
 // @source-order 3
-const STORYBOOSTER_VERSION = "1.7.2";
+const STORYBOOSTER_VERSION = "1.7.3";
 
 // @source-order 4
 const GENRE_PROMPT_KEY = "rp_genre_boost";

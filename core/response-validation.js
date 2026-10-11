@@ -3,8 +3,16 @@
 const DIMENSIONS = ['primary_genre', 'genre_expression', 'support_texture', 'scene_density',
     'character_consistency', 'character_interpretation', 'char_agency', 'relationship', 'continuity', 'repetition'];
 const GROUPS = ['reasons', 'corrections', 'next_corrections'];
+// Fixed schema names only. A regression test keeps these diagnostic allowlists
+// aligned with the common character-facet contract.
+const CHARACTER_FACETS = {
+    character_consistency_facets: ['motives', 'values', 'boundaries', 'emotion', 'voice', 'vocabulary'],
+    character_interpretation_facets: ['individuality', 'development', 'softening', 'balance', 'situation', 'nuance'],
+};
 const FIELDS = new Set(['response', 'character_focus_fields', ...GROUPS,
-    ...GROUPS.flatMap(group => DIMENSIONS.map(id => `${group}.${id}`))]);
+    ...GROUPS.flatMap(group => DIMENSIONS.map(id => `${group}.${id}`)),
+    ...Object.keys(CHARACTER_FACETS),
+    ...Object.entries(CHARACTER_FACETS).flatMap(([field, ids]) => ids.map(id => `${field}.${id}`))]);
 const CODES = new Set(['field_missing', 'field_type', 'field_too_short', 'field_too_long',
     'unexpected_field', 'field_value', 'output_empty', 'json_incomplete', 'output_truncated',
     'reasoning_only', 'json_syntax', 'required_fields_missing', 'invalid_fields', 'incomplete_ratings',
@@ -84,4 +92,27 @@ export function responseValidationDetails(error) {
         return { validationCode: 'schema_rejected', validationField: 'response' };
     }
     return { validationCode: 'unknown', validationField: 'response' };
+}
+
+export function responseRepairInstruction(error) {
+    const { validationCode, validationField } = responseValidationDetails(error);
+    // Generic JSON failures retain the existing compatibility instructions.
+    // Add a targeted repair only when a controlled concrete field is known.
+    if (!validationField || validationField === 'response') return '';
+    const descriptions = {
+        field_missing: 'A required field was missing.', field_type: 'A field had the wrong JSON type.',
+        field_value: 'A field used a value outside the allowed choices.', unexpected_field: 'An object contained an unexpected key.',
+        field_too_short: 'A field was shorter than the required minimum.', field_too_long: 'A field exceeded the required maximum.',
+        output_empty: 'The visible output was empty.', json_incomplete: 'The JSON object was incomplete.',
+        output_truncated: 'The JSON output was truncated.', reasoning_only: 'Only reasoning was returned, without a visible final JSON object.',
+        json_syntax: 'The JSON syntax was invalid.', required_fields_missing: 'Required fields were missing.',
+        invalid_fields: 'A required field failed validation.', incomplete_ratings: 'Required ratings or evidence were incomplete.',
+    };
+    if (!descriptions[validationCode]) return '';
+    const field = validationField || 'response';
+    const parent = field.split('.')[0];
+    const facetContract = Object.hasOwn(CHARACTER_FACETS, parent)
+        ? ` ${parent} must be one JSON object with exactly these six keys: ${CHARACTER_FACETS[parent].join(', ')}. Each value must be a string: yes, no, justified, temporary, no_opportunity, or uncertain. No arrays, booleans, nested objects, omitted keys, or additional keys.` : '';
+    // Never include error.message, the raw response, or an unrecognized path.
+    return `VALIDATION REPAIR: ${descriptions[validationCode]} Fixed field: ${field}.${facetContract} Return the complete corrected JSON object, not a patch. Re-evaluate the evidence; do not replace unknown observations with positive verdicts just to satisfy validation.`;
 }

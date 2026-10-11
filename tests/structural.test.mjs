@@ -1,5 +1,5 @@
 import { throwIfRequestAborted } from "../core/request-lifecycle.js";
-import { requestFailureDetails } from "../core/response-validation.js";
+import { requestFailureDetails, responseRepairInstruction, responseValidationDetails, filterResponseValidationDetails } from "../core/response-validation.js";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { readModuleSource } from "./helpers/read-modules.mjs";
@@ -13,7 +13,7 @@ function functionSource(name) {
     return source.slice(start, source.indexOf("\n}\n", start) + 2);
 }
 function harness(names, globals = {}) {
-    const context = vm.createContext({ console, throwIfRequestAborted, requestFailureDetails, ...globals });
+    const context = vm.createContext({ console, throwIfRequestAborted, requestFailureDetails, responseRepairInstruction, responseValidationDetails, filterResponseValidationDetails, ...globals });
     vm.runInContext(names.map(functionSource).join("\n"), context);
     return context;
 }

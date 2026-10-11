@@ -1,5 +1,5 @@
 import { captureResponseMetadata, pendingResponseMetadata } from './response-metadata.js';
-import { requestFailureDetails } from './response-validation.js';
+import { requestFailureDetails, responseRepairInstruction } from './response-validation.js';
 // StoryBooster: core/requests.js
 import { runAbortableRequest, throwIfRequestAborted } from "./request-lifecycle.js";
 import { BACKGROUND_REQUEST_TIMEOUT_MS, MODULE_NAME } from "./constants.js";
@@ -476,6 +476,7 @@ function getStructuredJsonCompatibilityReason(error) {
     if (code.includes("TRUNCATED_JSON")) return "출력 한도에 따른 응답 중단";
     if (code.includes("INCOMPLETE_RATINGS")) return "진단 필드 누락";
     if (code.includes("BASELINE_INCOMPLETE")) return "캐릭터 기준 필드 누락";
+    if (code.includes("INVALID_FIELDS")) return "응답 필드 형식 오류";
     return "구조화 출력 요청 오류";
 }
 
@@ -501,7 +502,7 @@ async function requestStructuredJsonWithCompatibility({
     const repairLimit = Number.isSafeInteger(repairResponseLength) && repairResponseLength >= Number(responseLength || 0)
         ? repairResponseLength : Math.max(4800, Number(responseLength || 0) * 2);
     const plainFirst = initialAttemptMode === 'plain_json';
-    const runAttempt = async ({ withoutSchema = false, repair = false, fallback = false } = {}) => {
+    const runAttempt = async ({ withoutSchema = false, repair = false, fallback = false, validationError = null } = {}) => {
         throwIfRequestAborted(signal);
         diagnostic.attemptMode = repair ? 'repair_json' : withoutSchema ? 'plain_json' : 'schema';
         const result = await generateStructuredAnalysis({
@@ -517,6 +518,7 @@ async function requestStructuredJsonWithCompatibility({
                 repair
                     ? "FINAL REPAIR: The previous schema-free JSON response was empty, incomplete, or invalid. Minimize internal reasoning and return one complete valid JSON object immediately."
                     : "",
+                validationError ? responseRepairInstruction(validationError) : '',
             ]
                 .filter(Boolean)
                 .join("\n"),
@@ -551,7 +553,7 @@ async function requestStructuredJsonWithCompatibility({
         diagnostic.retryReason = getStructuredJsonCompatibilityReason(error);
         onFallback?.({ repair: false, error, attemptMode: diagnostic.attemptMode });
         try {
-            return await runAttempt({ withoutSchema: true, fallback: true });
+            return await runAttempt({ withoutSchema: true, fallback: true, validationError: error });
         } catch (fallbackError) {
             throwIfRequestAborted(signal);
             if (
@@ -565,7 +567,7 @@ async function requestStructuredJsonWithCompatibility({
             diagnostic.retryCount += 1;
             diagnostic.retryReason = `${diagnostic.retryReason} · 일반 JSON 복구`;
             onFallback?.({ repair: true, error: fallbackError, attemptMode: diagnostic.attemptMode });
-            return runAttempt({ withoutSchema: true, repair: true, fallback: true });
+            return runAttempt({ withoutSchema: true, repair: true, fallback: true, validationError: fallbackError });
         }
     }
 }

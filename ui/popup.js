@@ -1137,7 +1137,7 @@ function addExtensionSettingsPanel() {
                             <button id="rp-jev-key-delete" type="button" class="menu_button">키 삭제</button>
                         </div>
                         <p id="rp-jev-status" aria-live="polite">${escapeHtml(getJevConnectionStatus())}</p>
-                        <small class="rp-settings-help">키는 이 브라우저의 사이트 저장소에 평문으로 보관되며, 새로고침 후 자동으로 불러옵니다. 서버 플러그인은 필요하지 않습니다. 다른 브라우저·기기·접속 주소에서는 키를 다시 입력해야 합니다. 브라우저 데이터를 지우면 키도 삭제됩니다. 연결 테스트 없이 진단에 사용할 수 있습니다. 키 미입력·Jev 사용 해제·요청 실패 시 기존 진단을 사용합니다. 판단 이유와 보정문은 진단 프로필의 모델로 작성합니다.</small>
+                        <small class="rp-settings-help">키는 이 브라우저에 평문 저장되며, 새로고침 후 자동으로 불러옵니다. 다른 기기·브라우저·접속 주소를 사용하거나 브라우저 데이터를 삭제하면 다시 입력해 주세요.<br><br>Jev를 사용할 수 없으면 기본 진단으로 진행합니다. 판단 이유와 보정문은 기존 진단 모델이 작성합니다.</small>
                     </section>
 
                     <section class="rp-settings-card">

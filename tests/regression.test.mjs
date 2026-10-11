@@ -1,7 +1,7 @@
 import { completeLegacyPolicyFixture } from './helpers/legacy-policy-fixture.mjs';
 import { addLegacyAuditPolicySchema, finalizeLegacyAudit as strictFinalizeLegacyAudit, legacyAuditPolicyPrompt } from '../features/legacy-diagnosis.js';
 import { runAbortableRequest, throwIfRequestAborted } from "../core/request-lifecycle.js";
-import { requestFailureDetails } from "../core/response-validation.js";
+import { requestFailureDetails, responseRepairInstruction, responseValidationDetails, filterResponseValidationDetails } from "../core/response-validation.js";
 import { normalizeAuditAnalysis, normalizeAuditComparison, normalizeAuditHistory, markAuditHistoryApplied } from '../core/audit-history.js';
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -19,7 +19,7 @@ const css = fs.readFileSync(new URL("style.css", root), "utf8");
 const readme = fs.readFileSync(new URL("README.md", root), "utf8");
 const manifest = JSON.parse(fs.readFileSync(new URL("manifest.json", root), "utf8"));
 
-assert.equal(manifest.version, "1.7.2");
+assert.equal(manifest.version, "1.7.3");
 function functionSource(name) {
     const start = source.search(new RegExp(`^(?:async )?function ${name}\\(`, "m"));
     assert.ok(start >= 0, `Missing function: ${name}`);
@@ -1045,7 +1045,7 @@ assert.match(
     source,
     /evidence\.repetition\.length >= repetitionEvidenceMinimum/
 );
-assert.match(readme, /현재 버전: \*\*1\.7\.2\*\*/);
+assert.match(readme, /현재 버전: \*\*1\.7\.3\*\*/);
 assert.doesNotMatch(readme, /배포 파일에는 검토용 회귀 테스트가 포함/);
 
 const auditParserStart = source.indexOf("function parseGenreAuditResult");

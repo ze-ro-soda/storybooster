@@ -64,7 +64,7 @@ for (const scope of ['genre', 'character', 'combined']) for (const attempts of [
     const replies = JSON.stringify(f.feedback(scope));
     f.env.responses(attempts === 1 ? [replies] : ['{}', '{"reasons":', replies]);
     const row = await f.audit.runGenreDriftAudit('chat_A', f.audit.getScopedAuditSelection(f.selection(), scope), { manual: true, scope });
-    assert.equal(row.status, 'completed'); assert.equal(row.version, '1.7.2');
+    assert.equal(row.status, 'completed'); assert.equal(row.version, '1.7.3');
     assert.equal(row.metrics.resultSaved, true); assert.equal(row.metrics.displayUpdated, true);
     assert.equal(row.metrics.requestCount, attempts); assert.equal(row.metrics.retryCount, attempts - 1);
     assert.equal(row.metrics.requestedOutputTokens, 4800);
@@ -82,7 +82,7 @@ for (const scope of ['genre', 'character', 'combined']) for (const attempts of [
     const raw = f.env.globals.sessionStorage.getItem('storybooster.audit-runs.v1');
     const next = await fixture({ configure: env => env.globals.sessionStorage.setItem('storybooster.audit-runs.v1', raw) });
     const restored = next.m.namespace('core/audit-run-trace.js').readAuditRuns()[0];
-    assert.equal(restored.version, '1.7.2'); assert.equal(restored.metrics.validationCode, undefined);
+    assert.equal(restored.version, '1.7.3'); assert.equal(restored.metrics.validationCode, undefined);
     assert.equal(restored.events.filter(e => e.stage === 'compatibility_retry').length, attempts - 1);
 }
 
@@ -127,7 +127,7 @@ for (const targets of [['char_agency'], ['char_agency', 'character_consistency']
     }
     const trace = f.m.namespace('core/automatic-plot-trace.js');
     const run = trace.startAutomaticPlotTrace(row.id);
-    assert.ok(trace.buildAutomaticPlotTraceReport().includes('1.7.2'));
+    assert.ok(trace.buildAutomaticPlotTraceReport().includes('1.7.3'));
     assert.ok(run);
 }
 

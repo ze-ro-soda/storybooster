@@ -44,7 +44,8 @@ export const changedDeclarations = new Set([
     172, // Transcript equality check for asynchronously prepared plot instructions.
     174, 175, 176, 177, // Separate visible provider text from thoughts on every parser path.
     159, // Approved common 4800-token writing budget for both engines and all scopes.
-    187, 188, 189, 191, 340, 206, 207, 208, 209,
+    187, 188, 189, 190, 191, 340, 206, 207, 208, 209,
+    67, 76, 78, // Facet-first diagnostic summaries and controlled validation details.
     81, 365, 366, 105, 106, 107, 119, 151, 198, 199, 204, 205, 210, 211, 258, 260, 261, 264, 271, 275, 293, 298,
     269, 323, 329, 341, 344, 347, 357, 348, 349, 356, 358, 359, 360, 369, 370, 374, 376,
 ]);

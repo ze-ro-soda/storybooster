@@ -1,16 +1,21 @@
 import { AUDIT_CORRECTION_ORDER, AUDIT_CORRECTION_MAX_CHARS, AUDIT_FACET_VERDICTS, AUDIT_PROBLEM_IMPACT, auditCorrectionWritingPrompt, formatAuditCorrectionInstruction, getAuditProblemImpact, hasSufficientCharacterFacets, rankAuditCorrections, reduceRepetitionEvidence, validateAuditCorrection } from '../core/audit-policy.js';
 import { GENRE_AUDIT_CODES, GENRE_CORRECTION_MODULES, GENRE_CORRECTION_DESCRIPTIONS, CHARACTER_BASELINE_CORRECTION_CODES, CHARACTER_BASELINE_FIELD_ID_SET } from '../core/constants.js';
 import { normalizeAuditReason } from '../core/text.js';
+import { feedbackValidationError } from '../core/response-validation.js';
 
 const NEGATIVE = { primary_genre: 'primaryFailure', genre_expression: 'genreExpressionFailure', support_texture: 'supportOpportunity', scene_density: 'sceneDensityFailure',
     character_consistency: 'characterConsistency', character_interpretation: 'characterInterpretation', char_agency: 'characterAgencyFailure', relationship: 'relationshipFailure', continuity: 'continuityFailure', repetition: 'repetition' };
 
 export function legacyAuditPolicyPrompt(scope = 'combined') {
+    const characterCodes = ['character_consistency', 'character_interpretation'];
+    const facetShape = Object.fromEntries(characterCodes.map(code => [`${code}_facets`,
+        Object.fromEntries(Object.keys(AUDIT_PROBLEM_IMPACT[code]).map(id => [id, 'uncertain']))]));
     return [
         'FINAL RATING POLICY OVERRIDE: attention means a confirmed concrete mild problem, never merely too few positive examples. If otherwise insufficient, ambiguous or essentially missing evidence prevents a decision, list the dimension in deferred_dimensions; it receives no automatic correction. Clear independently sufficient evidence can still decide the other dimensions. Confirmed failures take priority over unrelated unknowns. Quiet scenes, supported character growth and a trait without an opportunity are not defects.',
         'For every attention rating, cite the directly observed mild failure in its negative evidence array and explain that specific failure. One localized defect can justify a small repair, except repetition: cite BOTH members in repetition_evidence and identify their matching pattern in repetition_matches using left, right, kind and facet. Allowed repetition facets: wording, structure, gesture, emotion, relationship, ending. A pair with kind=pattern is attention; a connected same-facet, same-pattern group of three or more is weak. Do not combine unrelated pairs or different facets to inflate persistence. A pair with kind=near_verbatim is weak only for near-identical distinctive wording or a highly distinctive recycled beat, never a recurring name, required term, intentional echo or signature voice. One reply or unmatched numbers alone means defer repetition. Do not require novelty or ornate prose.',
         `Return problem_facets with every requested dimension ID mapped to the directly failed facet IDs, or [] if no confirmed defect. Allowed IDs and their shared next-response impact: ${JSON.stringify(AUDIT_PROBLEM_IMPACT)}. Do not include merely unknown, healthy or no-opportunity facets; do not invent numeric scores.`,
         scope !== 'genre' ? 'Return character_consistency_facets and character_interpretation_facets using every listed facet ID and one of yes, no, justified, temporary, no_opportunity, uncertain. no_opportunity means that the supplied scene does not test that trait or the baseline does not specify it; uncertain means an applicable observation is unclear. To decide stable, require two different positively supported facets when two or more are applicable. If exactly one facet has an opportunity and every other facet is no_opportunity, sufficient repeated positive reply evidence for that one facet is enough. Keep the existing positive-reply count requirements. A criminal trait not tested in quiet daily life is not a failure or mandatory display.' : '',
+        scope !== 'genre' ? `CHARACTER FACET JSON CONTRACT: Add these two top-level objects, with exactly these six keys in each: ${JSON.stringify(facetShape)}. Each value must be one string from ${JSON.stringify(AUDIT_FACET_VERDICTS)}. The shown uncertain values are structural placeholders, not suggested verdicts. Decide every facet independently from the supplied baseline and responses. Do not return arrays, booleans, nested evidence objects, translated keys or verdicts, or omit a facet. yes = positively supported; no = directly contradicted or flattened; justified = supported development or context-dependent behavior; temporary = supported temporary behavior; no_opportunity = not specified or not tested in this scene; uncertain = applicable evidence is unclear.` : '',
         'support_texture may also be attention for a localized missed natural opening. Do not list normal dormant secondary lenses or genuinely inapplicable na/unavailable fields as deferred.',
         `Choose at most two confirmed problems for corrections and next_corrections. A severe contradiction comes first, then weak/drifted/biased before attention, then next-response impact and distinct failed replies; resolve ties in this order: ${AUDIT_CORRECTION_ORDER.join(' > ')}. Deferred dimensions never qualify.`,
         auditCorrectionWritingPrompt(),
@@ -55,10 +60,23 @@ export function finalizeLegacyAudit(result, parsed, outputLanguage, allowCorrect
         const value = parsed[`${code}_facets`];
         if (value === undefined) continue;
         const ids = Object.keys(AUDIT_PROBLEM_IMPACT[code]);
-        if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== ids.length ||
-            !ids.every(id => AUDIT_FACET_VERDICTS.includes(value[id]))) {
-            throw Object.assign(new Error('캐릭터 진단 근거의 형식이 올바르지 않습니다.'), { code: 'STORYBOOSTER_INVALID_FIELDS' });
+        const field = `${code}_facets`;
+        const rejectFacet = (validationCode, validationField = field) => {
+            // Only fixed contract paths leave this validator; never copy a
+            // provider's unexpected key, value or response into the error.
+            throw Object.assign(feedbackValidationError(validationCode, validationField), {
+                message: '캐릭터 진단 근거의 형식이 올바르지 않습니다.',
+                [validationCode === 'field_missing' ? 'missingFields' : 'invalidFields']: [validationField],
+            });
+        };
+        if (!value || typeof value !== 'object' || Array.isArray(value)) rejectFacet('field_type');
+        for (const id of ids) {
+            const path = `${field}.${id}`;
+            if (!Object.hasOwn(value, id)) rejectFacet('field_missing', path);
+            if (typeof value[id] !== 'string') rejectFacet('field_type', path);
+            if (!AUDIT_FACET_VERDICTS.includes(value[id])) rejectFacet('field_value', path);
         }
+        if (Object.keys(value).length !== ids.length) rejectFacet('unexpected_field');
     }
     if (parsed.problem_facets !== undefined && (!parsed.problem_facets || typeof parsed.problem_facets !== 'object' || Array.isArray(parsed.problem_facets) ||
         !Object.entries(parsed.problem_facets).every(([code, ids]) => Object.hasOwn(parsed, code) && Object.hasOwn(AUDIT_PROBLEM_IMPACT, code) && Array.isArray(ids) && ids.length <= 6 && ids.every(id => Object.hasOwn(AUDIT_PROBLEM_IMPACT[code], id))))) {
