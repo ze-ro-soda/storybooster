@@ -11,6 +11,7 @@ import { createCharacterBaselineVersion, createEmptyCharacterBaseline, ensureCha
 import { safelyUpdateCharacterBoosterPanel, safelyUpdateGenreAnchorPanel, updateCharacterBaselineActionStates } from "../core/ui-hooks.js";
 import { safelyUpdateGenrePrompt } from "./audit.js";
 import { invalidateCharacterAuditState } from '../core/character-audit-state.js';
+import { blocksFormatRetry } from '../core/response-validation.js';
 
 // @source-order 137
 function selectCharacterBaselineVersion(versionId = "") {
@@ -572,6 +573,7 @@ function parseCharacterBoostAnchorResult(
 
 // @source-order 232
 function shouldRetryCharacterAnchorWithoutSchema(error, connectionSnapshot) {
+    if (blocksFormatRetry(error)) return false;
     const code = String(error?.code || "").toUpperCase();
     if (
         [
@@ -607,6 +609,7 @@ function shouldRetryCharacterAnchorWithoutSchema(error, connectionSnapshot) {
 
 // @source-order 233
 function shouldRetryTaggedCharacterAnchor(error) {
+    if (blocksFormatRetry(error)) return false;
     const code = String(error?.code || "").toUpperCase();
     if (
         [
@@ -1938,6 +1941,11 @@ async function regenerateCharacterBoostAnchor() {
         toastr?.info?.("전역 설정에서 캐릭터 부스터를 켜 주세요.");
         return;
     }
+    // Commit open drafts before taking the generation snapshot. A later edit
+    // is still allowed, but invalidates this result at the commit boundary.
+    for (const textarea of getBoosterElements('.rp-character-field-text:not([readonly])')) {
+        if (!flushCharacterBaselineAutosave(textarea)) return;
+    }
     const baselineState = getCurrentCharacterBaseline();
     if (!baselineState.identity || !baselineState.baseline) return;
     if (
@@ -1953,6 +1961,7 @@ async function regenerateCharacterBoostAnchor() {
     const { identity, baseline } = baselineState;
     const taskChatId = getCurrentChatId();
     const taskVersionId = String(baselineState.versionId || "");
+    const baselineSnapshot = JSON.stringify(baseline);
     const anchorSettings = ensureModuleSettings();
     const operationContext = createOperationContextSnapshot({
         chatId: getCurrentChatId(),
@@ -1989,18 +1998,24 @@ async function regenerateCharacterBoostAnchor() {
             );
             return;
         }
-        baseline.boostAnchor = anchor.boostAnchor;
-        baseline.boostAnchorDisplay = anchor.boostAnchorDisplay;
-        baseline.boostAnchorDisplayLanguage = outputLanguage;
-        baseline.boostAnchorUpdatedAt = Date.now();
-        baseline.boostAnchorNeedsRefresh = false;
-        baseline.updatedAt = Date.now();
+        const latestBaseline = getCharacterBaselineVersion(identity.key, taskVersionId);
+        const selectedVersion = String(ensureModuleSettings().chats[taskChatId]?.characterBoost?.baselineVersionId || '');
+        if (!latestBaseline || JSON.stringify(latestBaseline) !== baselineSnapshot || selectedVersion !== taskVersionId) {
+            toastr?.info?.('생성 중 캐릭터 기준이 변경되어 이전 앵커 결과를 저장하지 않았어요. 현재 기준으로 다시 생성해 주세요.');
+            return;
+        }
+        latestBaseline.boostAnchor = anchor.boostAnchor;
+        latestBaseline.boostAnchorDisplay = anchor.boostAnchorDisplay;
+        latestBaseline.boostAnchorDisplayLanguage = outputLanguage;
+        latestBaseline.boostAnchorUpdatedAt = Date.now();
+        latestBaseline.boostAnchorNeedsRefresh = false;
+        latestBaseline.updatedAt = Date.now();
         if (taskVersionId) {
-            if (!writeCharacterBaselineVersion(identity, baseline, taskVersionId)) {
+            if (!writeCharacterBaselineVersion(identity, latestBaseline, taskVersionId)) {
                 throw new Error("저장하려던 캐릭터 기준 버전을 찾지 못했습니다.");
             }
         } else {
-            createCharacterBaselineVersion(identity, baseline, {
+            createCharacterBaselineVersion(identity, latestBaseline, {
                 chatId: taskChatId,
                 parentVersionId: "",
             });

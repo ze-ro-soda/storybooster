@@ -1,5 +1,7 @@
 # Jev・자동 랜덤박스 개발 메모
 
+1.7.4-dev.4에서 Typesafe/NanoGPT 제공자 선택과 제공자별 키 분리를 추가했습니다. 현재 연결 목적지·모델은 core/jev-providers.js가 관리합니다. 최신 구현·검증 결과는 MAINTENANCE.md와 INTERNALS.md, 아르곤 점검 결과는 COMPATIBILITY.md를 참고합니다.
+
 현재 키 저장 변경과 공통 진단 기준·1.7.1-dev.3 요청 호환성은 MAINTENANCE.md와 INTERNALS.md를 참고한다. 이 문서의 아래 항목은 1.7.0까지의 구현과 검증 이력이다. 아래 개발·베타 버전 항목은 변경 이력이며 현재 배포 상태는 INTERNALS.md의 배포 검증 항목을 참고한다.
 
 ## beta.2 기본 진단과 작성 한도 통일

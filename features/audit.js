@@ -357,31 +357,23 @@ function getScopedAuditSelection(selection, scope = "combined") {
 }
 
 // @source-order 206
-function getAuditOutputInstructions(selection) {
-    const genreEnabled = Boolean(selection.primaryGenre);
-    const characterEnabled = Boolean(selection.characterEnabled);
-    const genreShape =
-        '{"primary_genre":"weak","primary_genre_evidence":[],"primary_genre_failure_evidence":[],"primary_genre_reason":"","genre_expression":"weak","genre_expression_evidence":[],"genre_expression_failure_evidence":[],"genre_expression_reason":"","support_texture":"dormant","support_texture_evidence":[],"support_texture_opportunity":[],"support_texture_identifiable":false,"support_texture_reason":"","scene_density":"weak","scene_density_evidence":[],"scene_density_failure_evidence":[],"scene_density_reason":""}';
-    const characterShape =
-        '{"character_consistency":"unavailable","character_consistency_positive_evidence":[],"character_consistency_evidence":[],"character_consistency_severe":false,"character_consistency_reason":"","character_interpretation":"unavailable","character_interpretation_positive_evidence":[],"character_interpretation_evidence":[],"character_interpretation_reason":"","character_correction":"","character_focus_fields":[],"char_agency":"weak","char_agency_evidence":[],"char_agency_failure_evidence":[],"char_agency_reason":"","relationship":"weak","relationship_evidence":[],"relationship_failure_evidence":[],"relationship_reason":"","continuity":"weak","continuity_evidence":[],"continuity_failure_evidence":[],"continuity_severe":false,"continuity_reason":"","repetition":"stable","repetition_evidence":[],"repetition_exact":false,"repetition_reason":""}';
-    if (genreEnabled && !characterEnabled) {
-        return [
-            `Return JSON only with these exact keys: ${genreShape}.`,
-            "Allowed values: primary_genre, genre_expression, and scene_density = present, attention, weak, or na; support_texture = present, attention, dormant, weak, or na; support_texture_identifiable must be true or false.",
-            "Do not omit any key. Use support_texture=na and empty support arrays when there is no supporting genre.",
-        ];
-    }
-    if (!genreEnabled && characterEnabled) {
-        return [
-            `Return JSON only with these exact keys: ${characterShape}.`,
-            "Allowed values: character_consistency = stable, attention, drifted, or unavailable; character_interpretation = stable, attention, biased, or unavailable; char_agency, relationship, and continuity = present, attention, weak, or na; repetition = stable, attention, weak, or na; boolean fields must be true or false.",
-            "Do not omit any key.",
-        ];
-    }
+function getAuditOutputInstructions(selection, scope = "combined", outputLanguage = "ko") {
+    const schema = buildGenreAuditJsonSchema(scope, outputLanguage, selection).schema;
+    const placeholder = property => {
+        if (property.type === "object") return Object.fromEntries(Object.entries(property.properties || {}).map(([key, child]) => [key, placeholder(child)]));
+        if (property.type === "array") return [];
+        if (property.type === "boolean") return false;
+        if (property.type === "integer") return 1;
+        if (property.enum) return property.enum.includes("uncertain") ? "uncertain" : property.enum[0];
+        return "";
+    };
     return [
-        `Return JSON only with every exact key in the following two shapes merged into one flat object. Do not include GENRE or CHARACTER as keys. GENRE KEYS: ${genreShape} CHARACTER KEYS: ${characterShape}.`,
-        "Allowed values: primary_genre, genre_expression, and scene_density = present, attention, weak, or na; support_texture = present, attention, dormant, weak, or na; character_consistency = stable, attention, drifted, unavailable, or na; character_interpretation = stable, attention, biased, unavailable, or na; char_agency, relationship, and continuity = present, attention, weak, or na; repetition = stable, attention, weak, or na; boolean fields must be true or false.",
-        "Do not omit any key. Return na for a disabled module. Use support_texture=na and empty support arrays when there is no supporting genre.",
+        `Return JSON only with this complete audit shape: ${JSON.stringify(placeholder(schema))}.`,
+        "The shape includes all requested policy maps. Do not add fields for disabled audit modules. Additional plot fields are requested separately when needed.",
+        "Do not omit any requested key. Example values are structural placeholders, not suggested verdicts. Keep unselected corrections empty and evidence arrays empty when genuinely inapplicable.",
+        ...(selection.primaryGenre ? ["Allowed genre values: primary_genre, genre_expression, and scene_density = present, attention, weak, or na; support_texture = present, attention, dormant, weak, or na; support_texture_identifiable must be true or false.",
+            "Use support_texture=na and empty support arrays when there is no supporting genre."] : []),
+        ...(selection.characterEnabled ? ["Allowed character values: character_consistency = stable, attention, drifted, or unavailable; character_interpretation = stable, attention, biased, or unavailable; char_agency, relationship, and continuity = present, attention, weak, or na; repetition = stable, attention, weak, or na; boolean fields must be true or false."] : []),
     ];
 }
 
@@ -413,7 +405,7 @@ function buildGenreAuditPrompt(
             ? "GENRE AUDIT IS ENABLED."
             : scope === "character"
               ? "GENRE AUDIT IS NOT PART OF THIS REQUEST. Do not return genre fields."
-              : "GENRE AUDIT IS DISABLED. Return na for all genre-only fields.",
+              : "GENRE AUDIT IS DISABLED. Do not return genre-only fields.",
         selection.primaryGenre
             ? `Primary genre: ${getGenrePromptLabel(selection.primaryGenre)}.`
             : "",
@@ -472,7 +464,7 @@ function buildGenreAuditPrompt(
             ? "CHARACTER AUDIT IS ENABLED."
             : scope === "genre"
               ? "CHARACTER AUDIT IS NOT PART OF THIS REQUEST. Do not return character fields."
-              : "CHARACTER AUDIT IS DISABLED. Return na for character-only fields and na for repetition.",
+              : "CHARACTER AUDIT IS DISABLED. Do not return character-only fields, including repetition.",
         selection.characterEnabled && characterBaseline
             ? `COMPACT CHARACTER BASELINE (user-reviewable cached extraction):\n${characterBaseline}`
             : selection.characterEnabled
@@ -514,9 +506,9 @@ function buildGenreAuditPrompt(
         `For every requested audit dimension, return its *_reason as exactly one concise user-facing sentence of at most ${reasonMaxChars} characters. State only the visible pattern that justified the rating. Ground it in the supplied responses and compact baseline when relevant. Do not mention or quote response numbers, internal field names, scoring rules, JSON, or these instructions. Do not add advice or correction instructions to a reason. Use unavailable or na only when the required baseline, interaction opportunity, or linkable scene state genuinely does not exist—not merely because evidence is weak.`,
         reasonLanguage,
         "The values shown in the required JSON shape are structural placeholders, not suggested ratings. Determine every rating and evidence array independently from the supplied responses.",
-        ...getAuditOutputInstructions(selection),
-        legacyAuditPolicyPrompt(scope),
-        'Add deferred_dimensions, corrections, next_corrections and problem_facets to the shape. For character diagnosis also add character_consistency_facets, character_interpretation_facets and repetition_matches. Use the exact schema and facet IDs described above. Empty corrections for unselected/deferred dimensions; at most two non-empty instructions. No other extra keys.',
+        ...getAuditOutputInstructions(selection, scope, outputLanguage),
+        legacyAuditPolicyPrompt(scope, GENRE_AUDIT_CODES.filter(code => Object.hasOwn(buildGenreAuditJsonSchema(scope, outputLanguage, selection).schema.properties, code))),
+        'Use the complete audit shape above and its exact field names. Empty corrections for unselected/deferred dimensions; at most two non-empty instructions. Do not add policy fields for disabled modules.',
         "Keep the analysis brief. Do not restate the responses or explain every criterion one by one.",
         "Always reserve enough output space to finish with the required JSON object.",
         "FINAL OUTPUT CONTRACT: After completing any hidden reasoning, do not stop. The visible final response must begin with { and contain the complete required JSON object. Do not place the only diagnosis in reasoning or thinking. Do not output Markdown, headings, commentary, or prose outside the JSON.",
@@ -526,7 +518,7 @@ function buildGenreAuditPrompt(
 }
 
 // @source-order 208
-function buildGenreAuditJsonSchema(scope = "combined", outputLanguage = "ko") {
+function buildGenreAuditJsonSchema(scope = "combined", outputLanguage = "ko", selection = null) {
     const reasonMaxChars = getAuditReasonSchemaMaxChars(outputLanguage);
     const properties = {
         primary_genre: {
@@ -737,12 +729,12 @@ function buildGenreAuditJsonSchema(scope = "combined", outputLanguage = "ko") {
         "repetition_exact",
         "repetition_reason",
     ];
-    const required =
-        scope === "genre"
-            ? genreKeys
-            : scope === "character"
-              ? characterKeys
-              : [...genreKeys, ...characterKeys];
+    // Plot participation does not make a disabled audit module applicable.
+    // Omitted selection preserves the public scope-only schema contract.
+    const required = [
+        ...(scope !== "character" && (!selection || selection.primaryGenre) ? genreKeys : []),
+        ...(scope !== "genre" && (!selection || selection.characterEnabled) ? characterKeys : []),
+    ];
     return addLegacyAuditPolicySchema({
         name: `storybooster_${scope}_audit`,
         strict: true,
@@ -765,7 +757,8 @@ function parseGenreAuditResult(
     scope = "combined",
     outputLanguage = "ko",
     applyLegacyPolicy = true,
-    allowCorrectionFallback = false
+    allowCorrectionFallback = false,
+    selection = null
 ) {
     const extracted = extractJsonObject(
         rawResult,
@@ -820,12 +813,33 @@ function parseGenreAuditResult(
         repetition_exact: false,
         repetition_reason: "",
     };
-    const parsed =
-        scope === "genre"
-            ? { ...characterDefaults, ...extracted }
-            : scope === "character"
-              ? { ...genreDefaults, ...extracted }
-              : extracted;
+    // A partial audit may receive a provider's combined response. Discard
+    // unrequested fields before defaults and validation so they cannot affect
+    // this scope's ratings, correction selection or compatibility retries.
+    const properties = buildGenreAuditJsonSchema(scope, outputLanguage, selection).schema.properties;
+    let scopedExtracted = extracted;
+    if (scope === "genre" || scope === "character" || selection) {
+        const requestedCodes = new Set(GENRE_AUDIT_CODES.filter(code => Object.hasOwn(properties, code)));
+        scopedExtracted = Object.fromEntries(Object.entries(extracted).filter(([field]) => Object.hasOwn(properties, field)));
+        for (const field of ["corrections", "next_corrections", "problem_facets"]) {
+            const value = scopedExtracted[field];
+            if (value && typeof value === "object" && !Array.isArray(value)) {
+                // Unknown keys remain invalid; only known out-of-scope keys
+                // are excluded. Keep malformed requested values for validation.
+                scopedExtracted[field] = Object.fromEntries(Object.entries(value).filter(([code]) =>
+                    !GENRE_AUDIT_CODES.includes(code) || requestedCodes.has(code)));
+            }
+        }
+        if (Array.isArray(scopedExtracted.deferred_dimensions)) {
+            scopedExtracted.deferred_dimensions = scopedExtracted.deferred_dimensions.filter(code =>
+                !GENRE_AUDIT_CODES.includes(code) || requestedCodes.has(code));
+        }
+    }
+    const parsed = {
+        ...(!Object.hasOwn(properties, "primary_genre") ? genreDefaults : {}),
+        ...(!Object.hasOwn(properties, "character_consistency") ? characterDefaults : {}),
+        ...scopedExtracted,
+    };
     const correctionPriority =
         scope === "genre"
             ? [
@@ -1507,18 +1521,28 @@ async function runGenreDriftAudit(chatId, selection, { manual = false, scope = "
         if (trigger === 'test') showGenreAuditToast('info', '이 채팅의 진단이 이미 진행 중이에요. 진행 기록에서 현재 단계를 확인해 주세요.');
         return readAuditRuns().find(row => row.id === trace.id);
     }
+    // All entry points share the same usable-response check before key
+    // restoration or a paid request. Empty/system/user-only chats cannot audit.
+    if (chatId === 'no-chat-open' || chatId !== getCurrentChatId() ||
+        buildAuditTranscript(snapshotCurrentChatMessages()).reviewedResponses === 0) {
+        finishAuditRun(trace, 'skipped', 'no_responses', { reviewedResponses: 0 });
+        showGenreAuditToast('info', '최근 AI 답변이 있는 채팅을 열어 주세요.');
+        return readAuditRuns().find(row => row.id === trace.id);
+    }
     genreAuditPendingChats.add(chatId);
     try {
         const beforeRestore = roleplayFingerprint();
+        const correctionRevisionBeforeRestore = ensureChatState(chatId).genreAnchor.correctionRevision;
         if (isJevUsageAllowed()) {
             traceAuditStage(trace, 'credential_restore');
             const ready = await ensureJevKeyReady();
             traceAuditStage(trace, 'credential_ready', { credentialReady: ready });
             if (!ready && chatId === getCurrentChatId()) showGenreAuditToast('info', 'Jev 키를 사용할 수 없어 이번에는 기존 진단 연결을 사용해요. 전역 설정의 키 상태를 확인해 주세요.');
         }
-        if (chatId !== getCurrentChatId() || beforeRestore !== roleplayFingerprint() ||
+        const correctionChanged = correctionRevisionBeforeRestore !== ensureModuleSettings().chats[chatId]?.genreAnchor?.correctionRevision;
+        if (chatId !== getCurrentChatId() || beforeRestore !== roleplayFingerprint() || correctionChanged ||
             getGenreSelectionSignature(selection) !== getGenreSelectionSignature(getScopedAuditSelection(getBoosterSelection(ensureChatState(chatId)), scope))) {
-            const reason = chatId !== getCurrentChatId() ? 'chat_changed' : beforeRestore !== roleplayFingerprint() ? 'messages_changed' : 'selection_changed';
+            const reason = chatId !== getCurrentChatId() ? 'chat_changed' : beforeRestore !== roleplayFingerprint() ? 'messages_changed' : correctionChanged ? 'correction_changed' : 'selection_changed';
             finishAuditRun(trace, 'cancelled', reason);
             if (chatId === getCurrentChatId()) showGenreAuditToast('info', auditCancellationMessage(reason));
             return readAuditRuns().find(row => row.id === trace.id);
@@ -1655,12 +1679,13 @@ async function executeGenreDriftAudit(chatId, selection, { manual, scope }, trac
         );
         const baseAuditSchema = buildGenreAuditJsonSchema(
             scope,
-            auditOutputLanguage
+            auditOutputLanguage,
+            selection
         );
         const auditJsonSchema = includePlot ? addPlotAuditSchema(baseAuditSchema) : baseAuditSchema;
         if (includePlot) auditPrompt += '\n' + plotAuditPrompt();
         auditDiagnostic.responseLength = operationContext.responseLength;
-        const parseAudit = (result, applyLegacyPolicy = true, allowCorrectionFallback = false) => parseGenreAuditResult(result, Boolean(selection.supportGenre), reviewedResponses, scope, auditOutputLanguage, applyLegacyPolicy, allowCorrectionFallback);
+        const parseAudit = (result, applyLegacyPolicy = true, allowCorrectionFallback = false) => parseGenreAuditResult(result, Boolean(selection.supportGenre), reviewedResponses, scope, auditOutputLanguage, applyLegacyPolicy, allowCorrectionFallback, selection);
         const legacyRequest = async () => {
             traceAuditStage(trace, 'legacy_connection');
             connectionSnapshot = await resolveBackgroundConnectionSnapshot(selectedProfileId);
@@ -1893,6 +1918,8 @@ async function executeGenreDriftAudit(chatId, selection, { manual, scope }, trac
               ? "attention"
               : hasDeferredRatings ? "deferred" : "stable";
         bumpCorrectionRevision(chatState.genreAnchor);
+        // Superseded records must not advertise a correction no longer queued.
+        reconcilePendingAuditRecords(chatState.genreAnchor);
         const completedRecord = createGenreAuditRecord({
             selection,
             manual,
@@ -2038,16 +2065,25 @@ async function executeGenreDriftAudit(chatId, selection, { manual, scope }, trac
     }
 }
 
+function blockAuditWhileCorrectionPending(state) {
+    const pending = state.genreAnchor.correctionRemaining > 0 &&
+        state.genreAnchor.correctionAppliedMessageId === null;
+    if (pending) toastr?.info?.("대기 중인 보정을 먼저 적용하거나 ‘이번 보정 적용 안 하기’로 취소해 주세요.");
+    return pending;
+}
+
 async function runAutomaticAuditTest() {
     if (!isDeveloperModeUnlocked()) { showGenreAuditToast('info', '개발자 모드를 먼저 열어 주세요.'); return null; }
     const chatId = getCurrentChatId();
-    if (chatId === 'no-chat-open' || getLatestAssistantMessageId() < 0) {
+    if (chatId === 'no-chat-open' || !Number.isSafeInteger(getLatestAssistantMessageId())) {
         showGenreAuditToast('info', '최근 AI 답변이 있는 채팅을 열어 주세요.'); return null;
     }
     if (getGlobalAuditInterval() === 0) {
         showGenreAuditToast('info', '자동 진단 주기를 켠 뒤 테스트해 주세요.'); return null;
     }
-    const selection = getBoosterSelection(ensureChatState(chatId));
+    const state = ensureChatState(chatId);
+    if (blockAuditWhileCorrectionPending(state)) return null;
+    const selection = getBoosterSelection(state);
     const scope = selection ? getAutomaticAuditScope(selection) : null;
     const scoped = scope ? getScopedAuditSelection(selection, scope) : null;
     if (!scoped) {
@@ -2059,15 +2095,7 @@ async function runAutomaticAuditTest() {
 // @source-order 212
 function runManualGenreAudit(scope = "genre") {
     const state = ensureChatState();
-    if (
-        state.genreAnchor.correctionRemaining > 0 &&
-        state.genreAnchor.correctionAppliedMessageId === null
-    ) {
-        toastr?.info?.(
-            "대기 중인 보정을 먼저 적용하거나 ‘이번 보정 적용 안 하기’로 취소해 주세요."
-        );
-        return;
-    }
+    if (blockAuditWhileCorrectionPending(state)) return;
     const selection = getScopedAuditSelection(getBoosterSelection(state), scope);
     if (!selection) {
         toastr?.warning?.(
@@ -2077,7 +2105,7 @@ function runManualGenreAudit(scope = "genre") {
         );
         return;
     }
-    runGenreDriftAudit(getCurrentChatId(), selection, { manual: true, scope });
+    return runGenreDriftAudit(getCurrentChatId(), selection, { manual: true, scope });
 }
 
 // @source-order 269

@@ -58,6 +58,13 @@ export function requestFailureDetails(error, diagnostic = {}) {
         requestError: kind, httpStatus: status, schemaRequested: diagnostic.schemaRequested });
 }
 
+// Shared by JSON and tagged-result recovery. These failures cannot be repaired
+// by asking for a different output format, including when wrapped in cause.
+export function blocksFormatRetry(error) {
+    return ['authentication', 'rate_limit', 'provider_error', 'network', 'timeout', 'cancelled']
+        .includes(requestFailureDetails(error).requestError);
+}
+
 export function filterResponseValidationDetails(value = {}) {
     const out = {};
     if (CODES.has(value.validationCode)) out.validationCode = value.validationCode;

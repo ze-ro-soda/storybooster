@@ -21,6 +21,7 @@ const STAGES = {
     plot_check: '자동 랜덤박스 확인', plot_finished: '자동 랜덤박스 확인 종료', ended: '실행 종료',
 };
 const REASONS = {
+    no_responses: '진단할 최근 AI 답변이 없습니다.',
     completed: '완료', busy: '같은 채팅의 진단이 이미 실행 중입니다.',
     chat_changed: '진단 중 채팅이 바뀌었습니다.', plot_epoch_changed: '자동 플롯 취소·설정 변경으로 작업 상태가 바뀌었습니다.',
     profile_changed: '진단 중 진단 연결 프로필이 바뀌었습니다.', language_changed: '진단 중 출력 언어가 바뀌었습니다.',

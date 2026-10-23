@@ -3,7 +3,8 @@ import { BACKGROUND_REQUEST_TIMEOUT_MS, ERROR_LOG_STORAGE_KEY, MAX_ERROR_LOG_ENT
 import { extractJsonObject } from "./responses.js";
 import { recordedErrorObjects, runtime } from "./runtime.js";
 import { getContext } from "./sillytavern.js";
-import { responseValidationDetails, filterResponseValidationDetails } from './response-validation.js';
+import { responseValidationDetails, filterResponseValidationDetails, requestFailureDetails } from './response-validation.js';
+import { isDiagnosticFieldName, protectErrorDiagnosticEntry, safeDiagnosticErrorMessage } from './diagnostic-privacy.js';
 
 // @source-order 62
 function getDiagnosticSessionStorage() {
@@ -124,8 +125,7 @@ function describeDiagnosticValue(value, prefix = "", depth = 0) {
     const ordered = [...preferred.filter(key => Object.hasOwn(value, key)).map(key => [key, value[key]]),
         ...Object.entries(value).filter(([key]) => !preferred.includes(key))];
     for (const [key, child] of ordered.slice(0, 40)) {
-        const knownFacet = !preferred.includes(prefix) || filterResponseValidationDetails({ validationField: `${prefix}.${key}` }).validationField;
-        const safeKey = knownFacet && /^[A-Za-z0-9_.-]{1,80}$/.test(key)
+        const safeKey = isDiagnosticFieldName(prefix ? `${prefix}.${key}` : key)
             ? key
             : "[비표준 필드]";
         const path = prefix ? `${prefix}.${safeKey}` : safeKey;
@@ -262,7 +262,7 @@ function readStoryBoosterErrorLog() {
     if (!storage) return [];
     try {
         const parsed = JSON.parse(storage.getItem(ERROR_LOG_STORAGE_KEY) || "[]");
-        return Array.isArray(parsed) ? parsed.slice(0, MAX_ERROR_LOG_ENTRIES) : [];
+        return Array.isArray(parsed) ? parsed.slice(0, MAX_ERROR_LOG_ENTRIES).map(entry => protectErrorDiagnosticEntry(entry, sanitizeDiagnosticText)) : [];
     } catch {
         return [];
     }
@@ -275,7 +275,7 @@ function writeStoryBoosterErrorLog(entries) {
     try {
         storage.setItem(
             ERROR_LOG_STORAGE_KEY,
-            JSON.stringify(entries.slice(0, MAX_ERROR_LOG_ENTRIES))
+            JSON.stringify(entries.slice(0, MAX_ERROR_LOG_ENTRIES).map(entry => protectErrorDiagnosticEntry(entry, sanitizeDiagnosticText)))
         );
     } catch (error) {
         console.warn(`[${MODULE_NAME}] could not store error diagnostic log`, error);
@@ -310,10 +310,8 @@ function recordStoryBoosterError(error, details = {}) {
     ]
         .map((item) => sanitizeDiagnosticText(item, 100))
         .filter(Boolean);
-    const errorMessage = sanitizeDiagnosticText(
-        error?.message || details.message || String(error || "알 수 없는 오류"),
-        700
-    );
+    const failure = requestFailureDetails(error, diagnostic);
+    const errorMessage = safeDiagnosticErrorMessage(error, failure.requestError);
     const task = sanitizeDiagnosticText(details.task || diagnostic.task || "unknown", 80);
     const stage = sanitizeDiagnosticText(
         details.stage || getErrorDiagnosticStage(error, "unknown"),
@@ -323,7 +321,7 @@ function recordStoryBoosterError(error, details = {}) {
     const validation = responseValidationDetails(error);
     const fingerprint = [task, stage, code, errorMessage, validation.validationCode || '', validation.validationField || ''].join("|");
     const now = Date.now();
-    const entry = {
+    const entry = protectErrorDiagnosticEntry({
         id:
             diagnostic.operationId ||
             `SB-${now.toString(36)}-${Math.random().toString(36).slice(2, 6)}`.toUpperCase(),
@@ -368,6 +366,7 @@ function recordStoryBoosterError(error, details = {}) {
         errorCode: code,
         errorMessage,
         ...validation,
+        ...failure,
         responseChars: Number(details.responseChars || diagnostic.responseChars) || 0,
         responseFormat: sanitizeDiagnosticText(
             details.responseFormat || diagnostic.responseFormat || "",
@@ -393,9 +392,9 @@ function recordStoryBoosterError(error, details = {}) {
         invalidFields: [...new Set(invalidFields)].slice(0, 30),
         location: getErrorDiagnosticLocation(error),
         fingerprint,
-    };
+    }, sanitizeDiagnosticText);
     const entries = readStoryBoosterErrorLog();
-    const existingIndex = entries.findIndex((item) => item?.fingerprint === fingerprint);
+    const existingIndex = entries.findIndex((item) => item?.fingerprint === entry.fingerprint);
     if (existingIndex >= 0) {
         const existing = entries.splice(existingIndex, 1)[0];
         if (existing.id === entry.id) {
@@ -427,6 +426,8 @@ function clearStoryBoosterErrorLog() {
 
 // @source-order 78
 function formatStoryBoosterErrorEntry(entry, index) {
+    // Re-filter even callers supplying an old saved entry directly.
+    entry = protectErrorDiagnosticEntry(entry, sanitizeDiagnosticText);
     const lines = [
         `[오류 진단 로그 ${index + 1}]`,
         `발생: ${new Date(entry.lastOccurredAt).toLocaleString("ko-KR")}`,
@@ -448,6 +449,7 @@ function formatStoryBoosterErrorEntry(entry, index) {
         }`,
         `HTTP/종료 사유: ${entry.httpStatus || "없음"} / ${entry.finishReason || "없음"}`,
         `오류 코드: ${entry.errorCode || "없음"}`,
+        `요청 오류 분류: ${entry.requestError || "확인 불가"}`,
         `오류 메시지: ${entry.errorMessage || "없음"}`,
         `검증 분류/필드: ${entry.validationCode || "확인 불가"} / ${entry.validationField || "확인 불가"}`,
         `응답 구조: ${entry.responseFormat || "확인 불가"} · ${entry.responseChars || 0}자`,

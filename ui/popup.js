@@ -2,7 +2,7 @@ import { wireDeveloperModeEntry } from './debug-tools.js';
 import { renderBaselineBackupControls, wireBaselineBackupControls } from './baseline-backup.js';
 import { updateJevConnectionBadges } from './panels.js';
 import { cancelAutomaticPlot } from '../core/automatic-plot-state.js';
-import { cancelJevRequests, getJevConnectionBadge, getJevConnectionStatus, hasJevSessionKey, saveJevKey, deleteJevKey, restoreJevKey, setJevUsageConsent, testJevConnection } from '../core/jev-client.js';
+import { cancelJevRequests, getJevProviderId, setJevProvider, getJevConnectionBadge, getJevConnectionStatus, hasJevSessionKey, saveJevKey, deleteJevKey, restoreJevKey, setJevUsageConsent, testJevConnection } from '../core/jev-client.js';
 import { ensureAutomaticPlotSettings, updateAutomaticPlotStatus, getAutomaticPlotStatusText, cancelPreparedAutomaticPlot, setAutomaticPlotEnabled } from '../features/automatic-plot.js';
 // StoryBooster: ui/popup.js
 import { CHARACTER_BOOST_ANCHOR_MAX_CHARS, CHARACTER_REVISION_NOTE_MAX_CHARS, DEFAULT_AUDIT_INTERVAL, DEFAULT_PLOT_MAX_TOKENS, MAX_AUDIT_INTERVAL, MAX_PLOT_MAX_TOKENS, MIN_AUDIT_INTERVAL, MIN_PLOT_MAX_TOKENS, MODULE_NAME } from "../core/constants.js";
@@ -1125,8 +1125,16 @@ function addExtensionSettingsPanel() {
 
                     <section class="rp-settings-card rp-jev-settings-card">
                         <div class="rp-settings-card-title">Jev 진단 · 선택 기능</div>
-                        <p class="rp-settings-help">Jev 사용 시 진단에 필요한 롤플 내용과 기준이 Jev로 전송되며, API 비용이 발생합니다.</p>
+                        <p class="rp-settings-help">선택한 제공자를 통해 롤플 내용과 기준을 Jev로 전송하며, 해당 제공자의 API 비용이 발생합니다.</p>
                         <label class="rp-settings-check-row"><input id="rp-jev-enabled" type="checkbox" ${settings.jevEnabled ? 'checked' : ''}> <span>안내에 동의하고 자동·수동 진단에 Jev 사용</span></label>
+                        <div class="rp-settings-field">
+                            <label for="rp-jev-provider">Jev 연결 제공자</label>
+                            <select id="rp-jev-provider">
+                                <option value="typesafe" ${getJevProviderId() === 'typesafe' ? 'selected' : ''}>Typesafe · 직접 연결</option>
+                                <option value="nanogpt" ${getJevProviderId() === 'nanogpt' ? 'selected' : ''}>NanoGPT</option>
+                            </select>
+                            <small class="rp-settings-help">선택한 제공자의 키를 입력해 주세요. 키는 제공자별로 따로 저장됩니다.</small>
+                        </div>
                         <div class="rp-settings-field rp-jev-key-field">
                         <label for="rp-jev-key">Jev API 키</label>
                         <input id="rp-jev-key" type="password" autocomplete="off" spellcheck="false" maxlength="512" placeholder="${hasJevSessionKey() ? '키 입력됨 · 변경할 키만 입력' : '키 입력'}">
@@ -1134,7 +1142,7 @@ function addExtensionSettingsPanel() {
                         <div class="rp-jev-key-actions">
                             <button id="rp-jev-key-apply" type="button" class="menu_button">키 저장</button>
                             <button id="rp-jev-test" type="button" class="menu_button">연결 테스트</button>
-                            <button id="rp-jev-key-delete" type="button" class="menu_button">키 삭제</button>
+                            <button id="rp-jev-key-delete" type="button" class="menu_button">선택한 키 삭제</button>
                         </div>
                         <p id="rp-jev-status" aria-live="polite">${escapeHtml(getJevConnectionStatus())}</p>
                         <small class="rp-settings-help">키는 이 브라우저에 평문 저장되며, 새로고침 후 자동으로 불러옵니다. 다른 기기·브라우저·접속 주소를 사용하거나 브라우저 데이터를 삭제하면 다시 입력해 주세요.<br><br>Jev를 사용할 수 없으면 기본 진단으로 진행합니다. 판단 이유와 보정문은 기존 진단 모델이 작성합니다.</small>
@@ -1193,12 +1201,14 @@ function addExtensionSettingsPanel() {
     settingsRoot.appendChild(panel);
 
     const keyInput = panel.querySelector('#rp-jev-key');
+    const providerInput = panel.querySelector('#rp-jev-provider');
     const jevStatus = panel.querySelector('#rp-jev-status');
     const updateJevStatus = () => { if (jevStatus) jevStatus.textContent = getJevConnectionStatus(); updateJevConnectionBadges(); };
     let keyBusy = false;
     const setKeyBusy = busy => {
         keyBusy = busy;
         if (keyInput) keyInput.disabled = busy;
+        if (providerInput) providerInput.disabled = busy;
         for (const id of ['#rp-jev-key-apply', '#rp-jev-key-delete', '#rp-jev-test']) {
             const button = panel.querySelector(id); if (button) button.disabled = busy;
         }
@@ -1217,6 +1227,18 @@ function addExtensionSettingsPanel() {
             cancelAutomaticPlot(); updateJevStatus();
         }
     };
+    providerInput?.addEventListener('change', async event => {
+        if (keyBusy) { providerInput.value = getJevProviderId(); return; }
+        setKeyBusy(true);
+        // Unsaved input belongs to the previous provider and must never be sent
+        // to the newly selected service by the next connection test.
+        if (keyInput) keyInput.value = '';
+        try {
+            setJevProvider(event.currentTarget.value);
+            cancelAutomaticPlot(); saveSettingsDebounced(); updateJevStatus();
+            await restoreJevKey();
+        } finally { setKeyBusy(false); updateJevStatus(); }
+    });
     panel.querySelector('#rp-jev-key-apply')?.addEventListener('click', async () => {
         if (keyBusy) return;
         setKeyBusy(true);

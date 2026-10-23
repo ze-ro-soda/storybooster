@@ -1,13 +1,15 @@
-// Jev transport: fixed destination through SillyTavern's existing custom relay.
+// Jev transport: allowlisted provider destinations through SillyTavern's existing custom relay.
 // The live key stays private to this module. User-approved plaintext browser
 // storage is separate from extension settings, chat data and server secrets.
 import { getContext } from './sillytavern.js';
 import { recordCredentialEvent } from './audit-run-trace.js';
 import { ensureModuleSettings } from './storage.js';
+import { getJevProviderConfig, normalizeJevProvider } from './jev-providers.js';
 import { supportsJevVault, serializeJevVault, resolveJevVaultScope, saveJevVaultRecord, readJevVaultRecord, deleteJevVaultRecord,
-    jevStorageEventScope, getJevStorageRevision } from './jev-browser-store.js';
+    jevStorageEventScope, jevStorageEventProvider, getJevStorageRevision, getJevStoredRecordState } from './jev-browser-store.js';
 
-const ENDPOINT = 'https://api.typesafe.ai/v1/systemone';
+let activeProvider = 'typesafe';
+const blockedProviders = new Set();
 const STRIP = ['messages', 'prompt', 'stream', 'temperature', 'max_tokens',
     'max_completion_tokens', 'presence_penalty', 'frequency_penalty', 'top_p',
     'top_k', 'stop', 'logit_bias', 'seed', 'n', 'logprobs', 'top_logprobs',
@@ -15,6 +17,8 @@ const STRIP = ['messages', 'prompt', 'stream', 'temperature', 'max_tokens',
 let sessionKey = '';
 let credentialScope = '';
 let pendingCredentialScope = '';
+let notificationScope = '';
+const blockedRecordRevisions = new Map();
 let keyChannel;
 let storageListening = false;
 let restoreTask = null;
@@ -28,6 +32,25 @@ let requestSequence = 0;
 const statusListeners = new Set();
 const controllers = new Set();
 
+export function getJevProviderId() { return normalizeJevProvider(ensureModuleSettings().jevProvider); }
+function syncJevProvider() {
+    const provider = getJevProviderId();
+    if (provider !== activeProvider) {
+        if (restoreBlocked) blockedProviders.add(activeProvider); else blockedProviders.delete(activeProvider);
+        activeProvider = provider;
+        // Queued old work still exits through its revision guard. Its finally
+        // must not clear or restart a newer provider's restore task.
+        restoreTask = null; pendingCredentialScope = ''; notificationScope = '';
+        setJevSessionKey(''); restoreBlocked = blockedProviders.has(provider);
+    }
+    return provider;
+}
+export function setJevProvider(value) {
+    getJevProviderConfig(value); // Reject unknown destinations before any mutation.
+    ensureModuleSettings().jevProvider = value;
+    syncJevProvider();
+}
+
 export function onJevConnectionChange(listener) {
     statusListeners.add(listener);
     return () => statusListeners.delete(listener);
@@ -36,8 +59,9 @@ function updateStatus(text, state) {
     status = text; connectionState = state;
     for (const listener of statusListeners) { try { listener(); } catch { /* UI cannot fail an API request. */ } }
 }
-export function getJevCredentialState() { return credentialState; }
+export function getJevCredentialState() { syncJevProvider(); return credentialState; }
 export function getJevConnectionBadge(enabled) {
+    syncJevProvider();
     if (!enabled) return { hidden: true, text: '', state: 'off' };
     if (credentialState === 'restoring') return { hidden: false, text: 'Jev 키 복원 중', state: 'setup' };
     if (!sessionKey) return { hidden: false, text: credentialState === 'error' ? 'Jev 키 복원 실패' : 'Jev 미연결', state: 'setup' };
@@ -59,8 +83,10 @@ function listenForKeyChanges() {
     if (!storageListening && typeof globalThis.addEventListener === 'function') {
         globalThis.addEventListener('storage', event => {
             const scope = jevStorageEventScope(event.key);
-            if (event.key !== null && (!scope || ![credentialScope, pendingCredentialScope].includes(scope))) return;
+            const provider = syncJevProvider();
+            if (event.key !== null && (jevStorageEventProvider(event.key) !== provider || !scope || ![credentialScope, pendingCredentialScope, notificationScope].includes(scope))) return;
             // Read from storage afresh; never propagate event.newValue/key text.
+            if (!canRestoreAfterKeyChange(scope || notificationScope, provider)) return;
             setJevSessionKey(''); restoreBlocked = false;
             recordCredentialEvent('tab_changed');
             void restoreJevKey();
@@ -72,7 +98,12 @@ function listenForKeyChanges() {
         keyChannel = new BroadcastChannel('storybooster-jev-credentials');
         keyChannel.onmessage = event => {
             const value = event.data;
-            if (!value?.scope || ![credentialScope, pendingCredentialScope].includes(value.scope) || !['changed', 'deleted', 'disabled'].includes(value.action)) return;
+            const scope = value?.provider === 'nanogpt' && typeof value.scope === 'string' && value.scope.startsWith('nanogpt:')
+                ? value.scope.slice('nanogpt:'.length) : value?.scope;
+            const provider = syncJevProvider();
+            if (normalizeJevProvider(value?.provider) !== provider || !scope || ![credentialScope, pendingCredentialScope, notificationScope].includes(scope) || !['changed', 'deleted', 'disabled'].includes(value.action)) return;
+            if (value.action === 'changed' && !canRestoreAfterKeyChange(scope, provider)) return;
+            if (value.action === 'deleted') rememberBlockedKey(scope, provider);
             setJevSessionKey('');
             if (value.action === 'disabled') {
                 const settings = ensureModuleSettings(); settings.jevEnabled = false; settings.jevConsentVersion = 0;
@@ -91,11 +122,30 @@ function listenForKeyChanges() {
         };
     } catch { /* Storage still works without cross-tab notification. */ }
 }
-function publishKeyChange(action, scope) {
-    try { if (scope) keyChannel?.postMessage({ action, scope }); }
+function rememberBlockedKey(scope, provider) {
+    if (!scope) return;
+    try { blockedRecordRevisions.set(`${provider}:${scope}`, getJevStoredRecordState(scope, provider)?.revision || ''); }
+    catch { blockedRecordRevisions.set(`${provider}:${scope}`, null); }
+}
+function canRestoreAfterKeyChange(scope, provider) {
+    if (!restoreBlocked) return true;
+    // A notification alone cannot revive a key after deletion failed. Require
+    // a different, committed, non-deleted record for the same account/provider.
+    try {
+        const blocked = blockedRecordRevisions.get(`${provider}:${scope}`);
+        const current = scope ? getJevStoredRecordState(scope, provider) : null;
+        if (blocked == null || !current || current.deleted || current.revision === blocked) return false;
+        blockedRecordRevisions.delete(`${provider}:${scope}`);
+        blockedProviders.delete(provider);
+        return true;
+    } catch { return false; }
+}
+function publishKeyChange(action, scope, provider = activeProvider) {
+    try { if (scope) keyChannel?.postMessage({ action, scope: provider === 'nanogpt' ? `nanogpt:${scope}` : scope, provider }); }
     catch { /* Notification cannot turn a committed save into a reported failure. */ }
 }
 export function setJevUsageConsent(enabled) {
+    syncJevProvider();
     const settings = ensureModuleSettings();
     settings.jevEnabled = enabled === true;
     settings.jevConsentVersion = enabled === true ? JEV_CONSENT_VERSION : 0;
@@ -108,6 +158,7 @@ export function setJevUsageConsent(enabled) {
 }
 export function setJevSessionKey(value) {
     const key = validatedKey(value);
+    activeProvider = getJevProviderId();
     cancelJevRequests();
     sessionKey = key; credentialScope = '';
     credentialState = key ? 'ready' : 'unknown';
@@ -116,6 +167,7 @@ export function setJevSessionKey(value) {
     updateStatus(key ? '키 입력됨 · Jev 사용 준비됨' : '키 미입력 · 기존 진단 사용', 'idle');
 }
 export function restoreJevKey() {
+    const provider = syncJevProvider();
     if (restoreTask) return restoreTask;
     if (!isJevUsageAllowed() || restoreBlocked) return Promise.resolve(false);
     if (!supportsJevVault()) {
@@ -128,21 +180,22 @@ export function restoreJevKey() {
     updateStatus('저장된 Jev 키 불러오는 중', 'idle');
     const work = serializeJevVault(async () => {
         for (let attempt = 0; attempt < 2; attempt++) {
-            if (revision !== keyRevision || !isJevUsageAllowed() || restoreBlocked) return false;
+            if (revision !== keyRevision || provider !== getJevProviderId() || !isJevUsageAllowed() || restoreBlocked) return false;
             try {
                 const scope = await resolveJevVaultScope();
-                pendingCredentialScope = scope; listenForKeyChanges();
+                if (revision !== keyRevision || provider !== getJevProviderId()) return false;
+                pendingCredentialScope = scope; notificationScope = scope; listenForKeyChanges();
                 let key;
-                try { key = validatedKey(await readJevVaultRecord(scope)); }
+                try { key = validatedKey(await readJevVaultRecord(scope, provider)); }
                 finally { pendingCredentialScope = ''; }
-                if (revision !== keyRevision || !isJevUsageAllowed() || restoreBlocked) return false;
+                if (revision !== keyRevision || provider !== getJevProviderId() || !isJevUsageAllowed() || restoreBlocked) return false;
                 sessionKey = key; credentialScope = key ? scope : ''; keyRevision++;
                 credentialState = key ? 'ready' : 'missing';
                 recordCredentialEvent(key ? 'restored' : 'missing');
                 updateStatus(key ? '저장된 키 복원됨 · Jev 사용 준비됨' : '저장된 키 없음 · 기존 진단 사용', 'idle');
                 return Boolean(key);
             } catch (error) {
-                if (revision !== keyRevision || !isJevUsageAllowed() || restoreBlocked) return false;
+                if (revision !== keyRevision || provider !== getJevProviderId() || !isJevUsageAllowed() || restoreBlocked) return false;
                 if (!attempt && error.vaultReason !== 'decrypt') { recordCredentialEvent('restore_retry', error.vaultReason || 'unknown'); continue; }
                 credentialState = 'error'; recordCredentialEvent('restore_failed', error.vaultReason || 'unknown');
                 updateStatus('저장된 키 복원 실패 · 저장본은 유지됩니다. 연결 확인으로 다시 시도해 주세요.', 'error');
@@ -166,6 +219,7 @@ export function restoreJevKey() {
     return tracked;
 }
 export async function ensureJevKeyReady() {
+    syncJevProvider();
     if (!isJevUsageAllowed()) return false;
     if (restoreTask) await restoreTask;
     if (restoreTask) await restoreTask;
@@ -174,6 +228,7 @@ export async function ensureJevKeyReady() {
     return await restoreJevKey();
 }
 export async function saveJevKey(value) {
+    const provider = syncJevProvider();
     let key;
     try { key = validatedKey(value); }
     catch (error) { updateStatus(error.message, 'error'); throw error; }
@@ -183,7 +238,7 @@ export async function saveJevKey(value) {
         throw failure('STORYBOOSTER_JEV_CONSENT_REQUIRED', '안내에 동의하고 Jev 사용을 체크해 주세요.');
     }
     let storageRevision;
-    try { storageRevision = getJevStorageRevision(); }
+    try { storageRevision = getJevStorageRevision(provider); }
     catch (error) {
         recordCredentialEvent('save_failed', 'storage');
         updateStatus(error.message, 'error');
@@ -195,21 +250,21 @@ export async function saveJevKey(value) {
     try {
         return await serializeJevVault(async () => {
             const scope = await resolveJevVaultScope();
-            if (revision !== keyRevision || !isJevUsageAllowed()) throw failure('STORYBOOSTER_JEV_CANCELLED', 'Jev 키 저장이 취소되었습니다.');
-            pendingCredentialScope = scope; listenForKeyChanges();
+            if (revision !== keyRevision || provider !== getJevProviderId() || !isJevUsageAllowed()) throw failure('STORYBOOSTER_JEV_CANCELLED', 'Jev 키 저장이 취소되었습니다.');
+            pendingCredentialScope = scope; notificationScope = scope; listenForKeyChanges();
             let committed;
-            try { committed = await saveJevVaultRecord(scope, key, { isCurrent: () => revision === keyRevision && isJevUsageAllowed() && getJevStorageRevision() === storageRevision }); }
+            try { committed = await saveJevVaultRecord(scope, key, { provider, isCurrent: () => revision === keyRevision && provider === getJevProviderId() && isJevUsageAllowed() && getJevStorageRevision(provider) === storageRevision }); }
             finally { pendingCredentialScope = ''; }
             if (!committed) {
-                if (revision === keyRevision) {
+                if (revision === keyRevision && provider === getJevProviderId()) {
                     setJevSessionKey('');
                     updateStatus('저장 중 다른 탭에서 키가 변경되거나 삭제됐습니다. 키를 다시 확인해 주세요.', 'idle');
                 }
                 return false;
             }
-            if (revision !== keyRevision || !isJevUsageAllowed()) return false;
-            const verified = validatedKey(await readJevVaultRecord(scope));
-            if (revision !== keyRevision || !isJevUsageAllowed()) return false;
+            if (revision !== keyRevision || provider !== getJevProviderId() || !isJevUsageAllowed()) return false;
+            const verified = validatedKey(await readJevVaultRecord(scope, provider));
+            if (revision !== keyRevision || provider !== getJevProviderId() || !isJevUsageAllowed()) return false;
             if (verified !== key) {
                 setJevSessionKey('');
                 credentialState = verified ? 'unknown' : 'missing';
@@ -219,40 +274,44 @@ export async function saveJevKey(value) {
             }
             sessionKey = key; credentialScope = scope; credentialState = 'ready';
             recordCredentialEvent('save_verified');
-            listenForKeyChanges(); publishKeyChange('changed', scope);
+            listenForKeyChanges(); publishKeyChange('changed', scope, provider);
             updateStatus('키 브라우저 저장됨 · Jev 사용 준비됨', 'idle');
             return true;
         });
     } catch (error) {
-        if (revision !== keyRevision || error.code === 'STORYBOOSTER_JEV_CANCELLED') return false;
+        if (revision !== keyRevision || provider !== getJevProviderId() || error.code === 'STORYBOOSTER_JEV_CANCELLED') return false;
         recordCredentialEvent('save_failed', error.vaultReason || 'unknown');
         const message = error.code === 'STORYBOOSTER_JEV_STORAGE_ERROR' ? error.message : 'Jev 키를 저장하지 못했습니다. 기존 저장본은 유지됩니다.';
-        if (revision === keyRevision) updateStatus(message, 'error');
+        if (revision === keyRevision && provider === getJevProviderId()) updateStatus(message, 'error');
         throw failure('STORYBOOSTER_JEV_STORAGE_ERROR', message);
     }
 }
 export async function deleteJevKey() {
-    const oldScope = credentialScope;
-    setJevSessionKey(''); restoreBlocked = true; credentialState = 'missing'; publishKeyChange('deleted', oldScope);
+    const provider = syncJevProvider();
+    const oldScope = credentialScope || notificationScope;
+    rememberBlockedKey(oldScope, provider);
+    setJevSessionKey(''); restoreBlocked = true; credentialState = 'missing'; publishKeyChange('deleted', oldScope, provider);
     const revision = keyRevision;
     try {
         await serializeJevVault(async () => {
             const scope = await resolveJevVaultScope();
-            await deleteJevVaultRecord(scope);
-            listenForKeyChanges(); publishKeyChange('deleted', scope);
+            rememberBlockedKey(scope, provider);
+            if (provider === getJevProviderId()) notificationScope = scope;
+            await deleteJevVaultRecord(scope, provider);
+            listenForKeyChanges(); publishKeyChange('deleted', scope, provider);
         });
         recordCredentialEvent('deleted');
-        if (revision === keyRevision) updateStatus('키 삭제됨 · 기존 진단 사용', 'idle');
+        if (revision === keyRevision && provider === getJevProviderId()) updateStatus('키 삭제됨 · 기존 진단 사용', 'idle');
     } catch {
         recordCredentialEvent('delete_failed', 'storage');
         const message = '현재 키 사용은 중단됐지만 저장본 삭제에 실패했습니다. 키 삭제를 다시 시도해 주세요.';
-        if (revision === keyRevision) updateStatus(message, 'error');
+        if (revision === keyRevision && provider === getJevProviderId()) updateStatus(message, 'error');
         throw failure('STORYBOOSTER_JEV_STORAGE_ERROR', message);
     }
 }
-export function hasJevSessionKey() { return Boolean(sessionKey); }
-export function getJevKeyRevision() { return keyRevision; }
-export function getJevConnectionStatus() { return status; }
+export function hasJevSessionKey() { syncJevProvider(); return Boolean(sessionKey); }
+export function getJevKeyRevision() { syncJevProvider(); return keyRevision; }
+export function getJevConnectionStatus() { syncJevProvider(); return status; }
 export function cancelJevRequests() { for (const c of controllers) c.abort(); }
 
 function failure(code, message, httpStatus) {
@@ -288,6 +347,8 @@ export function validateJevAnswers(result, questions) {
 }
 
 export async function requestJev(state, questions, { timeoutMs = 25000, signal } = {}) {
+    const provider = syncJevProvider();
+    const config = getJevProviderConfig(provider);
     if (!isJevUsageAllowed()) {
         updateStatus('안내에 동의하고 Jev 사용을 체크해 주세요.', 'idle');
         throw failure('STORYBOOSTER_JEV_CONSENT_REQUIRED', '안내에 동의하고 Jev 사용을 체크해 주세요.');
@@ -314,15 +375,15 @@ export async function requestJev(state, questions, { timeoutMs = 25000, signal }
             }
             // Check persistent deletion/replacement even when this browser
             // cannot deliver cross-tab notifications. Never send a stale key.
-            const storedKey = await readJevVaultRecord(scope);
-            if (revision !== keyRevision || controller.signal.aborted) throw failure('STORYBOOSTER_JEV_CANCELLED', 'Jev 요청이 취소되었습니다.');
+            const storedKey = await readJevVaultRecord(scope, provider);
+            if (revision !== keyRevision || provider !== getJevProviderId() || controller.signal.aborted) throw failure('STORYBOOSTER_JEV_CANCELLED', 'Jev 요청이 취소되었습니다.');
             if (!storedKey || storedKey !== sessionKey) {
                 setJevSessionKey('');
                 updateStatus('저장된 Jev 키가 변경되거나 삭제됐습니다. 키를 다시 확인해 주세요.', 'idle');
                 throw failure('STORYBOOSTER_JEV_CANCELLED', '저장된 Jev 키가 변경되었습니다.');
             }
         }
-        if (revision !== keyRevision || !isJevUsageAllowed() || controller.signal.aborted) throw failure('STORYBOOSTER_JEV_CANCELLED', 'Jev 요청이 취소되었습니다.');
+        if (revision !== keyRevision || provider !== getJevProviderId() || !isJevUsageAllowed() || controller.signal.aborted) throw failure('STORYBOOSTER_JEV_CANCELLED', 'Jev 요청이 취소되었습니다.');
         updateStatus('Jev 요청 중', 'checking');
         const response = await fetch('/api/backends/chat-completions/generate', {
             method: 'POST', credentials: 'same-origin',
@@ -331,28 +392,34 @@ export async function requestJev(state, questions, { timeoutMs = 25000, signal }
             body: JSON.stringify({
                 chat_completion_source: 'custom',
                 // ST appends /chat/completions; absorb that suffix in a query.
-                custom_url: `${ENDPOINT}?via=`, model: 'jev-latest',
+                custom_url: `${config.endpoint}?via=`, model: config.model,
                 messages: [{ role: 'user', content: '.' }], stream: false,
                 custom_include_body: JSON.stringify({ state, questions }),
                 custom_exclude_body: JSON.stringify(STRIP),
                 custom_include_headers: JSON.stringify({ Authorization: `Bearer ${sessionKey}` }),
             }),
         });
-        if (!response.ok) throw failure('STORYBOOSTER_JEV_HTTP_ERROR', `Jev 중계 요청에 실패했습니다 (HTTP ${response.status}).`, response.status);
         let result;
-        try { result = await response.json(); } catch { throw failure('STORYBOOSTER_JEV_INVALID_RESPONSE', 'Jev 중계 응답을 읽지 못했습니다.'); }
-        // Do not surface upstream text: it can contain requests or credentials.
+        try { result = await response.json(); } catch {
+            if (response.ok) throw failure('STORYBOOSTER_JEV_INVALID_RESPONSE', 'Jev 중계 응답을 읽지 못했습니다.');
+        }
+        // Recognize only fixed codes. Upstream messages/values can contain
+        // private request data and are never put in status or exported logs.
+        if (['context_length_exceeded', 'too_many_questions', 'request_body_too_large'].includes(result?.error?.code)) {
+            throw failure('STORYBOOSTER_JEV_INPUT_LIMIT', 'Jev 제공자의 입력 한도를 초과했습니다.', response.status);
+        }
+        if (!response.ok) throw failure('STORYBOOSTER_JEV_HTTP_ERROR', `Jev 중계 요청에 실패했습니다 (HTTP ${response.status}).`, response.status);
         if (result?.error) throw failure('STORYBOOSTER_JEV_UPSTREAM_ERROR', 'Jev가 요청을 처리하지 못했습니다. 키·요청 한도·연결 상태를 확인해 주세요.');
-        if (revision !== keyRevision || controller.signal.aborted) throw failure('STORYBOOSTER_JEV_CANCELLED', 'Jev 요청이 취소되었습니다.');
+        if (revision !== keyRevision || provider !== getJevProviderId() || controller.signal.aborted) throw failure('STORYBOOSTER_JEV_CANCELLED', 'Jev 요청이 취소되었습니다.');
         validateJevAnswers(result, questions);
-        if (sequence === requestSequence) updateStatus('Jev 연결 정상 · SillyTavern 기본 중계', 'connected');
+        if (sequence === requestSequence) updateStatus(`Jev 연결 정상 · ${config.label}`, 'connected');
         return result;
     } catch (error) {
         const safeError = timedOut ? failure('STORYBOOSTER_JEV_TIMEOUT', 'Jev 응답 시간이 초과되었습니다.')
             : controller.signal.aborted ? failure('STORYBOOSTER_JEV_CANCELLED', 'Jev 요청이 취소되었습니다.')
             : String(error?.code || '').startsWith('STORYBOOSTER_JEV_') ? error
             : failure('STORYBOOSTER_JEV_NETWORK_ERROR', 'Jev 중계 연결에 실패했습니다.');
-        if (revision === keyRevision && sequence === requestSequence) updateStatus(`${safeError.message} · 기존 진단 사용`, 'error');
+        if (revision === keyRevision && provider === getJevProviderId() && sequence === requestSequence) updateStatus(`${safeError.message} · 기존 진단 사용`, 'error');
         throw safeError;
     } finally {
         clearTimeout(timer); controllers.delete(controller);

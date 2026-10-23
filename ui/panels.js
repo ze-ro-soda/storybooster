@@ -1,5 +1,5 @@
 import { auditAnalysisLabel, auditComparisonText } from '../core/audit-history.js';
-import { getJevConnectionBadge, getJevConnectionStatus, hasJevSessionKey } from '../core/jev-client.js';
+import { getJevProviderId, getJevConnectionBadge, getJevConnectionStatus, hasJevSessionKey } from '../core/jev-client.js';
 import { cancelAutomaticPlot } from '../core/automatic-plot-state.js';
 // StoryBooster: ui/panels.js
 import { CHARACTER_AUDIT_DISPLAY_ITEMS, CHARACTER_BASELINE_FIELDS, CHARACTER_BASELINE_FIELD_MAX_CHARS, CHARACTER_BOOST_CORRECTION_CODES, CHARACTER_REVISION_ASSISTANT_REPLIES, GENRE_AUDIT_DISPLAY_ITEMS, GENRE_BOOST_CORRECTION_CODES, GENRE_CORRECTION_DESCRIPTIONS, GENRE_CORRECTION_LABELS, MAX_AUDIT_INTERVAL, MAX_CHARACTER_BASELINE_VERSIONS, MIN_AUDIT_INTERVAL, MODULE_NAME } from "../core/constants.js";
@@ -20,6 +20,8 @@ export function updateJevConnectionBadges() {
     const settings = document.getElementById('rp-storybooster-settings');
     const status = settings?.querySelector('#rp-jev-status');
     if (status) status.textContent = getJevConnectionStatus();
+    const providerInput = settings?.querySelector('#rp-jev-provider');
+    if (providerInput) providerInput.value = getJevProviderId();
     const keyInput = settings?.querySelector('#rp-jev-key');
     if (keyInput) keyInput.placeholder = hasJevSessionKey() ? '키 저장됨 · 변경할 키만 입력' : '키 입력';
     const badge = getJevConnectionBadge(ensureModuleSettings().jevEnabled);
@@ -193,11 +195,15 @@ function renderAuditDetailPanel(panel, audit, item, state) {
     comparison.className = 'rp-audit-comparison';
     comparison.textContent = auditComparisonText(audit, item.code);
     comparison.hidden = !comparison.textContent;
-    const deferredHelp = document.createElement('small');
-    deferredHelp.className = 'rp-audit-detail-help';
-    deferredHelp.textContent = '판단 보류는 이 항목의 추가 보정을 준비하지 않았다는 뜻이며, 기존 부스팅을 끄지 않아요.';
-    deferredHelp.hidden = !(audit.uncertain?.includes(item.code));
-    panel.append(heading, reason, comparison, deferredHelp, action, help);
+    panel.append(heading, reason, comparison);
+    // Do not render inactive help: host/theme display rules can override hidden.
+    if (status.text === '판단 보류') {
+        const deferredHelp = document.createElement('small');
+        deferredHelp.className = 'rp-audit-detail-help';
+        deferredHelp.textContent = '판단 보류는 이 항목의 추가 보정을 준비하지 않았다는 뜻이며, 기존 부스팅을 끄지 않아요.';
+        panel.append(deferredHelp);
+    }
+    panel.append(action, help);
     panel.hidden = false;
 }
 
@@ -277,6 +283,8 @@ function getGenreAuditResultStatusText(audit, state = null, items = []) {
     if (relevantCodes.length && state.genreAnchor.correctionRemaining > 0) {
         return "다음 응답에 1회 보강 대기";
     }
+    if (audit?.status === "error") return "진단 실패 · 부스팅은 유지";
+    if (audit?.status === "cancelled") return "이번 진단 보정은 적용하지 않음";
     const auditRelevantCodes = (audit?.correctionCodes || []).filter((code) =>
         itemCodes.has(code)
     );
@@ -1082,30 +1090,18 @@ function getGenreAuditStatusText(state) {
     }
 
     const audit = state.genreAnchor.lastGenreAudit;
-    const genreCodes = GENRE_AUDIT_DISPLAY_ITEMS.map(item => item.code);
-    if (audit && !audit.correctionCodes?.length && audit.uncertain?.some(code => genreCodes.includes(code)) &&
-        !genreCodes.some(code => !audit.uncertain.includes(code) && ['attention', 'weak'].includes(audit.ratings?.[code]))) {
-        return '최근 진단: 판단 보류 항목이 있어요. 상세 사유를 확인해 주세요.';
-    }
-    switch (state.genreAnchor.auditStatus) {
-        case "stable":
-            return state.genreAnchor.lastGenreAudit?.ratings?.support_texture ===
-                "dormant"
-                ? "최근 진단: 주 장르는 안정 · 보조 렌즈는 대기 중이에요."
-                : "최근 진단: 안정적으로 유지되고 있어요.";
-        case "reinforcing":
-            return "최근 진단: 다음 응답에 보정을 적용해요.";
-        case "attention":
-            return "최근 진단: 주의 항목이 있어요. 상세 사유를 확인해 주세요.";
-        case "deferred":
-            return "최근 진단: 판단 보류 항목이 있어요. 상세 사유를 확인해 주세요.";
-        case "error":
-            return "최근 진단 실패 · 부스팅은 유지돼요.";
-        case "monitoring":
-            return "자동 진단 대기 중입니다.";
-        default:
-            return "설정한 응답 수가 지나면 자동 진단을 시작해요.";
-    }
+    const status = getGenreAuditResultStatusText(audit, state, GENRE_AUDIT_DISPLAY_ITEMS);
+    if (status === "다음 응답에 1회 보강 대기") return "최근 진단: 다음 응답에 보정을 적용해요.";
+    if (status === "이번 응답에 1회 보강 적용 완료") return "최근 진단: 이번 응답에 보정을 적용했어요.";
+    if (!audit) return state.genreAnchor.auditStatus === "monitoring"
+        ? "자동 진단 대기 중입니다." : "설정한 응답 수가 지나면 자동 진단을 시작해요.";
+    if (status === "추가 보정이 필요하지 않음") return audit.ratings?.support_texture === "dormant"
+        ? "최근 진단: 주 장르는 안정 · 보조 렌즈는 대기 중이에요."
+        : "최근 진단: 안정적으로 유지되고 있어요.";
+    if (status.startsWith("판단 보류")) return "최근 진단: 판단 보류 항목이 있어요. 상세 사유를 확인해 주세요.";
+    if (status.startsWith("주의") || status.startsWith("약화")) return "최근 진단: 주의 항목이 있어요. 상세 사유를 확인해 주세요.";
+    if (status.startsWith("진단 실패")) return "최근 진단 실패 · 부스팅은 유지돼요.";
+    return `최근 진단: ${status}`;
 }
 
 // @source-order 358

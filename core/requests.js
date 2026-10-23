@@ -1,5 +1,5 @@
 import { captureResponseMetadata, pendingResponseMetadata } from './response-metadata.js';
-import { requestFailureDetails, responseRepairInstruction } from './response-validation.js';
+import { blocksFormatRetry, requestFailureDetails, responseRepairInstruction } from './response-validation.js';
 // StoryBooster: core/requests.js
 import { runAbortableRequest, throwIfRequestAborted } from "./request-lifecycle.js";
 import { BACKGROUND_REQUEST_TIMEOUT_MS, MODULE_NAME } from "./constants.js";
@@ -423,7 +423,7 @@ function shouldRetryStructuredJsonCompatibility(error, connectionSnapshot) {
     if (error?.name === "AbortError") return false;
     // A wrapped HTTP/auth/network failure is not an output-format problem.
     // Keep these failures out of the JSON repair loop too.
-    if (['authentication', 'rate_limit', 'provider_error', 'network'].includes(requestFailureDetails(error).requestError)) return false;
+    if (blocksFormatRetry(error)) return false;
     if (
         [
             "TIMEOUT",

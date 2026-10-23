@@ -9,6 +9,7 @@ import { eventGenerationPendingTasks, plotModeDraftsByChat, runtime } from "../c
 import { extension_prompt_roles, extension_prompt_types, getContext, saveSettingsDebounced, setExtensionPrompt } from "../core/sillytavern.js";
 import { armPendingGenreCorrectionForNextResponse, ensureChatState, ensureModuleSettings, getAvailablePlotCategories, getCharacterBoosterReadiness, getCurrentCharacterBaseline, getRandomPlotCategory, getSelectedPlotCategory, isBoosterFeatureEnabled, normalizePlotHistory, serializeCharacterBaseline } from "../core/storage.js";
 import { automaticPlotRuntime, cancelAutomaticPlot } from '../core/automatic-plot-state.js';
+import { blocksFormatRetry } from '../core/response-validation.js';
 
 // Headless ordinary random generation shares the existing prompt, validators
 // and bounded JSON -> tag -> repair compatibility path. It never calls generate().
@@ -1024,6 +1025,7 @@ function parsePlotEventResult(result, { allowTagged = false } = {}) {
 
 // @source-order 321
 function shouldRetryPlotEventWithoutSchema(error, connectionSnapshot) {
+    if (blocksFormatRetry(error)) return false;
     const code = String(error?.code || "").toUpperCase();
     if (
         [
@@ -1059,6 +1061,7 @@ function shouldRetryPlotEventWithoutSchema(error, connectionSnapshot) {
 
 // @source-order 322
 function shouldRetryTaggedPlotEvent(error) {
+    if (blocksFormatRetry(error)) return false;
     const code = String(error?.code || "").toUpperCase();
     if (
         [

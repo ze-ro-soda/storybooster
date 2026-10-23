@@ -34,6 +34,7 @@ function createDefaultModuleSettings() {
         },
         characterBaselines: {},
         characterBaselineVersions: {},
+        jevProvider: 'typesafe',
         jevEnabled: false,
         jevConsentVersion: 0,
         settingsSchemaVersion: 25,
@@ -230,6 +231,7 @@ function migrateModuleSettings(settings) {
 
 // @source-order 107
 function normalizeModuleSettings(settings) {
+    if (!['typesafe', 'nanogpt'].includes(settings.jevProvider)) settings.jevProvider = 'typesafe';
     if (typeof settings.jevEnabled !== "boolean") settings.jevEnabled = false;
     if (settings.jevConsentVersion !== 1) {
         settings.jevConsentVersion = 0;
