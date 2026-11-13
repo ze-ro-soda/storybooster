@@ -1,7 +1,7 @@
 // User-approved plaintext localStorage persistence. The legacy encrypted vault
 // is used only to migrate an existing key; normal saves need no Web Crypto/IDB.
-import { supportsJevVault as supportsEncryptedVault, serializeJevVault, resolveJevVaultScope,
-    readJevVaultRecord as readEncryptedRecord, deleteJevVaultRecord as deleteEncryptedRecord } from './jev-vault.js';
+import { supportsLegacyJevVault as supportsEncryptedVault, serializeJevVault, resolveJevVaultScope,
+    readLegacyJevVaultRecord as readEncryptedRecord, deleteLegacyJevVaultRecord as deleteEncryptedRecord } from './jev-vault.js';
 import { getJevProviderConfig } from './jev-providers.js';
 export { serializeJevVault, resolveJevVaultScope };
 const PREFIX = 'storybooster-jev-key-v2:';

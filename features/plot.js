@@ -29,6 +29,7 @@ async function requestHeadlessPlotEvent({ chatId, selection, isCurrent, signal }
     const attempt = async (tagged, repair = false) => {
         if (!isCurrent()) throw new Error('자동 사건 생성이 취소되었습니다.');
         const raw = await generateStructuredAnalysis({ prompt: [prompt,
+            'AUTOMATIC SMALL CUE: Make one modest local cue from an established scene detail or natural transition. Add a worthwhile option or interaction while preserving current tone, including quiet daily life. Respect or answer the latest ordinary user action or question first. Do not interrupt critical action or emotional payoff, force a scene change, invent retroactive facts, or prescribe any user response. Follow the selected category at this small scale.',
             tagged ? 'COMPATIBILITY OUTPUT: Return exactly <plot_event>event text</plot_event>. Close the tag. No JSON or commentary.' : 'Return only {"event":"event text"}.',
             repair ? 'FINAL REPAIR: Return one complete non-empty event immediately.' : '',
             `Preserve the selected primary genre direction: ${selection.primaryGenre?.label || 'the current roleplay'}.`,
@@ -715,6 +716,7 @@ function renderPlotHistoryCards() {
                     class="menu_button rp-plot-history-load"
                     data-history-id="${escapeHtml(entry.id)}"
                 >추천창으로 불러오기</button>
+                <button type="button" class="menu_button rp-plot-history-save" data-history-id="${escapeHtml(entry.id)}">📌 나중에 쓰기</button>
             </article>`
         )
         .join("");

@@ -9,7 +9,7 @@ const CHARACTER_FACETS = {
     character_consistency_facets: ['motives', 'values', 'boundaries', 'emotion', 'voice', 'vocabulary'],
     character_interpretation_facets: ['individuality', 'development', 'softening', 'balance', 'situation', 'nuance'],
 };
-const FIELDS = new Set(['response', 'character_focus_fields', ...GROUPS,
+const FIELDS = new Set(['response', 'character_focus_fields', 'underuse_evidence', ...GROUPS,
     ...GROUPS.flatMap(group => DIMENSIONS.map(id => `${group}.${id}`)),
     ...Object.keys(CHARACTER_FACETS),
     ...Object.entries(CHARACTER_FACETS).flatMap(([field, ids]) => ids.map(id => `${field}.${id}`))]);

@@ -1,7 +1,7 @@
 import { GENRE_AUDIT_CODES, GENRE_AUDIT_RESPONSE_LIMIT } from './constants.js';
 
 const choices = new Set(['present', 'stable', 'weak', 'drifted', 'biased', 'attention', 'na', 'dormant', 'context_missing', 'conflict']);
-const routes = new Set(['confirmed_problem', 'clear_positive_evidence', 'no_opportunity',
+const routes = new Set(['confirmed_problem', 'confirmed_underuse', 'clear_positive_evidence', 'no_opportunity',
     'essential_context_missing', 'conflicting_observations', 'insufficient_positive_evidence', 'no_applicable_observations']);
 const verdicts = new Set(['yes', 'no', 'justified', 'temporary', 'no_opportunity', 'uncertain']);
 const unit = value => typeof value === 'number' && Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : null;
@@ -21,7 +21,7 @@ export function normalizeJevDecisionTrace(value) {
                 verdict: verdicts.has(facet?.verdict) ? facet.verdict : 'uncertain',
                 confidence: unit(facet?.confidence), probability: unit(facet?.probability),
             })) : [],
-            positiveReplies: replies(row.positiveReplies), failedReplies: replies(row.failedReplies),
+            positiveReplies: replies(row.positiveReplies), failedReplies: replies(row.failedReplies), underusedReplies: replies(row.underusedReplies),
             excludedReplies: replies(row.excludedReplies),
         }];
     }));

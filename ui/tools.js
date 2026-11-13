@@ -56,17 +56,29 @@ function buildStoryBoosterErrorReport(entries = readStoryBoosterErrorLog()) {
 async function copyStoryBoosterText(text) {
     const value = String(text || "");
     if (globalThis.navigator?.clipboard?.writeText) {
-        await globalThis.navigator.clipboard.writeText(value);
-        return;
+        try { await globalThis.navigator.clipboard.writeText(value); return; }
+        catch { /* A permission failure can still allow copying through the focused document. */ }
     }
+    const previous = document.activeElement;
+    const start = previous?.selectionStart, end = previous?.selectionEnd;
     const textarea = document.createElement("textarea");
     textarea.value = value;
+    textarea.readOnly = true;
     textarea.style.position = "fixed";
     textarea.style.opacity = "0";
-    document.body.appendChild(textarea);
-    textarea.select();
-    document.execCommand("copy");
-    textarea.remove();
+    try {
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        textarea.setSelectionRange(0, value.length);
+        if (document.execCommand?.("copy") !== true) throw new Error("이 브라우저에서 자동 복사를 사용할 수 없습니다.");
+    } finally {
+        textarea.remove();
+        if (previous?.isConnected !== false) {
+            previous?.focus?.({ preventScroll: true });
+            if (Number.isInteger(start) && Number.isInteger(end)) previous?.setSelectionRange?.(start, end);
+        }
+    }
 }
 
 // @source-order 81

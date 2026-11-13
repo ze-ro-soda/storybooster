@@ -10,7 +10,7 @@ const STAGES = { admitted: '자동 랜덤박스 확인 시작', blocked: '보정
     cancelled: '후보·주입 취소', failed: '요청·검증 실패' };
 const NUMBERS = ['reviewedResponses', 'transcriptChars', 'latestInputChars', 'requestCount', 'retryCount', 'timeoutMs'];
 const FLAGS = ['latestInputComplete', 'transcriptTrimmed'];
-const REASONS = new Set(['chat_changed', 'key_changed', 'generation_stopped', 'plot_state_changed', 'profile_changed', 'language_changed', 'genre_changed', 'character_changed', 'context_changed', 'confirmed_problem', 'not_eligible', 'busy', 'cooldown', 'insufficient_input']);
+const REASONS = new Set(['chat_changed', 'key_changed', 'generation_stopped', 'plot_state_changed', 'profile_changed', 'language_changed', 'genre_changed', 'character_changed', 'context_changed', 'confirmed_problem', 'not_eligible', 'busy', 'cooldown', 'insufficient_input', 'legacy_quiet_progress', 'immediate_beat', 'user_direction', 'duplicate', 'unsafe_insertion', 'uncertain_safety', 'candidate_mismatch', 'no_supported_opening']);
 const ERRORS = new Set(['timeout', 'cancelled', 'transport', 'response_validation', 'unknown']);
 let entries;
 let sequence = 0;
@@ -24,6 +24,7 @@ function metadata(value = {}) {
     for (const key of NUMBERS) if (typeof value[key] === 'number' && Number.isFinite(value[key])) out[key] = Math.max(0, value[key]);
     for (const key of FLAGS) if (typeof value[key] === 'boolean') out[key] = value[key];
     if (['jev', 'legacy'].includes(value.engine)) out.engine = value.engine;
+    if (['stagnation', 'natural_opening'].includes(value.basis)) out.basis = value.basis;
     if (ERRORS.has(value.errorKind)) out.errorKind = value.errorKind;
     if (REASONS.has(value.reason)) out.reason = value.reason;
     return out;

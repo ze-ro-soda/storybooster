@@ -6,7 +6,7 @@ import { filterRequestFailureDetails, filterResponseValidationDetails, requestFa
 const FIELD_NAMES = new Set([
     'response', 'fields', 'changed_fields', 'has_changes', 'revision_note', 'change_summary',
     'boost_anchor', 'boost_anchor_display', 'event', 'character_correction', 'character_focus_fields',
-    'deferred_dimensions', 'repetition_matches', 'problem_facets', 'reasons', 'corrections', 'next_corrections',
+    'underuse_evidence', 'deferred_dimensions', 'repetition_matches', 'problem_facets', 'reasons', 'corrections', 'next_corrections',
     ...CHARACTER_BASELINE_FIELDS.flatMap(({ id }) => [id, `fields.${id}`]),
     ...GENRE_AUDIT_CODES.flatMap(id => ['', '_evidence', '_failure_evidence', '_positive_evidence',
         '_reason', '_opportunity', '_identifiable', '_severe', '_facets'].map(suffix => id + suffix)),

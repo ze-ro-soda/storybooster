@@ -3,7 +3,7 @@ import { startAutomaticPlotTrace, recordAutomaticPlotTrace } from "../core/autom
 import { auditTraceErrorKind } from "../core/audit-run-trace.js";
 import { createOperationDiagnostic } from "../core/diagnostics.js";
 import { throwIfRequestAborted } from "../core/request-lifecycle.js";
-import { plotDecisionReason, plotAuditHoldReason } from './plot-status.js';
+import { plotDecisionReason, plotDecisionBlockReason, plotAuditHoldReason } from './plot-status.js';
 import { getBoosterElement } from '../core/dom.js';
 import { automaticPlotRuntime, cancelAutomaticPlot } from '../core/automatic-plot-state.js';
 import { getCurrentCharacterIdentity, getCurrentChatId, snapshotCurrentChatMessages } from '../core/context.js';
@@ -18,43 +18,43 @@ import { triggerPlotEvent, requestHeadlessPlotEvent, recordPlotHistory, updatePl
 import { confidentChoice, createJevAuditState } from './jev-diagnosis.js';
 import { getGenreSelectionSignature } from './genre-model.js';
 
-export const PLOT_FIELDS = ['stagnation', 'quiet_progress', 'existing_thread_progress', 'insertion_safe', 'user_direction_blocks', 'duplicate'];
+export const PLOT_FIELDS = ['stagnation', 'natural_opening', 'existing_thread_progress', 'insertion_safe', 'user_direction_blocks', 'duplicate'];
 const CHECKS = {
     stagnation: 'Have the last several replies mechanically repeated interactions without meaningful changes in information, relationship, action or situation?',
-    quiet_progress: 'Is quiet daily life or emotional interaction still meaningfully progressing? Quietness or lack of dramatic action alone is not stagnation.',
-    existing_thread_progress: 'Does a current unresolved question, promise, action or conflict already provide a concrete next step that should be continued before adding an event?',
-    insertion_safe: 'Can a modest ordinary random event begin in the next reply without interrupting a critical action, emotional payoff, or response the user is owed?',
-    user_direction_blocks: 'Does the latest user input request a quiet scene, specify a competing direction, ask a question requiring a direct answer, or take an action requiring an immediate response before a new event?',
+    natural_opening: 'Does the recent scene establish a concrete natural opening for a modest local cue that adds a worthwhile option or interaction, even while quiet daily life or emotional interaction progresses? Require an existing detail or setup; a hypothetical possibility of any event is not enough. Do not force drama, a transition or retroactive facts.',
+    existing_thread_progress: 'Would adding a modest local cue interrupt an immediate ongoing action, consequential exchange or earned payoff that needs its next step now? A long-term unresolved goal, promise or ordinary conversation alone does not block a compatible cue.',
+    insertion_safe: 'Can a modest local cue coexist after the latest ordinary question or action is answered or respected, without displacing a critical action, important emotional exchange or earned payoff?',
+    user_direction_blocks: 'Does the latest user explicitly exclude new events or specify a direction incompatible with this cue, or require an urgent response that the cue would displace? Ordinary questions and actions alone do not block if answered or respected first and the cue can coexist naturally. A quiet scene is valid; preserve its tone without assuming silence forbids every small cue.',
     duplicate: 'Would the proposed event repeat an unfinished event in the roleplay or a previous suggestion in history? The candidate itself is not a previous event. Suggestions are not proof that events occurred.',
 };
 
 // Independent timing observations, combined by explicit protective gates.
-// A meaningful change in any progress channel prevents an automatic event.
+// Progress alone does not veto a supported opening; immediate safety and user intent do.
 export const PLOT_SUBCHECKS = {
     stagnation: [
         ['information_static', 'Have the recent replies added no meaningful information or discovery?'],
         ['action_static', 'Have relevant actions or goals made no meaningful progress?'],
         ['relationship_static', 'Have trust, distance, feelings and understanding remained meaningfully unchanged?'],
     ],
-    quiet_progress: [
-        ['daily_progress', 'Is ordinary daily interaction moving forward in a meaningful way?'],
-        ['emotional_progress', 'Is emotional expression or processing still developing?'],
-        ['understanding_progress', 'Is mutual understanding or relational distance changing meaningfully?'],
+    natural_opening: [
+        ['established_setup', 'Does a concrete existing scene detail or setup support a small local cue without inventing retroactive facts?'],
+        ['useful_option', 'Would a small cue add a worthwhile option or interaction instead of replaying an event or adding empty spectacle?'],
+        ['pace_fit', 'Can that cue fit the current tone and pace, including a quiet scene, without interrupting a critical exchange or payoff?'],
     ],
     existing_thread_progress: [
-        ['unfinished_thread', 'Does an established unresolved thread provide a concrete next step?'],
-        ['ongoing_action', 'Does an ongoing action need its immediate continuation before a new event?'],
-        ['unresolved_exchange', 'Does an unresolved exchange need a response or payoff before a new event?'],
+        ['unfinished_thread', 'Would a new cue interrupt the immediate next step of an established thread? An unresolved long-term goal alone is not a block.'],
+        ['ongoing_action', 'Would this small cue displace an important immediate continuation or consequence of the ongoing action? An ordinary action that can be acknowledged or completed first without interrupting it is not a block.'],
+        ['unresolved_exchange', 'Would a new cue displace a consequential unresolved exchange or earned payoff that needs attention now?'],
     ],
     insertion_safe: [
         ['critical_action_safe', 'Can a modest ordinary event begin without interrupting a critical action?'],
-        ['emotional_payoff_safe', 'Can it begin without interrupting an emotional exchange or earned payoff?'],
+        ['emotional_payoff_safe', 'Can it coexist without interrupting an important emotional exchange or earned payoff? Quiet emotional progress alone does not block a compatible small cue.'],
         ['scene_transition_safe', 'Can it begin without forcing a scene transition or deciding user actions?'],
     ],
     user_direction_blocks: [
-        ['competing_direction', 'Does the latest user input request quietness or a competing scene direction?'],
-        ['answer_due', 'Does the latest user input ask a question that should be answered before a new event?'],
-        ['reaction_due', 'Does the latest user action require an immediate response before a new event?'],
+        ['competing_direction', 'Does the latest user explicitly exclude new events or choose a direction incompatible with a small cue? Preserve quiet tone; quietness alone is not exclusion.'],
+        ['answer_due', 'Would adding a cue displace an urgent or consequential answer? An ordinary question that can be answered first is not a block.'],
+        ['reaction_due', 'Would adding a cue interrupt an immediate consequential reaction to the user action? An ordinary action that can be respected first is not a block.'],
     ],
     duplicate: [
         ['unfinished_duplicate', 'Would the candidate repeat an unfinished event? Without a candidate judge only established event repetition; absent history alone is not a duplicate.'],
@@ -84,7 +84,7 @@ export function ensureAutomaticPlotSettings(state = ensureChatState()) {
 
 export function getAutomaticPlotStatusText(p = ensureAutomaticPlotSettings()) {
     if (!p.enabled || ['idle', 'disabled'].includes(p.status)) return '';
-    const labels = { observing: '전개 정체 확인 중',
+    const labels = { observing: '사건 계기·삽입 시점 확인 중',
         deferred: '현재 흐름 유지 · 이번에는 사건을 넣지 않습니다', preparing: '사건 후보 준비 중',
         ready: '랜덤박스 준비됨 · 다음 응답 전에 최신 입력을 확인합니다', applied: '1회 반영 완료', error: '준비 실패 · 현재 흐름 유지' };
     if (p.status === 'deferred' && p.lastDecision) return p.lastDecision;
@@ -129,18 +129,31 @@ export function roleplayFingerprint(messages = getContext()?.chat || []) {
 export function parsePlotDecision(value, count) {
     try {
         const p = typeof value === 'string' ? extractJsonObject(value).plot : value?.plot;
-        if (!p || PLOT_FIELDS.some(k => !['yes', 'no', 'uncertain'].includes(p[k])) || !Array.isArray(p.stalled_replies)) return null;
-        const evidence = [...new Set(p.stalled_replies)].filter(n => Number.isSafeInteger(n) && n >= 1 && n <= count).sort((a,b) => a-b);
-        // Require all three latest observed replies to substantiate stagnation.
-        const stalled = count >= 5 && [count-2, count-1, count].every(n => evidence.includes(n));
-        return { ...Object.fromEntries(PLOT_FIELDS.map(k => [k, p[k]])), stalled_replies: evidence,
-            eligible: stalled && p.stagnation === 'yes' && p.quiet_progress === 'no' && p.existing_thread_progress === 'no' && p.insertion_safe === 'yes' && p.user_direction_blocks === 'no' && p.duplicate === 'no' };
+        if (!p || !Number.isSafeInteger(count) || count < 1) return null;
+        // Previously stored/provider-compatible objects retain their conservative
+        // quiet-progress veto. A malformed modern object is never repaired to yes.
+        const legacy = !Object.hasOwn(p, 'natural_opening') && ['yes', 'no', 'uncertain'].includes(p.quiet_progress);
+        const fields = legacy ? PLOT_FIELDS.filter(k => k !== 'natural_opening') : PLOT_FIELDS;
+        if (fields.some(k => !['yes', 'no', 'uncertain'].includes(p[k])) || !Array.isArray(p.stalled_replies) ||
+            (!legacy && !Array.isArray(p.opening_replies))) return null;
+        const ids = rows => [...new Set(rows)].filter(n => Number.isSafeInteger(n) && n >= 1 && n <= count).sort((a,b) => a-b);
+        const stalledReplies = ids(p.stalled_replies), openingReplies = legacy ? [] : ids(p.opening_replies);
+        const latest = [count-2, count-1, count];
+        const stalled = count >= 5 && p.stagnation === 'yes' && latest.every(n => stalledReplies.includes(n));
+        const opening = count >= 5 && p.natural_opening === 'yes' && latest.filter(n => openingReplies.includes(n)).length >= 2;
+        const safe = p.existing_thread_progress === 'no' && p.insertion_safe === 'yes' && p.user_direction_blocks === 'no' && p.duplicate === 'no';
+        const basis = opening ? 'natural_opening' : stalled ? 'stagnation' : '';
+        return { ...Object.fromEntries(fields.map(k => [k, p[k]])),
+            ...(legacy ? { natural_opening: 'no', quiet_progress: p.quiet_progress } : {}),
+            stalled_replies: stalledReplies, opening_replies: openingReplies, basis,
+            eligible: safe && Boolean(basis) && (!legacy || p.quiet_progress === 'no') };
     } catch { return null; }
 }
 
 export function addPlotAuditSchema(schema) {
     const properties = Object.fromEntries(PLOT_FIELDS.map(k => [k, { type: 'string', enum: ['yes', 'no', 'uncertain'] }]));
     properties.stalled_replies = { type: 'array', items: { type: 'integer' }, maxItems: 10 };
+    properties.opening_replies = { type: 'array', items: { type: 'integer' }, maxItems: 10 };
     return { ...schema, schema: { ...schema.schema,
         properties: { ...schema.schema.properties, plot: { type: 'object', properties, required: Object.keys(properties), additionalProperties: false } },
         required: [...schema.schema.required, 'plot'] } };
@@ -148,9 +161,9 @@ export function addPlotAuditSchema(schema) {
 
 export function plotAuditPrompt() {
     return [
-        'ADDITIONAL AUTOMATIC PLOT DIAGNOSIS: Judge only the need for an event, not an event itself. Confirmed genre/character problems require correction first. Deferred genre/character judgments alone neither block nor authorize an event. Independently establish actual stagnation and safe insertion from the supplied scene; if relevant scene context or user intent is unclear, use uncertain.',
+        'ADDITIONAL AUTOMATIC PLOT DIAGNOSIS: Judge only the need for an event, not an event itself. Confirmed genre/character problems require correction first. Deferred genre/character judgments alone neither block nor authorize an event. Independently establish actual stagnation OR a concrete natural opening for a worthwhile small cue, together with safe insertion from the supplied scene; if relevant scene context or user intent is unclear, use uncertain.',
         ...PLOT_FIELDS.map(k => `${k}: ${CHECKS[k]} Use yes/no/uncertain.`),
-        'Return these values in a plot object, plus stalled_replies as actual CHAR_RESPONSE integer IDs demonstrating no meaningful progress. Do not fabricate evidence. An unanswered user action/question takes priority. Uncertain evidence never authorizes an event.',
+        'Return these values in a plot object, plus stalled_replies as actual CHAR_RESPONSE integer IDs demonstrating no meaningful progress, and opening_replies as IDs establishing a concrete compatible setup or transition for a worthwhile small cue. The last three replies must all support stagnation, OR at least two of the latest three must support the natural opening. Progress does not itself forbid an opening. Do not fabricate evidence. Answer and respect ordinary user questions/actions first; explicit incompatible intent and consequential immediate beats take priority. Unknown essential safety never authorizes an event.',
     ].join('\n');
 }
 
@@ -163,8 +176,8 @@ export async function diagnoseAutomaticPlot({ selection, transcript, count, cand
                 criteria: { yes: 'Clearly supported by supplied context.', no: 'Clearly not the case.', uncertain: 'Relevant context is ambiguous or insufficient.' } };
         }
         for (let n = Math.max(1, count-2); n <= count; n++) questions[`stalled_${n}`] = {
-            type: 'choice', instructions: `In CHAR_RESPONSE_${n}, is the same interaction mechanically repeated without meaningful change in information, action, situation or relationship? Use adjacent replies for comparison.`,
-            criteria: { yes: 'Clearly stalled repetition without meaningful progress.', no: 'Meaningful progress, including quiet or emotional progress.', uncertain: 'Insufficient comparison context.' },
+            type: 'choice', instructions: `In CHAR_RESPONSE_${n}, is the same interaction mechanically repeated without meaningful change in information, action, situation or relationship? Use adjacent replies for comparison. Otherwise, does this reply establish a concrete compatible setup or transition for a worthwhile small local cue?`,
+            criteria: { yes: 'Clearly stalled repetition without meaningful progress.', opening: 'A concrete existing detail or transition supports a worthwhile small cue compatible with current progress and pace.', no: 'Neither stalled nor a concrete supported opening; progress alone proves neither.', uncertain: 'Insufficient comparison or scene context.' },
         };
         if (candidate) {
             questions.candidate_fit = { type: 'choice', instructions: 'Is the supplied candidate a modest, coherent ordinary random event compatible with known facts, characterization, genre and the latest user input?', criteria: { yes: 'Compatible without invented retroactive facts or forced scene changes.', no: 'Conflicting or disruptive.', uncertain: 'Compatibility cannot be established.' } };
@@ -176,16 +189,18 @@ export async function diagnoseAutomaticPlot({ selection, transcript, count, cand
         for (const [field, checks] of Object.entries(PLOT_SUBCHECKS)) {
             const values = checks.map(([id]) => { const a = result.answers[`plot_${field}__${id}`]; return confidentChoice(a) ? a.choice : 'uncertain'; });
             if (values.includes('uncertain')) p[field] = 'uncertain';
-            else if (['stagnation', 'insertion_safe'].includes(field)) {
+            else if (['stagnation', 'natural_opening', 'insertion_safe'].includes(field)) {
                 if (values.includes('no')) p[field] = 'no';
             } else if (values.includes('yes')) p[field] = 'yes';
         }
         p.stalled_replies = Object.keys(questions).filter(k => k.startsWith('stalled_') && confidentChoice(result.answers[k]) && result.answers[k].choice === 'yes').map(k => Number(k.slice(8)));
+        p.opening_replies = Object.keys(questions).filter(k => k.startsWith('stalled_') && confidentChoice(result.answers[k]) && result.answers[k].choice === 'opening').map(k => Number(k.slice(8)));
         if (candidate && (!confidentChoice(result.answers.candidate_fit) || result.answers.candidate_fit.choice !== 'yes' || !confidentChoice(result.answers.user_agency) || result.answers.user_agency.choice !== 'yes')) p.insertion_safe = 'uncertain';
         return parsePlotDecision({ plot: p }, count);
     }
     const properties = Object.fromEntries(PLOT_FIELDS.map(k => [k, { type: 'string', enum: ['yes', 'no', 'uncertain'] }]));
     properties.stalled_replies = { type: 'array', items: { type: 'integer' }, maxItems: 10 };
+    properties.opening_replies = { type: 'array', items: { type: 'integer' }, maxItems: 10 };
     if (candidate) {
         properties.candidate_fit = { type: 'boolean' };
         properties.user_agency_preserved = { type: 'boolean' };
@@ -214,7 +229,7 @@ export async function diagnoseAutomaticPlot({ selection, transcript, count, cand
 export function healthyAuditForAutomaticPlot(selection, result) {
     // A deferred diagnostic is not a confirmed defect or a healthy verdict.
     // Any dimension may be deferred; the independent plot checks must still
-    // establish stagnation, scene fit and user intent before preparing an event.
+    // establish stagnation or a supported opening, scene fit and user intent before preparing an event.
     if (!result || result.correctionCodes?.length) return false;
     const deferred = new Set(result.uncertain || []);
     if (Object.entries(result.ratings || {}).some(([code, rating]) =>
@@ -260,7 +275,8 @@ export async function prepareAutomaticPlot({ chatId, selection, result, transcri
         }
         if (!current()) return;
         prefs.lastDecision = plotDecisionReason(decision);
-        if (!decision?.eligible || !current()) { recordAutomaticPlotTrace(traceId, 'blocked', { reason: 'not_eligible' }); prefs.status = 'deferred'; return; }
+        if (decision?.eligible) recordAutomaticPlotTrace(traceId, 'deciding', { basis: decision.basis });
+        if (!decision?.eligible || !current()) { recordAutomaticPlotTrace(traceId, 'blocked', { reason: !current() ? 'context_changed' : plotDecisionBlockReason(decision) }); prefs.status = 'deferred'; return; }
         recordAutomaticPlotTrace(traceId, 'generating');
         prefs.status = 'preparing'; updateAutomaticPlotStatus();
         const candidate = await requestHeadlessPlotEvent({ chatId, selection, isCurrent: current, signal: controller.signal });
@@ -320,7 +336,7 @@ export async function automaticPlotGenerationInterceptor(_chat, _contextSize, _a
         const contextChanged = !valid() || controller.signal.aborted || roleplayFingerprint() !== freshFingerprint ||
             getGenreSelectionSignature(automaticPlotRuntime.getSelection()) !== pending.selectionSignature;
         if (!decision?.eligible || contextChanged) {
-            recordAutomaticPlotTrace(pending.traceId, contextChanged ? 'cancelled' : 'check_rejected', { reason: contextChanged ? 'context_changed' : 'not_eligible' });
+            recordAutomaticPlotTrace(pending.traceId, contextChanged ? 'cancelled' : 'check_rejected', { reason: contextChanged ? 'context_changed' : plotDecisionBlockReason(decision) });
             if (pending.epoch === automaticPlotRuntime.epoch && pending.chatId === getCurrentChatId()) {
                 prefs.status = 'deferred';
                 prefs.lastDecision = contextChanged ? '대화나 설정이 바뀌어 준비한 사건을 취소했습니다.' : plotDecisionReason(decision, { prepared: true });

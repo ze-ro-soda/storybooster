@@ -1874,3 +1874,40 @@
     background: var(--sb-blue-selected); color: inherit; white-space: nowrap; word-break: keep-all;
 }
 #rp-booster-popup #rp-automatic-plot-cancel[hidden] { display: none; }
+
+/* 1.7.5: local workspace controls. Keep selectors within the extension. */
+#rp-booster-popup .rp-booster-title { display:flex; align-items:baseline; flex-wrap:wrap; gap:4px 8px; }
+#rp-booster-popup .rp-booster-version { font-size:.65em; font-weight:600; opacity:.72; white-space:nowrap; }
+#rp-booster-popup :is(.rp-plot-shelf,.rp-baseline-comparison) { margin:12px 0; padding:12px; border:1px solid var(--sb-blue-border); border-radius:var(--sb-radius); background:var(--sb-blue-panel); }
+#rp-booster-popup :is(.rp-plot-shelf,.rp-baseline-comparison)>summary { cursor:pointer; font-weight:700; color:var(--sb-blue-text); padding:3px 0; }
+#rp-booster-popup .rp-workspace-help { font-size:.85em; opacity:.78; line-height:1.6; margin:9px 0; overflow-wrap:anywhere; }
+#rp-booster-popup .rp-workspace-actions { display:flex; flex-wrap:wrap; gap:7px; margin:8px 0; }
+#rp-booster-popup .rp-workspace-actions button { flex:1 1 auto; min-height:36px; padding:7px 10px; border:1px solid var(--sb-blue-border); border-radius:8px; background:var(--sb-blue-panel); color:inherit; font:inherit; font-size:.86em; cursor:pointer; white-space:normal; overflow-wrap:anywhere; }
+#rp-booster-popup .rp-workspace-actions button:hover:not(:disabled) { background:var(--sb-blue-hover); }
+#rp-booster-popup .rp-workspace-actions button:disabled { opacity:.45; cursor:default; }
+#rp-booster-popup :is(#rp-shelf-title,#rp-shelf-text,.rp-compare-text,.rp-compare-selectors select) { width:100%; min-width:0; color:inherit; background:var(--SmartThemeBlurTintColor,Canvas); border:1px solid var(--sb-blue-border); border-radius:8px; padding:10px; font:inherit; }
+#rp-booster-popup :is(#rp-shelf-text,.rp-compare-text) { resize:vertical; line-height:1.6; user-select:text; -webkit-user-select:text; touch-action:auto; }
+#rp-booster-popup :is(#rp-shelf-editor,.rp-compare-cell)>label { display:block; font-size:.85em; font-weight:600; margin:8px 0 5px; }
+#rp-booster-popup .rp-shelf-entry { padding:10px; margin:9px 0; border:1px solid var(--sb-blue-border); border-radius:8px; background:var(--SmartThemeBlurTintColor,Canvas); }
+#rp-booster-popup .rp-shelf-entry>summary { cursor:pointer; font-weight:600; overflow-wrap:anywhere; }
+#rp-booster-popup .rp-shelf-entry-text { white-space:pre-wrap; overflow-wrap:anywhere; user-select:text; -webkit-user-select:text; font-size:.92em; }
+#rp-booster-popup :is(.rp-compare-selectors,.rp-compare-columns,.rp-compare-save-grid) { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+#rp-booster-popup .rp-compare-selectors { margin:12px 0; }
+#rp-booster-popup .rp-compare-selectors label { min-width:0; font-size:.88em; font-weight:600; }
+#rp-booster-popup .rp-compare-selectors select { display:block; margin-top:5px; }
+#rp-booster-popup .rp-compare-field { margin:12px 0; padding:12px; border:1px solid var(--sb-blue-border); border-radius:10px; background:var(--SmartThemeBlurTintColor,Canvas); }
+#rp-booster-popup .rp-compare-field-heading { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:6px; }
+#rp-booster-popup .rp-compare-difference { opacity:.7; }
+#rp-booster-popup .rp-compare-field.is-different { border-color:var(--sb-blue-strong); }
+#rp-booster-popup .rp-compare-cell { min-width:0; }
+#rp-booster-popup .rp-compare-text { min-height:150px; font-size:.9em; }
+#rp-booster-popup .rp-compare-save-grid>div { min-width:0; border-top:1px solid var(--sb-blue-border); padding-top:8px; }
+#rp-booster-popup .rp-compare-save-grid p { font-size:.85em; font-weight:600; }
+#rp-booster-popup .rp-compare-filter { display:flex; align-items:center; gap:7px; font-size:.86em; margin:10px 0; }
+#rp-booster-popup :is(.rp-compare-field,#rp-compare-workspace,#rp-shelf-editor)[hidden] { display:none!important; }
+@media(max-width:600px) {
+    #rp-booster-popup .rp-compare-columns,#rp-booster-popup .rp-compare-save-grid { grid-template-columns:minmax(0,1fr); }
+    #rp-booster-popup .rp-compare-selectors { gap:8px; }
+    #rp-booster-popup .rp-workspace-actions button { min-height:42px; }
+    #rp-booster-popup .rp-compare-text { min-height:160px; }
+}

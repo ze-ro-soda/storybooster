@@ -1,5 +1,5 @@
 import { feedbackValidationError } from '../core/response-validation.js';
-import { AUDIT_CORRECTION_MIN_CHARS, AUDIT_CORRECTION_MAX_CHARS, auditCorrectionWritingPrompt, formatAuditCorrectionInstruction, hasSufficientCharacterFacets, reduceRepetitionEvidence, validateAuditCorrection } from '../core/audit-policy.js';
+import { AUDIT_PROBLEM_IMPACT, AUDIT_UNDERUSE_CODES, auditUnderusePrompt, summarizeAuditUnderuse, resolveAuditFailureRating, AUDIT_CORRECTION_MIN_CHARS, AUDIT_CORRECTION_MAX_CHARS, auditCorrectionWritingPrompt, formatAuditCorrectionInstruction, hasSufficientCharacterFacets, reduceRepetitionEvidence, validateAuditCorrection } from '../core/audit-policy.js';
 import { normalizeJevDecisionTrace } from '../core/jev-trace.js';
 import { getJevProblemImpact, rankJevCorrections } from './jev-policy.js';
 import { requestJev } from '../core/jev-client.js';
@@ -50,6 +50,7 @@ export function createJevAuditState(selection, transcript) {
         primary_genre: selection.primaryGenre ? getGenreProfileAuditStandard(getGenreProfile(selection.primaryGenre)) : '',
         supporting_genre: selection.supportGenre ? getGenreProfileAuditStandard(getGenreProfile(selection.supportGenre)) : '',
         selected_character_baseline: String(selection.characterBaseline || ''),
+        underuse_policy: auditUnderusePrompt(false),
         roleplay: transcript,
         safeguards: 'Preserve user agency. Quiet daily life and emotional progress count as progress. Baseline traits are possibilities, not a per-reply checklist. Allow supported natural growth and relationship-specific change. Separate a temporary reaction, restraint, coercion or concealment from permanent drift. Unavailable context is not proof of normality.',
     };
@@ -57,7 +58,7 @@ export function createJevAuditState(selection, transcript) {
 
 export function buildJevScreenQuestions(selection) {
     return Object.fromEntries(getJevDimensions(selection).map(d => [d.id, {
-        type: 'choice', instructions: `${d.rule} Judge this dimension only across the numbered CHAR_RESPONSE window. ${d.id === 'repetition' ? 'Normal requires actual comparison of readable replies showing context-appropriate phrasing or structures without mechanical recycling. Ordinary appropriate prose is positive evidence; do not demand novel words, multiple emotions or new relationship beats. A readable comparison is evidence, not mere missing data.' : 'Normal requires repeated distinct positive evidence, not merely absence of failure.'} Exclude uncertain individual replies from both positive and negative evidence. If the remaining clear observations independently support a decision, an isolated uncertain reply does not by itself make the whole dimension na. Use context_missing only when an essential absent fact prevents interpreting the applicable observations; an untested facet is not essential missing context. Use conflict for genuinely incompatible observations. Use na only when too few applicable observations remain. Partial uncertain facets do not veto sufficient independent clear evidence.`,
+        type: 'choice', instructions: `${d.rule} Judge this dimension only across the numbered CHAR_RESPONSE window. ${d.id === 'repetition' ? 'Normal requires actual comparison of readable replies showing context-appropriate phrasing or structures without mechanical recycling. Ordinary appropriate prose is positive evidence; do not demand novel words, multiple emotions or new relationship beats. A readable comparison is evidence, not mere missing data.' : 'Normal requires repeated distinct positive evidence, not merely absence of failure.'} Exclude uncertain individual replies from both positive and negative evidence. If the remaining clear observations independently support a decision, an isolated uncertain reply does not by itself make the whole dimension na. Use context_missing only when an essential absent fact prevents interpreting the applicable observations; an untested facet is not essential missing context. Use conflict for genuinely incompatible observations. Use na only when too few applicable observations remain. Partial uncertain facets do not veto sufficient independent clear evidence. ${AUDIT_UNDERUSE_CODES.includes(d.id) ? 'Apply the shared underuse_policy; repeated concrete missed openings can justify attention.' : ''}`,
         criteria: {
             [d.normal]: d.id === 'repetition' ? 'The observed replies vary meaningfully; no sustained mechanical recycling of dominant wording, action or relationship beats.' : 'Repeated clear positive realization across the observed window; sufficient context to judge.',
             [d.failure]: 'Repeated explicit failure or a directly supported severe contradiction; legitimate exceptions do not explain it.',
@@ -76,10 +77,12 @@ export function buildJevEvidenceQuestions(dimensions, screens, count) {
         for (let n = 1; n <= count; n++) {
             questions[`${d.id}__${n}`] = {
                 type: 'choice',
-                instructions: `For CHAR_RESPONSE_${n} only, evaluate this single dimension: ${d.rule} Use adjacent replies as context but credit only this numbered reply. ${d.id === 'repetition' ? 'Compare with other readable replies in this window. Positive means this reply uses context-appropriate words, structure or ending without a mechanically reused pattern; plain natural wording is sufficient. Failure requires an observable matching recycled pattern in another reply, unexplained by voice or context. None means no readable comparator, not lack of novelty. Uncertain means the comparison or intent is ambiguous.' : 'A repetition failure requires matching earlier replies.'}`,
+                instructions: `For CHAR_RESPONSE_${n} only, evaluate this single dimension: ${d.rule} Use adjacent replies as context but credit only this numbered reply. ${d.id === 'repetition' ? 'Compare with other readable replies in this window. Positive means this reply uses context-appropriate words, structure or ending without a mechanically reused pattern; plain natural wording is sufficient. Failure requires an observable matching recycled pattern in another reply, unexplained by voice or context. None means no readable comparator, not lack of novelty. Uncertain means the comparison or intent is ambiguous.' : AUDIT_UNDERUSE_CODES.includes(d.id) ? 'Apply shared underuse_policy to this reply.' : ''}`,
                 criteria: {
                     positive: d.id === 'repetition' ? 'Readable comparison confirms context-appropriate phrasing, structure or ending without mechanical recycling. Ordinary natural prose is sufficient; no unusual variety is required.' : 'Concrete, dimension-specific positive realization in this reply; absence of an error alone does not count.',
-                    failure: d.id === 'repetition' ? 'This reply belongs to a matched mechanically recycled pattern with another numbered reply; mark both members, even the earlier one. Voice, necessary terms and deliberate contextual echoes are not a failure.' : 'A concrete observable failure of this dimension, not missing decorative prose or a trait absent without opportunity.',
+                    failure: d.id === 'repetition' ? 'This reply belongs to a matched mechanically recycled pattern with another numbered reply; mark both members, even the earlier one. Voice, necessary terms and deliberate contextual echoes are not a failure.' : 'Concrete incompatible choice, contradiction, imposed trope or broken obligation; generic missed realization alone is underused where available, not failure.',
+                    ...(AUDIT_UNDERUSE_CODES.includes(d.id) ? Object.fromEntries((screens[d.id] ? screens[d.id].filter(row => row.verdict === 'no').map(row => row.id) : Object.keys(AUDIT_PROBLEM_IMPACT[d.id]))
+                        .map(facet => [`underused_${facet}`, `An applicable ${facet} opening receives a generic reaction in this reply. Shared underuse_policy applies; not absence, quietness or justified change.`])) : {}),
                     ...(d.severe ? { severe: 'One explicit, major contradiction of a clearly supplied baseline or linkable established scene fact.' } : {}),
                     justified: 'Apparent deviation is supported natural growth, relationship-specific behavior, a temporary mood, restraint, concealment or coercion.',
                     none: 'No applicable observation of this dimension in this reply.',
@@ -129,21 +132,25 @@ export async function runJevDiagnosis({ selection, transcript, reviewedResponses
     const evidenceQuestions = { ...buildJevScreenQuestions(selection), ...buildJevEvidenceQuestions(dimensions, assessments, reviewedResponses) };
     progress('jev_evidence_request', { questionCount: Object.keys(evidenceQuestions).length, timeoutMs: 25000 });
     const details = await requestJev({ ...state, independent_observations: assessments,
-        aggregation_rules: 'Do not vote by number of yes answers. One confirmed relevant problem can outweigh unrelated healthy facets. A no_opportunity observation is neutral. Preserve justified growth and temporary exceptions. Every claimed failure must also be visible in the numbered replies. A concrete mild problem means attention and can be repaired proportionately, except repetition which requires two matching failed replies and an explicit comparator; a connected group of three or a distinctive near-verbatim pair is weak. For character_consistency and character_interpretation, sufficient positive reply evidence must cover two positive facets if two or more facets are applicable; when only one facet is applicable and the others are no_opportunity, one positively supported facet with sufficient replies is enough. Exclude uncertain or low-confidence individual replies; do not count them as healthy or failed, and do not lower the required evidence threshold by shrinking the review window. A partial unknown does not veto a decision independently supported by the remaining clear evidence. Only genuinely essential missing context or unresolved incompatible observations prevent a decision from otherwise sufficient evidence. Use context_missing or conflict respectively; an untested facet or a quiet scene is not a missing essential fact. Genre mechanisms are alternatives, not an every-scene checklist. Small relational movement and meaningful conversation can realize a genre without a new conflict or major consequence.' }, evidenceQuestions, { signal });
+        aggregation_rules: 'Do not vote by number of yes answers. One confirmed relevant problem can outweigh unrelated healthy facets. A no_opportunity observation is neutral. Preserve justified growth and temporary exceptions. Every claimed failure must also be visible in the numbered replies. A concrete mild problem means attention and can be repaired proportionately, except repetition which requires two matching failed replies and an explicit comparator; a connected group of three or a distinctive near-verbatim pair is weak. For character_consistency and character_interpretation, sufficient positive reply evidence must cover two positive facets if two or more facets are applicable; when only one facet is applicable and the others are no_opportunity, one positively supported facet with sufficient replies is enough. Exclude uncertain or low-confidence individual replies; do not count them as healthy or failed, and keep the thresholds for the actual supplied review window; never shrink that window again by excluding uncertain or low-confidence replies. A partial unknown does not veto a decision independently supported by the remaining clear evidence. Only genuinely essential missing context or unresolved incompatible observations prevent a decision from otherwise sufficient evidence. Use context_missing or conflict respectively; an untested facet or a quiet scene is not a missing essential fact. Genre mechanisms are alternatives, not an every-scene checklist. Small relational movement and meaningful conversation can realize a genre without a new conflict or major consequence.' }, evidenceQuestions, { signal });
     progress('jev_evidence_received', { inputTokens: details.usage?.input_tokens, outputTokens: details.usage?.output_tokens });
     if (!isCurrent()) throw Object.assign(new Error('진단 맥락이 변경되었습니다.'), { code: 'STORYBOOSTER_JEV_CANCELLED' });
     const raw = createEmptyJevPayload(schema);
     const replyEvidence = {};
     for (const d of dimensions) {
-        const positives = [], failures = [], excluded = [];
+        const positives = [], failures = [], underused = [], excluded = [];
         for (let n = 1; n <= reviewedResponses; n++) {
             const answer = details.answers[`${d.id}__${n}`];
             if (!answer || !confidentChoice(answer) || answer.choice === 'uncertain') { excluded.push(n); continue; }
             if (answer.choice === 'positive' || (answer.choice === 'justified' && ['character_consistency', 'relationship'].includes(d.id))) positives.push(n);
             if (['failure', 'severe'].includes(answer.choice)) failures.push(n);
+            if (answer.choice.startsWith('underused_') && AUDIT_UNDERUSE_CODES.includes(d.id)) {
+                const facet = answer.choice.slice('underused_'.length);
+                if (Object.hasOwn(AUDIT_PROBLEM_IMPACT[d.id], facet)) underused.push({ reply: n, facet });
+            }
             if (answer.choice === 'severe' && d.severe) raw[d.severe] = true;
         }
-        replyEvidence[d.id] = { positives, failures, excluded };
+        replyEvidence[d.id] = { positives, failures, underused, excluded };
         if (d.positive) raw[d.positive] = positives;
         raw[d.negative] = failures;
         // The legacy reducer supplies the ORIGINAL evidence-count thresholds.
@@ -151,13 +158,16 @@ export async function runJevDiagnosis({ selection, transcript, reviewedResponses
         const failedFacets = assessments[d.id].some(a => a.verdict === 'no');
         raw[d.id] = failedFacets && failures.length ? d.failure : d.normal;
         if (d.id === 'support_texture') {
-            raw.support_texture_opportunity = [...new Set([...positives, ...failures])];
+            // Match the basic contract: this field contains direct failures only.
+            raw.support_texture_opportunity = failures;
             raw.support_texture_identifiable = positives.length > 0;
             if (failedFacets && failures.length < 2) raw[d.id] = 'dormant';
         }
         raw[`${d.id}_reason`] = '';
     }
     const result = parseResult(raw);
+    result.evidence.underuse = Object.fromEntries(dimensions.filter(d => AUDIT_UNDERUSE_CODES.includes(d.id)).map(d => [d.id, [...new Set(replyEvidence[d.id].underused.map(row => row.reply))].slice(0, 4)]));
+    result.evidence.underuseFacets = Object.fromEntries(dimensions.filter(d => AUDIT_UNDERUSE_CODES.includes(d.id)).map(d => [d.id, replyEvidence[d.id].underused.slice(0, 4)]));
     const repetitionReply = replyEvidence.repetition;
     const repetitionMatches = repetitionReply ? repetitionReply.failures.flatMap(left => {
         const answer = details.answers[`repetition__match_${left}`];
@@ -176,6 +186,15 @@ export async function runJevDiagnosis({ selection, transcript, reviewedResponses
         const failedFacets = observations.filter(a => a.verdict === 'no');
         const positiveFacets = observations.filter(a => ['yes', 'justified', 'temporary'].includes(a.verdict));
         const reply = replyEvidence[d.id];
+        const underused = summarizeAuditUnderuse(d.id, reply.underused, failedFacets.map(row => row.id), Object.fromEntries(observations.map(row => [row.id, row.verdict])));
+        if (AUDIT_UNDERUSE_CODES.includes(d.id)) {
+            // Keep the evidence which actually qualified the repair before
+            // incidental observations when the stored/writer view is bounded.
+            const links = [...reply.underused.filter(row => underused.facets.includes(row.facet)),
+                ...reply.underused.filter(row => !underused.facets.includes(row.facet))].slice(0, AUDIT_EVIDENCE_MAX_ITEMS);
+            result.evidence.underuseFacets[d.id] = links;
+            result.evidence.underuse[d.id] = [...new Set(links.map(row => row.reply))];
+        }
         const screen = details.answers[d.id], certain = confidentChoice(screen);
         const enoughPositiveReplies = result.ratings[d.id] === d.normal &&
             (d.positive ? reply.positives.length > 0 : reviewedResponses >= 2 && reply.positives.length >= Math.min(reviewedResponses, 3));
@@ -192,7 +211,7 @@ export async function runJevDiagnosis({ selection, transcript, reviewedResponses
         // facets or the aggregate are uncertain. Correlated questions do not
         // count as additional failed replies, and unknowns add no severity.
         if (failedFacets.length && reply.failures.length && (d.id !== 'repetition' || repetition.confirmed)) {
-            const rating = d.id === 'repetition' ? repetition.rating : result.ratings[d.id] === d.failure ? d.failure : 'attention';
+            const rating = d.id === 'repetition' ? repetition.rating : resolveAuditFailureRating(d.id, reply.failures, Boolean(d.severe && raw[d.severe]));
             result.ratings[d.id] = rating;
             const confirmedReplies = d.id === 'repetition' ? repetition.evidence : reply.failures;
             const rows = confirmedReplies.map(n => details.answers[`${d.id}__${n}`]);
@@ -201,9 +220,16 @@ export async function runJevDiagnosis({ selection, transcript, reviewedResponses
                 confidence: Math.min(...failedFacets.map(a => Math.min(a.confidence, a.probability)),
                     ...rows.map(a => Math.min(a.confidence, a.probabilities[a.choice]))) });
             route = 'confirmed_problem';
+        } else if (underused.facets.length) {
+            result.ratings[d.id] = 'attention';
+            problems.push({ code: d.id, rating: 'attention', severe: false,
+                impact: getJevProblemImpact(d.id, underused.facets), failedReplies: Math.min(underused.replies.length, AUDIT_EVIDENCE_MAX_ITEMS),
+                confidence: Math.min(...failedFacets.filter(row => underused.facets.includes(row.id)).map(row => Math.min(row.confidence, row.probability)),
+                    ...underused.replies.map(n => { const a = details.answers[`${d.id}__${n}`]; return Math.min(a.confidence, a.probabilities[a.choice]); })) });
+            route = 'confirmed_underuse';
         } else if (certain && screen.choice === 'context_missing') {
             route = 'essential_context_missing';
-        } else if (failedFacets.length || reply.failures.length ||
+        } else if (failedFacets.length || reply.failures.length || reply.underused.length ||
             (certain && ['conflict', d.failure, 'attention'].includes(screen.choice))) {
             // Do not silently erase an explicit conflict or an unsupported
             // problem claim simply because other observations look healthy.
@@ -221,13 +247,13 @@ export async function runJevDiagnosis({ selection, transcript, reviewedResponses
         } else {
             route = positiveFacets.length ? 'insufficient_positive_evidence' : 'no_applicable_observations';
         }
-        if (!['confirmed_problem', 'clear_positive_evidence', 'no_opportunity'].includes(route)) {
+        if (!['confirmed_problem', 'confirmed_underuse', 'clear_positive_evidence', 'no_opportunity'].includes(route)) {
             result.ratings[d.id] = d.id === 'support_texture' ? 'dormant' : 'attention';
             deferred.push(d.id);
         }
         trace[d.id] = { aggregate: screen.choice, aggregateConfidence: screen.confidence,
             aggregateProbability: screen.probabilities[screen.choice], final: result.ratings[d.id], route,
-            facets: observations, positiveReplies: reply.positives, failedReplies: reply.failures, excludedReplies: reply.excluded };
+            facets: observations, positiveReplies: reply.positives, failedReplies: reply.failures, underusedReplies: reply.underused.map(row => row.reply), excludedReplies: reply.excluded };
     }
     if (repetition?.confirmed) result.evidence.repetition = repetition.evidence.slice(0, AUDIT_EVIDENCE_MAX_ITEMS);
     result.correctionCodes = rankJevCorrections(problems);
@@ -256,7 +282,7 @@ export function buildJevFeedbackContext(result) {
             rows.map(({ id, question, verdict }) => ({ id, question, verdict }))])),
         excludedReplies: result.excludedReplies || {},
         decisionTrace: Object.fromEntries(Object.entries(result.decisionTrace || {}).map(([code, row]) => [code,
-            { route: row.route, positiveReplies: row.positiveReplies, failedReplies: row.failedReplies }])),
+            { route: row.route, positiveReplies: row.positiveReplies, failedReplies: row.failedReplies, underusedReplies: row.underusedReplies }])),
     };
 }
 
@@ -288,11 +314,12 @@ export async function writeJevFeedback(result, selection, transcript, requestFee
             `Explain every active dimension (${dimensions.map(d => d.id).join(', ')}) in exactly one concise ${outputLanguage === 'en' ? 'English' : 'Korean'} sentence, at most ${getAuditReasonMaxChars(outputLanguage)} characters. Explain the actual visible pattern, not evidence counts or confidence scores. Do not mention response numbers, internal names or advice. For confirmed attention, explain the concrete mild problem against the relevant standard. For dimensions in uncertain, follow decisionTrace.route: explain the specific essential missing fact, unresolved conflict or shortage of applicable evidence and say judgment is deferred; do not assert a failure. Explain a specific observed action, response or consistent pattern and how it fits or conflicts with the relevant standard. A shift from joking to seriousness can be appropriate to the scene; do not require an invariant tone. Do not claim missing conflict, relationship change or future consequences when they are not needed in this scene. A vague claim of mixed motives or counts alone is not a reason. Use actual role names when needed, never literal {{user}} or {{char}}.`,
             targets.length ? `Write corrections ONLY for these selected targets: ${targets.join(', ')}.` : 'No correction targets exist. Return only the reasons object; do not create corrections or character focus fields.',
             targets.length ? auditCorrectionWritingPrompt() : '',
+            'A confirmed_underuse route means repeated concrete natural openings received generic reactions. Explain and repair the under-realized facet without describing a major contradiction or treating a genuinely untested trait as a defect.',
             targets.length ? 'For each selected target also write next_corrections: one concrete user-facing sentence in the selected output language, 10-140 characters, describing ONLY what the next response will repair. No explanation of priority or why another target was omitted. Return an empty object when there are no targets.' : '',
             'For genre targets use the supplied primary/supporting genre standards; preserve healthy atmosphere and fix only the deficient mechanism. For supporting texture, use a natural opening without displacing the primary genre.',
             `Selected baseline:\n${selection.characterBaseline || ''}`,
             `Genre standards:\n${JSON.stringify(createJevAuditState(selection, '').primary_genre)}\n${JSON.stringify(createJevAuditState(selection, '').supporting_genre)}`,
-            'The excludedReplies map identifies uncertain or low-confidence reply observations for each dimension. Never cite those excluded observations as positive or negative proof for that dimension, and never describe a decided dimension as deferred merely because some replies were excluded. Explain the actual clear evidence supporting the fixed final rating. Ignored facets are not defects. A clear_positive_evidence route is decided, even if the aggregate was na or a few facets were uncertain. A no_opportunity route is neutral and requires no supporting-genre insertion. Corrections must target only confirmed problems.',
+            'The excludedReplies map identifies uncertain or low-confidence reply observations for each dimension. Never cite those excluded observations as positive or negative proof for that dimension, and never describe a decided dimension as deferred merely because some replies were excluded. Explain the actual clear evidence supporting the fixed final rating. Facets ignored because they have no opportunity or interpretable evidence are not defects; confirmed_underuse instead requires repeated applicable openings. A clear_positive_evidence route is decided, even if the aggregate was na or a few facets were uncertain. A no_opportunity route is neutral and requires no supporting-genre insertion. Corrections must target only confirmed problems.',
             `Fixed final diagnosis and independent observations:\n${JSON.stringify(buildJevFeedbackContext(result))}`,
             targets.length ? `Return complete JSON with reasons, corrections, next_corrections and character_focus_fields. Select at most two IDs from ${CHARACTER_BASELINE_FIELD_IDS.join(', ')} only for selected identity/interpretation/agency/relationship repairs; otherwise use [].` : 'Return one complete JSON object with ONLY reasons, including every requested dimension. Put it in the final answer.',
         ].filter(Boolean).join('\n'), transcript, jsonSchema,

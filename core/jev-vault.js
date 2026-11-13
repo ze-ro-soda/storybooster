@@ -9,7 +9,7 @@ export function serializeJevVault(task) {
     queue = work.catch(() => {});
     return work;
 }
-export function supportsJevVault() {
+export function supportsLegacyJevVault() {
     return Boolean(globalThis.crypto?.subtle && globalThis.indexedDB && globalThis.location?.origin);
 }
 function vaultError(message = 'Jev 키 저장소를 사용할 수 없습니다. 브라우저 설정을 확인해 주세요.', reason = 'storage') {
@@ -38,7 +38,7 @@ export async function resolveJevVaultScope(signal) {
     finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
 }
 function openDatabase() {
-    if (!supportsJevVault()) return Promise.reject(vaultError('이 브라우저에서는 키 암호화 저장을 사용할 수 없습니다. HTTPS 또는 localhost와 브라우저 저장소 설정을 확인해 주세요.'));
+    if (!supportsLegacyJevVault()) return Promise.reject(vaultError('이 브라우저에서는 키 암호화 저장을 사용할 수 없습니다. HTTPS 또는 localhost와 브라우저 저장소 설정을 확인해 주세요.'));
     return new Promise((resolve, reject) => {
         let settled = false;
         const finish = (error, db) => {
@@ -109,7 +109,7 @@ async function migrateAnonymousRecord(scope) {
     const legacy = anonymousLegacyRecords(records, scope);
     if (!legacy.length) return;
     const latest = legacy[0];
-    const value = latest.deleted ? '' : await readJevVaultRecord(latest.scope);
+    const value = latest.deleted ? '' : await readLegacyJevVaultRecord(latest.scope);
     if (!latest.deleted && !value) throw vaultError('저장 중 키가 변경되었습니다.', 'changed');
     const migrated = latest.deleted ? { scope, deleted: true, revision: newRevision() } : await encryptRecord(scope, value);
     await transaction('readwrite', store => store.getAll(), (current, store) => {
@@ -125,8 +125,8 @@ async function migrateAnonymousRecord(scope) {
         return true;
     });
 }
-export async function saveJevVaultRecord(scope, value, { isCurrent = () => true } = {}) {
-    if (!supportsJevVault()) throw vaultError('이 브라우저에서는 키 암호화 저장을 사용할 수 없습니다. HTTPS 또는 localhost와 브라우저 저장소 설정을 확인해 주세요.');
+export async function saveLegacyJevVaultRecord(scope, value, { isCurrent = () => true } = {}) {
+    if (!supportsLegacyJevVault()) throw vaultError('이 브라우저에서는 키 암호화 저장을 사용할 수 없습니다. HTTPS 또는 localhost와 브라우저 저장소 설정을 확인해 주세요.');
     try {
         const expectedRevision = recordRevision(await transaction('readonly', store => store.get(scope)));
         if (!isCurrent()) return false;
@@ -141,7 +141,7 @@ export async function saveJevVaultRecord(scope, value, { isCurrent = () => true 
         });
     } catch { throw vaultError('Jev 키를 저장하지 못했습니다. 기존 저장본은 유지됩니다.'); }
 }
-export async function readJevVaultRecord(scope) {
+export async function readLegacyJevVaultRecord(scope) {
     let record = await transaction('readonly', store => store.get(scope));
     if (!record && accountsEnabled === false && scope === JSON.stringify([globalThis.location?.origin, 'default-user', 'accounts-disabled-v1'])) {
         await migrateAnonymousRecord(scope);
@@ -159,7 +159,7 @@ export async function readJevVaultRecord(scope) {
     } catch (error) { throw vaultError('저장된 Jev 키를 읽지 못했습니다. 저장본은 유지됩니다.', error.vaultReason || 'decrypt'); }
     finally { bytes?.fill(0); }
 }
-export async function deleteJevVaultRecord(scope) {
+export async function deleteLegacyJevVaultRecord(scope) {
     // Retain only a revision marker, never the key or ciphertext. Removing the
     // whole record would allow an older "first save" to resurrect deletion.
     await transaction('readwrite', store => store.put({ scope, deleted: true, revision: newRevision() }));

@@ -1,3 +1,4 @@
+import { normalizeStoredUnderuseEvidence, normalizeStoredUnderuseReplyIds } from './audit-policy.js';
 import { normalizeJevDecisionTrace } from './jev-trace.js';
 import { normalizeAuditAnalysis, normalizeAuditComparison, normalizeAuditHistory, markAuditHistoryApplied } from './audit-history.js';
 // StoryBooster: core/storage.js
@@ -1301,6 +1302,8 @@ function normalizeGenreAuditRecord(record) {
                                 )
                                 .slice(0, GENRE_AUDIT_RESPONSE_LIMIT)
                           : [],
+                      underuse: normalizeStoredUnderuseReplyIds(record.evidence.underuse),
+                      underuseFacets: normalizeStoredUnderuseEvidence(record.evidence.underuseFacets),
                       reviewedResponses: Math.max(
                           0,
                           Math.min(

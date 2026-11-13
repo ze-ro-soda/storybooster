@@ -1,3 +1,5 @@
+import { renderPlotShelfControls, wirePlotShelf } from './plot-shelf.js';
+import { renderBaselineComparisonControls, wireBaselineComparison } from './baseline-comparison.js';
 import { wireDeveloperModeEntry } from './debug-tools.js';
 import { renderBaselineBackupControls, wireBaselineBackupControls } from './baseline-backup.js';
 import { updateJevConnectionBadges } from './panels.js';
@@ -5,7 +7,7 @@ import { cancelAutomaticPlot } from '../core/automatic-plot-state.js';
 import { cancelJevRequests, getJevProviderId, setJevProvider, getJevConnectionBadge, getJevConnectionStatus, hasJevSessionKey, saveJevKey, deleteJevKey, restoreJevKey, setJevUsageConsent, testJevConnection } from '../core/jev-client.js';
 import { ensureAutomaticPlotSettings, updateAutomaticPlotStatus, getAutomaticPlotStatusText, cancelPreparedAutomaticPlot, setAutomaticPlotEnabled } from '../features/automatic-plot.js';
 // StoryBooster: ui/popup.js
-import { CHARACTER_BOOST_ANCHOR_MAX_CHARS, CHARACTER_REVISION_NOTE_MAX_CHARS, DEFAULT_AUDIT_INTERVAL, DEFAULT_PLOT_MAX_TOKENS, MAX_AUDIT_INTERVAL, MAX_PLOT_MAX_TOKENS, MIN_AUDIT_INTERVAL, MIN_PLOT_MAX_TOKENS, MODULE_NAME } from "../core/constants.js";
+import { CHARACTER_BOOST_ANCHOR_MAX_CHARS, CHARACTER_REVISION_NOTE_MAX_CHARS, DEFAULT_AUDIT_INTERVAL, DEFAULT_PLOT_MAX_TOKENS, MAX_AUDIT_INTERVAL, MAX_PLOT_MAX_TOKENS, MIN_AUDIT_INTERVAL, MIN_PLOT_MAX_TOKENS, MODULE_NAME, STORYBOOSTER_VERSION } from "../core/constants.js";
 import { getCurrentCharacterIdentity, getCurrentChatId, getCurrentRoleDisplayNames } from "../core/context.js";
 import { recordStoryBoosterError, refreshStoryBoosterErrorLogBadge } from "../core/diagnostics.js";
 import { escapeHtml, getActiveBoosterPopupRoot, getBoosterElement } from "../core/dom.js";
@@ -108,7 +110,7 @@ function renderBoosterPopupHtml(popupInstanceId = "") {
         popupInstanceId
     )}">
         <div class="rp-booster-header">
-            <h3>📖 스토리부스터 <small>(이 채팅에만 적용)</small></h3>
+            <h3 class="rp-booster-title"><span>📖 스토리부스터</span> <small>(이 채팅에만 적용)</small> <span class="rp-booster-version">v${escapeHtml(STORYBOOSTER_VERSION)}</span></h3>
 
             <div class="rp-booster-tabs" role="tablist" aria-label="스토리부스터 기능">
                 <button id="rp-tab-genre" type="button" class="rp-booster-tab is-active" role="tab" aria-selected="true" aria-controls="rp-booster-genre-panel" data-tab="genre">
@@ -255,6 +257,7 @@ function renderBoosterPopupHtml(popupInstanceId = "") {
                 <small>원본과 갱신본은 캐릭터별로 보관되며, 여기서 고른 한 버전만 현재 채팅의 진단·부스팅에 사용됩니다.</small>
             </div>
             ${renderBaselineBackupControls()}
+            ${renderBaselineComparisonControls()}
             <details class="rp-character-revision-maker">
                 <summary>🌱 새 버전 만들기</summary>
                 <p>변화 분석 없이 현재 기준과 앵커를 그대로 복사해 새 버전으로 만들 수 있습니다. 복사 후 이름을 바꾸거나 원하는 항목을 직접 수정할 수 있으며 AI는 호출되지 않습니다.</p>
@@ -368,11 +371,13 @@ function renderBoosterPopupHtml(popupInstanceId = "") {
             <summary>🎁 자동 랜덤박스</summary>
             <div class="rp-automatic-plot-body">
             <label class="rp-settings-check-row"><input id="rp-automatic-plot-enabled" type="checkbox" ${automaticPlot.enabled ? 'checked' : ''}> <span>이 채팅에서 자동 랜덤박스 허용</span></label>
-            <p class="rp-settings-help">자동 진단 주기마다 사건이 필요한지 함께 확인합니다. 확인된 장르·캐릭터 문제는 보정을 우선하고, 판단 보류만 있으면 사건 필요성을 별도로 확인합니다. 전개 정체와 삽입 적합성이 확인된 경우에만 일반 랜덤박스를 다음 응답에 1회 반영합니다. 조용한 일상이나 감정 교류가 진행 중이면 넣지 않습니다.</p>
+            <p class="rp-settings-help">자동 진단 주기마다 사건이 필요한지 함께 확인합니다. 확인된 장르·캐릭터 문제는 보정을 우선하고, 판단 보류만 있으면 사건 필요성을 별도로 확인합니다. 전개 정체 또는 자연스러운 작은 계기와 삽입 적합성이 확인되면 일반 랜덤박스를 다음 응답에 1회 반영합니다. 일상 흐름은 유지하며 중요한 대화·행동과 유저가 정한 방향을 우선합니다.</p>
             <p id="rp-automatic-plot-status" aria-live="polite" ${getAutomaticPlotStatusText(automaticPlot) ? '' : 'hidden'}>${escapeHtml(getAutomaticPlotStatusText(automaticPlot))}</p>
             <button id="rp-automatic-plot-cancel" type="button" class="menu_button" hidden>이번 랜덤박스 취소</button>
             </div>
         </details>
+
+        ${renderPlotShelfControls()}
 
         <div class="rp-plot-mode-switch" role="group" aria-label="플롯 생성 방식">
             <button type="button" class="rp-plot-mode-button is-active" data-mode="free" aria-pressed="true">
@@ -466,6 +471,7 @@ function renderBoosterPopupHtml(popupInstanceId = "") {
                 <button id="rp-event-new-direction-btn" type="button" class="menu_button rp-event-result-action">✨ 새 방향</button>
                 <button id="rp-event-insert-btn" type="button" class="menu_button rp-event-result-action">✍️ 입력창에 넣기</button>
                 <button id="rp-event-inject-btn" type="button" class="menu_button rp-event-result-action">⚡ 주입 후 AI 응답 생성</button>
+                <button id="rp-event-save-shelf" type="button" class="menu_button">📌 나중에 쓰기</button>
                 <button id="rp-event-clear-btn" type="button" class="menu_button rp-event-result-action rp-event-clear-action">🗑️ 결과 지우기</button>
             </div>
         </div>
@@ -920,6 +926,8 @@ function openBoosterPopup() {
         selectPlotCategory(getSelectedPlotCategory().id);
         updatePlotHistoryUI();
         updatePlotGenerationPendingUi();
+        wireBaselineComparison(popupRoot);
+        wirePlotShelf(popupRoot);
     };
     wirePopupControls();
 }

@@ -1,3 +1,40 @@
+# StoryBooster 1.7.5
+
+정식 1.7.5의 기능·모듈 구조는 dev.6과 동일합니다. 간결한 사용자 안내는 README.md, 현재 판정 기준과 검증 범위는 MAINTENANCE.md를 참고합니다. 아래 개발본별 절은 당시 구현·검증 이력입니다.
+
+아래는 보존된 이전 이력입니다.
+
+---
+
+# StoryBooster 1.7.5-dev.6
+
+현재 키 저장은 `core/jev-browser-store.js`의 localStorage 평문 저장입니다. `core/jev-vault.js`는 기존 암호화 키 이관·삭제와 계정 범위·직렬화 공통 함수에 사용합니다. 이전 저장소의 독립 함수는 `supportsLegacyJevVault`, `saveLegacyJevVaultRecord`, `readLegacyJevVaultRecord`, `deleteLegacyJevVaultRecord`로 구분합니다. 기존 내부 이름의 별칭은 남기지 않아 이전 저장소에서 현재 저장 API를 잘못 import하면 모듈 연결에서 확인할 수 있습니다. 공통 범위·직렬화의 재내보내기는 같은 구현을 가리킵니다.
+
+진단·보정·자동 플롯의 현재 기준과 dev.3~dev.5 수정은 MAINTENANCE.md와 README.md를 참고합니다. 아래 dev.1·dev.2 및 1.7.x 절은 과거 이력이며 현재 판정/저장 정책 전체를 설명하는 절이 아닙니다.
+
+---
+
+# StoryBooster 1.7.5-dev.2
+
+중복된 적용 내용 요약의 화면·호출 연결·MutationObserver·전용 CSS 및 모듈을 제거했습니다. 기존 전역 주입 프롬프트 미리보기가 주입 내용 확인을 담당합니다. 보관함·기준 비교·제목 버전 기능과 진단·보정·Jev·플롯 동작은 dev.1과 같습니다.
+
+아래는 dev.1의 구현·검증 이력입니다.
+
+---
+
+# StoryBooster 1.7.5-dev.1
+
+- `core/plot-shelf.js`: 채팅·캐릭터 문맥 검사, 보관함 CRUD, 길이·개수 제한 및 오래된 편집의 저장 보호.
+- `core/baseline-comparison.js`: 원본에서 분리한 비교 세션·초안·복사·변경 판정과 현재 저장본 확인 후 명시적 저장. 새 AI 요청 없음.
+- `ui/plot-shelf.js`, `ui/baseline-comparison.js`: 각각의 DOM과 이벤트를 소유하며 기존 생성 기능과 UI hook을 사용합니다. 코드 주입을 막기 위해 저장 문구는 textContent·textarea.value로 표시합니다.
+- `ui/reply-overview.js`: 설정과 런타임의 현재 반영 예정 상태만 요약. 비밀 사건 본문을 노출하지 않고 타이핑에 따른 불필요한 계산을 줄입니다.
+- `tests/workspace175.test.mjs`: 초안·저장·캐릭터/채팅 분리·용량·출처 언어·복사 실패·요약 회귀 검증. 기존 `tests/*.test.mjs`와 함께 실행합니다.
+- 선택적 `tests/workspace175-ui-check.mjs`: Playwright가 있는 개발 환경에서 합성 SillyTavern 호스트를 띄워 실제 DOM·레이아웃을 검사합니다. `SB_QA_PLAYWRIGHT`는 Playwright 모듈 경로, `SB_QA_CHROME_PATH`는 Chromium 경로, `SB_QA_FONT_DIR`는 선택적 Noto Sans KR fontsource 경로, `SB_QA_OUTPUT_DIR`는 검사 산출물 위치입니다. 이 개발 도구는 확장 실행에 사용되지 않습니다.
+
+기능 사용 안내는 UI-CHECK.md, 검증 범위는 MAINTENANCE.md를 참고합니다.
+
+---
+
 # StoryBooster 1.7.4 내부 구조
 
 기능 구현은 1.7.4-dev.5와 동일하며 정식 버전 표기와 배포 문서만 정리했습니다.
@@ -264,6 +301,8 @@ Jev 두 요청은 각 시작·수신·질문 수와 수신된 usage의 숫자만
 
 ## dev.11 복원·표현 반복·자동 랜덤박스
 
+> 과거 개발 이력입니다. 이 절의 암호화 저장·평문 fallback 없음 설명은 당시 기준이며, 1.7.2에서 현재의 localStorage 평문 저장으로 변경됐습니다.
+
 - 키 저장은 readwrite commit 후 같은 scope에서 복호화/재조회해 입력값과 일치하는지 확인한 뒤 성공 처리한다. 평문 fallback이나 새 키 저장소는 없다.
 - 복원 promise는 공유한다. 계정/저장소/동시 변경 오류는 1회 재시도하며 복호화 오류는 재시도하지 않는다. 저장본 없음과 복원 실패를 구분하고 삭제/삭제 실패 후 자동 재복원을 차단한다. 다른 탭의 changed는 재복원하고 deleted/disabled는 즉시 사용을 멈춘다. scope·revision 검사와 삭제 tombstone/CAS는 유지한다.
 - 실제 진단 입구에서 busy 예약 후 복원을 기다린다. 기다리는 동안 대화·채팅·진단 선택이 바뀌면 취소한다. 복원에 따른 key revision/plot epoch 변화는 복원 후 진단 snapshot에 반영한다. 기본 부스팅 초기화는 기다리지 않는다.
@@ -305,6 +344,8 @@ Jev 두 요청은 각 시작·수신·질문 수와 수신된 usage의 숫자만
 
 
 ## dev.15 서버 재시작 복원과 상태 안내
+
+> 과거 개발 이력입니다. 이 절의 암호화 저장·평문 fallback 없음 설명은 당시 기준이며, 1.7.2에서 현재의 localStorage 평문 저장으로 변경됐습니다.
 
 SillyTavern 1.19.0 staging ad29cbda62e92f145e44d7a10398a38af22ca986의 `DEFAULT_USER.created`는 서버 시작 시 `Date.now()`로 생성되고, 계정 기능이 꺼져 있으면 `/api/users/me`에 그 기본 프로필이 반환된다. dev.14까지 origin·handle·created를 저장 범위로 사용해 재시작 후 새 범위를 조회하면서 기존 키를 찾지 못할 수 있었다. 호스트의 `accountsEnabled` live export와 서버가 확인한 handle을 함께 사용한다. 계정 기능이 명시적으로 꺼지고 handle이 default-user일 때만 origin·handle·accounts-disabled-v1의 안정 범위를 사용한다. 실제 계정 또는 확인 불가 모드는 origin·handle·created 범위를 유지한다. 호스트의 `setUserControls`는 확장 설정 로드 전에 호출된다. 호스트 참조는 기존 core/sillytavern.js 브리지에 모았다.
 
