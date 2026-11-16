@@ -1,5 +1,4 @@
-import { PLOT_CONTEXT_MESSAGE_LIMIT, PLOT_MESSAGE_MAX_CHARS } from '../core/constants.js';
-import { buildFinalPlotAuditInput, auditInputFingerprint } from "./audit-context.js";
+import { buildFinalPlotAuditInput } from "./audit-context.js";
 import { startAutomaticPlotTrace, recordAutomaticPlotTrace } from "../core/automatic-plot-trace.js";
 import { auditTraceErrorKind } from "../core/audit-run-trace.js";
 import { createOperationDiagnostic } from "../core/diagnostics.js";
@@ -7,7 +6,7 @@ import { throwIfRequestAborted } from "../core/request-lifecycle.js";
 import { plotDecisionReason, plotDecisionBlockReason, plotAuditHoldReason } from './plot-status.js';
 import { getBoosterElement } from '../core/dom.js';
 import { automaticPlotRuntime, cancelAutomaticPlot } from '../core/automatic-plot-state.js';
-import { getCurrentCharacterIdentity, getCurrentChatId, getRoleplayTranscript, snapshotCurrentChatMessages } from '../core/context.js';
+import { getCurrentCharacterIdentity, getCurrentChatId, snapshotCurrentChatMessages } from '../core/context.js';
 import { getJevKeyRevision, hasJevSessionKey, isJevUsageAllowed, requestJev } from '../core/jev-client.js';
 import { requestStructuredJsonWithCompatibility, resolveBackgroundConnectionSnapshot, withRequestTimeout } from '../core/requests.js';
 import { extractJsonObject } from '../core/responses.js';
@@ -124,9 +123,7 @@ export function assistantCount(messages = getContext()?.chat || []) {
     return messages.filter(m => m && !m.is_user && !m.is_system).length;
 }
 export function roleplayFingerprint(messages = getContext()?.chat || []) {
-    return hashStableText(JSON.stringify([auditInputFingerprint(messages), getRoleplayTranscript({
-        messageLimit: PLOT_CONTEXT_MESSAGE_LIMIT, perMessageMaxChars: PLOT_MESSAGE_MAX_CHARS,
-        maxChars: 48000, chatSnapshot: messages })]));
+    return hashStableText(JSON.stringify(messages.map(m => [Boolean(m?.is_user), Boolean(m?.is_system), typeof m?.name === "string" ? m.name : "", typeof m?.mes === "string" ? m.mes : ""])));
 }
 
 export function parsePlotDecision(value, count) {

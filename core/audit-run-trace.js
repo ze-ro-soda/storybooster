@@ -100,10 +100,10 @@ function normalize(row) {
     const startedAt = number(row.startedAt);
     if (startedAt === null) return null;
     return {
-        id: row.id, version: /^\d+\.\d+\.\d+(?:-(?:dev|beta|demo)\.\d+)?$/.test(row.version || '') ? row.version : 'unknown',
+        id: row.id, version: /^\d+\.\d+\.\d+(?:-(?:dev|beta)\.\d+)?$/.test(row.version || '') ? row.version : 'unknown',
         startedAt, endedAt: number(row.endedAt), manual: row.manual === true,
         scope: ['genre', 'character', 'combined'].includes(row.scope) ? row.scope : 'combined',
-        trigger: ['manual', 'message_received', 'recovery', 'test', 'direct'].includes(row.trigger) ? row.trigger : 'direct',
+        trigger: ['manual', 'message_received', 'test', 'direct'].includes(row.trigger) ? row.trigger : 'direct',
         status: Object.hasOwn(STATUS, row.status) ? row.status : 'interrupted',
         reason: Object.hasOwn(REASONS, row.reason) ? row.reason : 'unexpected_exit',
         stage: Object.hasOwn(STAGES, row.stage) ? row.stage : 'admitted',

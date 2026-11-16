@@ -1445,10 +1445,6 @@ function ensureGenreAnchorState(state) {
     ) {
         state.genreAnchor.responseCount = 0;
     }
-    const due = state.genreAnchor.automaticAuditRetry;
-    state.genreAnchor.automaticAuditRetry = due && ['settling', 'next_response'].includes(due.mode) &&
-        typeof due.guard === 'string' && due.guard.length <= 100 && Number.isSafeInteger(due.afterMessageId)
-        ? { mode: due.mode, guard: due.guard, afterMessageId: due.afterMessageId } : null;
     if (!Array.isArray(state.genreAnchor.correctionCodes)) {
         state.genreAnchor.correctionCodes = [];
     }

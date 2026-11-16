@@ -1,4 +1,3 @@
-import { hashStableText } from '../core/text.js';
 import { clipTranscriptMessage } from '../core/context.js';
 import { AUDIT_MESSAGE_MAX_CHARS, GENRE_AUDIT_RESPONSE_LIMIT } from '../core/constants.js';
 
@@ -48,14 +47,4 @@ export function buildFinalPlotAuditInput(messages, latestMessages, maxChars = 60
         transcript: input.transcript + suffix,
         transcriptTrimmed: input.reviewedResponses < originalCount || usable.slice(-GENRE_AUDIT_RESPONSE_LIMIT * 2).some(message => message.mes.length > AUDIT_MESSAGE_MAX_CHARS),
     };
-}
-
-// Compare exactly the bounded input plus structural positions and any new user
-// input. Edits outside the reviewed window do not invalidate an unchanged audit.
-export function auditInputFingerprint(messages = []) {
-    let last = -1;
-    for (let i = messages.length - 1; i >= 0; i--) if (messages[i] && !messages[i].is_user && !messages[i].is_system) { last = i; break; }
-    const input = buildAuditTranscript(messages);
-    return hashStableText(JSON.stringify([messages.length, last, input,
-        messages.slice(last + 1).map(m => [Boolean(m?.is_user), Boolean(m?.is_system), m?.name || '', m?.mes || ''])]));
 }

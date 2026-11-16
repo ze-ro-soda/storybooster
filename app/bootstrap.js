@@ -1,5 +1,3 @@
-import { clearJsonCompatibility } from '../core/json-compatibility.js';
-import { handleAutomaticAuditActivity } from '../features/audit.js';
 import { initializeAuditDebugTools } from './audit-debug.js';
 import { onJevConnectionChange, getJevKeyRevision, restoreJevKey } from '../core/jev-client.js';
 import { updateJevConnectionBadges } from '../ui/panels.js';
@@ -59,7 +57,6 @@ jQuery(async () => {
                 consumeAutomaticPlot(messageId);
                 clearPlotPromptIfPending();
                 handleGenreResponseReceived(messageId);
-                handleAutomaticAuditActivity('received');
             } catch (err) {
                 console.error(`[${MODULE_NAME}] error in MESSAGE_RECEIVED handler:`, err);
                 recordStoryBoosterError(err, {
@@ -69,14 +66,6 @@ jQuery(async () => {
             }
         });
 
-        [event_types.MESSAGE_UPDATED, event_types.MESSAGE_EDITED, event_types.MESSAGE_SWIPED].filter(Boolean).forEach(type => {
-            eventSource.on(type, () => handleAutomaticAuditActivity('updated'));
-        });
-        if (event_types.GENERATION_STARTED) eventSource.on(event_types.GENERATION_STARTED, (type, _options, dryRun) => {
-            if (!dryRun && type !== 'quiet') handleAutomaticAuditActivity('started');
-        });
-        if (event_types.GENERATION_ENDED) eventSource.on(event_types.GENERATION_ENDED, () => handleAutomaticAuditActivity('ended'));
-        handleAutomaticAuditActivity('restore');
         if (event_types.MESSAGE_SENT) {
             eventSource.on(
                 event_types.MESSAGE_SENT,
@@ -85,10 +74,7 @@ jQuery(async () => {
         }
         if (event_types.MESSAGE_DELETED) {
             eventSource.on(event_types.MESSAGE_DELETED, () => {
-                setTimeout(() => {
-                    resyncLastCountedMessageId();
-                    handleAutomaticAuditActivity('deleted');
-                }, 0);
+                setTimeout(resyncLastCountedMessageId, 0);
             });
         }
 
@@ -110,16 +96,13 @@ jQuery(async () => {
         ]
             .filter(Boolean)
             .forEach((eventType) => {
-                eventSource.on(eventType, () => { clearJsonCompatibility(); refreshConnectionProfileSelects(); });
+                eventSource.on(eventType, refreshConnectionProfileSelects);
             });
-        [event_types.MAIN_API_CHANGED, event_types.CHATCOMPLETION_MODEL_CHANGED, event_types.CONNECTION_PROFILE_LOADED]
-            .filter(Boolean).forEach(type => eventSource.on(type, clearJsonCompatibility));
 
         // when the user switches chats, reload state for the NEW chat and
         // discard any leftover one-shot plot injection from the previous chat
         eventSource.on(event_types.CHAT_CHANGED, () => {
             cancelAutomaticPlot('chat_changed');
-            handleAutomaticAuditActivity('chat_changed');
             try {
                 setExtensionPrompt(
                     PLOT_PROMPT_KEY,
@@ -154,8 +137,7 @@ jQuery(async () => {
 
         [event_types.GENERATION_STOPPED].filter(Boolean).forEach(type => {
             eventSource.on(type, () => {
-                handleAutomaticAuditActivity('stopped');
-                cancelAutomaticPlot('generation_stopped');
+                if (automaticPlotRuntime.armed || automaticPlotRuntime.checking) cancelAutomaticPlot('generation_stopped');
             });
         });
 

@@ -1,4 +1,3 @@
-import { wirePlotShelfTransfer } from './plot-shelf-transfer.js';
 import { getCurrentChatId } from '../core/context.js';
 import { getBoosterElement } from '../core/dom.js';
 import { capturePlotShelfScope, assertPlotShelfScope, getPlotShelf, savePlotShelfItem, deletePlotShelfItem, PLOT_SHELF_TEXT_LIMIT } from '../core/plot-shelf.js';
@@ -17,13 +16,6 @@ export function renderPlotShelfControls() {
             <textarea id="rp-shelf-text" rows="6" maxlength="${PLOT_SHELF_TEXT_LIMIT}" placeholder="나중에 쓰고 싶은 사건이나 아이디어를 적어 주세요."></textarea>
             <div class="rp-workspace-actions"><button id="rp-shelf-save" type="button">보관함에 저장</button><button id="rp-shelf-cancel" type="button">편집 취소</button></div>
         </div>
-        <details id="rp-shelf-transfer"><summary>파일 내보내기·가져오기</summary>
-            <p class="rp-workspace-help">선택한 아이디어만 옮깁니다. AI 호출은 없어요. 파일에는 보관한 플롯 문구가 포함됩니다.</p>
-            <div id="rp-shelf-export-items"></div>
-            <div class="rp-workspace-actions"><button id="rp-shelf-export" type="button">선택 항목 내보내기</button><button id="rp-shelf-import" type="button">파일 가져오기</button></div>
-            <input id="rp-shelf-file" type="file" accept=".json,application/json" hidden>
-            <div id="rp-shelf-import-preview" hidden></div>
-        </details>
         <p id="rp-shelf-status" class="rp-workspace-help" role="status"></p>
         <div id="rp-shelf-list"></div>
     </details>`;
@@ -119,6 +111,5 @@ export function wirePlotShelf(root) {
             report('채팅이 바뀌었습니다. 스토리부스터를 다시 열어 주세요.');
         }
     });
-    wirePlotShelfTransfer(root, { scope, refresh: renderList });
     renderList();
 }

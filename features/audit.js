@@ -1,10 +1,9 @@
-import { createAuditRecoveryController } from '../core/audit-recovery.js';
 import { responseValidationDetails } from '../core/response-validation.js';
 import { formatAuditCorrectionInstruction, normalizeStoredUnderuseEvidence, normalizeStoredUnderuseReplyIds } from '../core/audit-policy.js';
 import { isDeveloperModeUnlocked } from '../core/debug-mode.js';
 import { addLegacyAuditPolicySchema, finalizeLegacyAudit, legacyAuditPolicyPrompt } from './legacy-diagnosis.js';
 import { auditCancellationMessage, auditTraceErrorKind, beginAuditRun, finishAuditRun, readAuditRuns, traceAuditStage } from '../core/audit-run-trace.js';
-import { buildAuditTranscript, auditInputFingerprint } from './audit-context.js';
+import { buildAuditTranscript } from './audit-context.js';
 import { plotDecisionReason, plotAuditHoldReason } from './plot-status.js';
 import { createAuditAnalysis, compareAuditHistory, rememberAudit } from '../core/audit-history.js';
 // StoryBooster: features/audit.js
@@ -24,53 +23,6 @@ import { ensureJevKeyReady, getJevKeyRevision, hasJevSessionKey, isJevUsageAllow
 import { runJevDiagnosis, writeJevFeedback } from './jev-diagnosis.js';
 import { addPlotAuditSchema, automaticPlotEnabled, parsePlotDecision, plotAuditPrompt, prepareAutomaticPlot, roleplayFingerprint, diagnoseAutomaticPlot, healthyAuditForAutomaticPlot, ensureAutomaticPlotSettings, updateAutomaticPlotStatus } from './automatic-plot.js';
 import { requireStructuredTextFields } from '../core/responses.js';
-
-
-function automaticAuditSnapshot() {
-    const chatId = getCurrentChatId();
-    if (chatId === 'no-chat-open') return null;
-    const state = ensureChatState(chatId), settings = ensureModuleSettings();
-    const selected = getBoosterSelection(state);
-    const scope = selected && getAutomaticAuditScope(selected);
-    const selection = scope && getScopedAuditSelection(selected, scope);
-    const messages = snapshotCurrentChatMessages();
-    let latestContent = null;
-    for (let i = messages.length - 1; i >= 0; i--) {
-        const message = messages[i];
-        if (!message.is_system && typeof message.mes === 'string' && message.mes.trim()) { latestContent = message; break; }
-    }
-    return { chatId, latest: getLatestAssistantMessageId(messages) ?? -1,
-        fingerprint: selection?.autoPlotEnabled ? roleplayFingerprint(messages) : auditInputFingerprint(messages),
-        awaitingReply: latestContent?.is_user === true,
-        enabled: getGlobalAuditInterval() > 0 && Boolean(selection),
-        blocked: state.genreAnchor.correctionRemaining > 0 && state.genreAnchor.correctionAppliedMessageId === null,
-        guard: hashStableText(JSON.stringify([getCurrentCharacterIdentity()?.key || '', getGenreSelectionSignature(selection),
-            settings.analysisProfileId, settings.outputLanguage, settings.jevEnabled, settings.jevProvider, getGlobalAuditInterval()])),
-        context: [automaticPlotRuntime.contextEpoch, automaticPlotRuntime.epoch, automaticPlotRuntime.genreEpoch,
-            automaticPlotRuntime.characterEpoch, getJevKeyRevision()].join(':') };
-}
-const automaticAuditRecovery = createAuditRecoveryController({
-    snapshot: automaticAuditSnapshot,
-    anchor: chatId => ensureModuleSettings().chats[chatId]?.genreAnchor,
-    busy: chatId => genreAuditPendingChats.has(chatId),
-    run: chatId => {
-        const selection = getBoosterSelection(ensureChatState(chatId));
-        const scope = selection && getAutomaticAuditScope(selection);
-        const scoped = scope && getScopedAuditSelection(selection, scope);
-        if (scoped) return runGenreDriftAudit(chatId, scoped, { scope, trigger: 'recovery', autoRecoveryAttempt: true });
-    },
-    save: saveSettingsDebounced,
-    refresh: () => { try { updateGenreAnchorPanel(); } catch { /* Optional mounted UI. */ } },
-});
-let auditSetupRevision = 0;
-let auditSetupCancellation = 'chat_changed';
-export function handleAutomaticAuditActivity(kind) {
-    if (kind === 'chat_changed' || kind === 'stopped') {
-        auditSetupRevision++;
-        auditSetupCancellation = kind === 'stopped' ? 'generation_stopped' : 'chat_changed';
-    }
-    automaticAuditRecovery.activity(kind);
-}
 
 // @source-order 196
 function showGenreAuditToast(kind, message) {
@@ -1569,9 +1521,8 @@ function createGenreAuditRecord({
 }
 
 // @source-order 211
-async function runGenreDriftAudit(chatId, selection, { manual = false, scope = "combined", trigger = manual ? "manual" : "direct", autoRecoveryAttempt = false } = {}) {
+async function runGenreDriftAudit(chatId, selection, { manual = false, scope = "combined", trigger = manual ? "manual" : "direct" } = {}) {
     const trace = beginAuditRun({ manual, scope, trigger });
-    let recoveryStart = automaticAuditSnapshot();
     if (genreAuditPendingChats.has(chatId)) {
         finishAuditRun(trace, 'skipped', 'busy');
         if (trigger === 'test') showGenreAuditToast('info', '이 채팅의 진단이 이미 진행 중이에요. 진행 기록에서 현재 단계를 확인해 주세요.');
@@ -1587,14 +1538,7 @@ async function runGenreDriftAudit(chatId, selection, { manual = false, scope = "
     }
     genreAuditPendingChats.add(chatId);
     try {
-        const setupFingerprint = () => scope === 'combined' && selection.autoPlotEnabled
-            ? roleplayFingerprint() : auditInputFingerprint(snapshotCurrentChatMessages());
-        const beforeRestore = setupFingerprint();
-        const setupSettings = ensureModuleSettings();
-        const setup = { revision: auditSetupRevision, profileId: setupSettings.analysisProfileId,
-            language: setupSettings.outputLanguage, interval: getGlobalAuditInterval(),
-            characterKey: getCurrentCharacterIdentity()?.key || '', provider: setupSettings.jevProvider,
-            jevEnabled: setupSettings.jevEnabled, readyKey: hasJevSessionKey(), keyRevision: getJevKeyRevision() };
+        const beforeRestore = roleplayFingerprint();
         const correctionRevisionBeforeRestore = ensureChatState(chatId).genreAnchor.correctionRevision;
         if (isJevUsageAllowed()) {
             traceAuditStage(trace, 'credential_restore');
@@ -1602,26 +1546,14 @@ async function runGenreDriftAudit(chatId, selection, { manual = false, scope = "
             traceAuditStage(trace, 'credential_ready', { credentialReady: ready });
             if (!ready && chatId === getCurrentChatId()) showGenreAuditToast('info', 'Jev 키를 사용할 수 없어 이번에는 기존 진단 연결을 사용해요. 전역 설정의 키 상태를 확인해 주세요.');
         }
-        const currentSettings = ensureModuleSettings();
-        const scheduled = !manual && ['message_received', 'recovery'].includes(trigger);
-        const setupReason = chatId !== getCurrentChatId() ? 'chat_changed'
-            : setup.revision !== auditSetupRevision ? auditSetupCancellation
-            : setup.profileId !== currentSettings.analysisProfileId ? 'profile_changed'
-            : setup.language !== currentSettings.outputLanguage ? 'language_changed'
-            : setup.characterKey !== (getCurrentCharacterIdentity()?.key || '') ? 'character_changed'
-            : setup.provider !== currentSettings.jevProvider || setup.jevEnabled !== currentSettings.jevEnabled ||
-                (setup.readyKey && setup.keyRevision !== getJevKeyRevision()) ? 'key_changed'
-            : scheduled && getGlobalAuditInterval() === 0 ? 'automatic_disabled'
-            : scheduled && setup.interval !== getGlobalAuditInterval() ? 'selection_changed' : '';
-        const correctionChanged = correctionRevisionBeforeRestore !== currentSettings.chats[chatId]?.genreAnchor?.correctionRevision;
-        if (setupReason || beforeRestore !== setupFingerprint() || correctionChanged ||
+        const correctionChanged = correctionRevisionBeforeRestore !== ensureModuleSettings().chats[chatId]?.genreAnchor?.correctionRevision;
+        if (chatId !== getCurrentChatId() || beforeRestore !== roleplayFingerprint() || correctionChanged ||
             getGenreSelectionSignature(selection) !== getGenreSelectionSignature(getScopedAuditSelection(getBoosterSelection(ensureChatState(chatId)), scope))) {
-            const reason = setupReason || (beforeRestore !== setupFingerprint() ? 'messages_changed' : correctionChanged ? 'correction_changed' : 'selection_changed');
+            const reason = chatId !== getCurrentChatId() ? 'chat_changed' : beforeRestore !== roleplayFingerprint() ? 'messages_changed' : correctionChanged ? 'correction_changed' : 'selection_changed';
             finishAuditRun(trace, 'cancelled', reason);
             if (chatId === getCurrentChatId()) showGenreAuditToast('info', auditCancellationMessage(reason));
             return readAuditRuns().find(row => row.id === trace.id);
         }
-        recoveryStart = automaticAuditSnapshot();
         await executeGenreDriftAudit(chatId, selection, { manual, scope }, trace);
     } catch (error) {
         recordStoryBoosterError(error, { task: 'audit_setup', stage: 'audit_setup' });
@@ -1630,16 +1562,6 @@ async function runGenreDriftAudit(chatId, selection, { manual = false, scope = "
     } finally {
         genreAuditPendingChats.delete(chatId);
         if (trace.status === 'running') finishAuditRun(trace, 'failed', 'unexpected_exit');
-        if (!manual && ['message_received', 'recovery'].includes(trigger) && trace.status === 'cancelled' &&
-            trace.reason === 'messages_changed' && trace.metrics.resultSaved !== true && recoveryStart) {
-            automaticAuditRecovery.queue(chatId, recoveryStart, autoRecoveryAttempt);
-        }
-        automaticAuditRecovery.wake();
-        try {
-            if (chatId === getCurrentChatId()) updateGenreAnchorPanel();
-        } catch (error) {
-            recordStoryBoosterError(error, { task: 'audit_display', stage: 'panel_refresh' });
-        }
     }
     return readAuditRuns().find(row => row.id === trace.id);
 }
@@ -1670,7 +1592,7 @@ async function executeGenreDriftAudit(chatId, selection, { manual, scope }, trac
     const genreEpochAtStart = automaticPlotRuntime.genreEpoch;
     const characterEpochAtStart = automaticPlotRuntime.characterEpoch;
     const keyRevisionAtStart = getJevKeyRevision();
-    const fingerprintAtStart = includePlot ? roleplayFingerprint(chatSnapshot) : auditInputFingerprint(chatSnapshot);
+    const fingerprintAtStart = roleplayFingerprint(chatSnapshot);
     let contextFailure = null;
     const currentContext = () => {
         const changes = [];
@@ -1684,7 +1606,7 @@ async function executeGenreDriftAudit(chatId, selection, { manual, scope }, trac
         if (currentSettings.analysisProfileId !== operationContext.profileId) changes.push('profile_changed');
         if (currentSettings.outputLanguage !== operationContext.outputLanguage) changes.push('language_changed');
         if (String(getCurrentCharacterIdentity()?.key || '') !== operationContext.characterKey) changes.push('character_changed');
-        if ((includePlot ? roleplayFingerprint() : auditInputFingerprint(snapshotCurrentChatMessages())) !== fingerprintAtStart) changes.push('messages_changed');
+        if (roleplayFingerprint() !== fingerprintAtStart) changes.push('messages_changed');
         if ((selection.primaryGenre && genreEpochAtStart !== automaticPlotRuntime.genreEpoch) ||
             (selection.characterEnabled && characterEpochAtStart !== automaticPlotRuntime.characterEpoch)) changes.push('selection_changed');
         if (!changes.includes('selection_changed') && !changes.includes('chat_changed') && getGenreSelectionSignature(getScopedAuditSelection(getBoosterSelection(ensureChatState(chatId)), scope)) !== selectionSignature) changes.push('selection_changed');
@@ -2039,8 +1961,7 @@ async function executeGenreDriftAudit(chatId, selection, { manual, scope }, trac
         completedRecord.comparison = compareAuditHistory(chatState.genreAnchor, completedRecord, chatSnapshot);
         rememberAudit(chatState.genreAnchor, completedRecord);
         storeLastAuditRecord(chatState.genreAnchor, completedRecord, scope);
-        if ((manual && scope === "combined") || ['message_received', 'recovery'].includes(trace.trigger)) {
-            automaticAuditRecovery.clear(chatId);
+        if (manual && scope === "combined") {
             chatState.genreAnchor.responseCount = 0;
             chatState.genreAnchor.lastCountedMessageId =
                 latestAssistantMessageId;
@@ -2141,6 +2062,7 @@ async function executeGenreDriftAudit(chatId, selection, { manual, scope }, trac
             );
         }
     } finally {
+        genreAuditPendingChats.delete(chatId);
         try {
             if (isOperationContextCurrentChat(operationContext)) updateGenreAnchorPanel();
         } catch (error) {
@@ -2245,9 +2167,6 @@ function handleGenreResponseReceived(messageId) {
             : state.genreAnchor.responseCount + 1;
     saveSettingsDebounced();
 
-    if (state.genreAnchor.automaticAuditRetry) {
-        automaticAuditRecovery.activity('received'); updateGenreAnchorPanel(); return;
-    }
     if (
         state.genreAnchor.responseCount % auditInterval ===
         0
