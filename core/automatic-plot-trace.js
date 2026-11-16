@@ -31,7 +31,7 @@ function metadata(value = {}) {
 }
 function normalize(row) {
     if (!/^SBP-[A-Z0-9-]{1,70}$/.test(row?.id || '') || !Number.isSafeInteger(row.at)) return null;
-    return { id: row.id, at: row.at, version: /^\d+\.\d+\.\d+(?:-(?:dev|beta)\.\d+)?$/.test(row.version) ? row.version : 'unknown',
+    return { id: row.id, at: row.at, version: /^\d+\.\d+\.\d+(?:-(?:dev|beta|demo)\.\d+)?$/.test(row.version) ? row.version : 'unknown',
         parentAuditId: /^SBA-[A-Z0-9-]{1,60}$/.test(row.parentAuditId || '') ? row.parentAuditId : '',
         events: (Array.isArray(row.events) ? row.events : []).filter(e => Object.hasOwn(STAGES, e?.stage)).slice(-40)
             .map(e => ({ stage: e.stage, elapsedMs: typeof e.elapsedMs === 'number' && Number.isFinite(e.elapsedMs) ? Math.max(0, e.elapsedMs) : 0, ...metadata(e) })),

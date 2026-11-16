@@ -1,3 +1,4 @@
+import { auditRecoveryText } from '../core/audit-recovery.js';
 import { auditAnalysisLabel, auditComparisonText } from '../core/audit-history.js';
 import { getJevProviderId, getJevConnectionBadge, getJevConnectionStatus, hasJevSessionKey } from '../core/jev-client.js';
 import { cancelAutomaticPlot } from '../core/automatic-plot-state.js';
@@ -1075,7 +1076,7 @@ function updateCharacterBoosterPanel() {
             const remaining = progress === 0
                 ? auditInterval
                 : auditInterval - progress;
-            count.textContent = `자동 진단까지 ${remaining}회`;
+            count.textContent = auditRecoveryText(state.genreAnchor) || `자동 진단까지 ${remaining}회`;
         }
     }
     renderLastCharacterAudit(state);
@@ -1217,7 +1218,7 @@ function updateGenreAnchorPanel() {
             "자동 진단 꺼짐 · 수동 진단은 사용할 수 있어요";
     } else {
         const progress = state.genreAnchor.responseCount % auditInterval;
-        count.textContent =
+        count.textContent = auditRecoveryText(state.genreAnchor) ||
             `자동 진단까지 ${
                 progress === 0
                     ? auditInterval
@@ -1248,6 +1249,7 @@ function changeGlobalAuditInterval(value) {
         if (!state || typeof state !== "object") return;
         const anchor = ensureGenreAnchorState(state);
         anchor.responseCount = 0;
+        anchor.automaticAuditRetry = null;
         anchor.auditStatus = interval === 0 ? "waiting" : "monitoring";
         if (chatId === getCurrentChatId()) {
             anchor.lastCountedMessageId = getLatestAssistantMessageId();

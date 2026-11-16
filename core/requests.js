@@ -1,3 +1,5 @@
+import { jsonCompatibilityKey, prefersPlainJson, rememberPlainJson } from './json-compatibility.js';
+import { hashStableText } from './text.js';
 import { captureResponseMetadata, pendingResponseMetadata } from './response-metadata.js';
 import { blocksFormatRetry, requestFailureDetails, responseRepairInstruction } from './response-validation.js';
 // StoryBooster: core/requests.js
@@ -83,6 +85,7 @@ function createBackgroundConnectionSnapshot(profile = null) {
         profileName: String(profile.name || "이름 없는 프로필"),
         model: String(profile.model || ""),
         apiType: String(profile.apiType || ""),
+        compatibilityRevision: String(profile.compatibilityRevision || ''),
     });
 }
 
@@ -124,6 +127,7 @@ async function resolveBackgroundConnectionSnapshot(
     return createBackgroundConnectionSnapshot({
         ...profile,
         apiType: selectedApi,
+        compatibilityRevision: hashStableText(JSON.stringify(profile)),
     });
 }
 
@@ -501,7 +505,9 @@ async function requestStructuredJsonWithCompatibility({
     // Existing callers retain the original doubled/minimum repair allowance.
     const repairLimit = Number.isSafeInteger(repairResponseLength) && repairResponseLength >= Number(responseLength || 0)
         ? repairResponseLength : Math.max(4800, Number(responseLength || 0) * 2);
-    const plainFirst = initialAttemptMode === 'plain_json';
+    const compatibilityKey = jsonCompatibilityKey(connectionSnapshot, task, jsonSchema);
+    const plainFirst = initialAttemptMode === 'plain_json' || prefersPlainJson(compatibilityKey);
+    let confirmedSchemaRejection = false;
     const runAttempt = async ({ withoutSchema = false, repair = false, fallback = false, validationError = null } = {}) => {
         throwIfRequestAborted(signal);
         diagnostic.attemptMode = repair ? 'repair_json' : withoutSchema ? 'plain_json' : 'schema';
@@ -537,7 +543,11 @@ async function requestStructuredJsonWithCompatibility({
         });
         throwIfRequestAborted(signal);
         diagnostic.requestPhase = 'result_validation';
-        try { return parseResult(result); }
+        try {
+            const parsed = await parseResult(result);
+            if (withoutSchema && confirmedSchemaRejection) rememberPlainJson(compatibilityKey);
+            return parsed;
+        }
         catch (error) { diagnostic.requestFailure = requestFailureDetails(error, diagnostic); throw error; }
     };
 
@@ -548,6 +558,9 @@ async function requestStructuredJsonWithCompatibility({
         if (!shouldRetryStructuredJsonCompatibility(error, connectionSnapshot)) {
             throw error;
         }
+        const failure = requestFailureDetails(error, diagnostic);
+        confirmedSchemaRejection = !plainFirst && failure.schemaRequested === true &&
+            failure.failurePhase === 'dispatch' && failure.requestError === 'schema_unsupported';
         diagnostic.retryCount += 1;
         diagnostic.compatibilityFallback = true;
         diagnostic.retryReason = getStructuredJsonCompatibilityReason(error);
