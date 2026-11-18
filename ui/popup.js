@@ -1,3 +1,7 @@
+import { wireChatPreferences } from './chat-preferences.js';
+import { updatePlotSecretModeUi } from '../features/plot.js';
+import { populateGenreSelectionControls } from './genre-controls.js';
+import { safelyUpdateGenrePrompt } from '../features/audit.js';
 import { renderPlotShelfControls, wirePlotShelf } from './plot-shelf.js';
 import { renderBaselineComparisonControls, wireBaselineComparison } from './baseline-comparison.js';
 import { wireDeveloperModeEntry } from './debug-tools.js';
@@ -17,7 +21,7 @@ import { getContext, saveSettingsDebounced } from "../core/sillytavern.js";
 import { ensureChatState, ensureModuleSettings, getCharacterAnchorDisplayValue, getCharacterBoosterReadiness, getCharacterCardChangeStatus, getCurrentCharacterBaseline, getGlobalAuditInterval, getSelectedPlotCategory, hasCharacterDisplayLanguageMismatch, isBoosterFeatureEnabled, normalizeGenreSelection } from "../core/storage.js";
 import { cancelPendingGenreCorrection, runManualGenreAudit, toggleManualAuditBoost } from "../features/audit.js";
 import { acknowledgeCharacterCardChange, applyCharacterBaselineRevisionProposal, beginCharacterBoostAnchorEditing, cancelCharacterBaselineRevisionProposal, cancelCharacterBoostAnchorEditing, captureCharacterRevisionReview, deleteCharacterBaseline, deleteCurrentCharacterBaselineVersion, duplicateCurrentCharacterBaselineVersion, generateCharacterBaseline, generateCharacterBaselineRevisionProposal, getCharacterBaselineFieldDefinition, notifyCharacterCardChangeIfNeeded, regenerateCharacterBoostAnchor, renameCurrentCharacterBaselineVersion, saveEditedCharacterBoostAnchor, scheduleCharacterBaselineAutosave, selectCharacterBaselineVersion, toggleCharacterFieldEditing, toggleCharacterFieldPin } from "../features/character.js";
-import { activatePlotGenerationMode, addCustomPlotCategory, capturePlotModeDraft, clearGeneratedEventResult, clearPlotHistory, clearSecretPlotAction, deleteCustomPlotCategory, deletePlotHistoryItem, generateEventCandidate, getPlotHistory, injectEventAndGenerateReply, insertEventIntoComposer, loadPlotHistoryItem, renderPlotCategoryCards, runSelectedPlotGenerationAction, selectPlotCategory, selectSecretPlotAction, setPlotSecretMode, togglePlotHistoryDrawer, updatePlotGenerationPendingUi, updatePlotHistoryUI } from "../features/plot.js";
+import { activatePlotGenerationMode, addCustomPlotCategory, capturePlotModeDraft, clearGeneratedEventResult, clearPlotHistory, clearSecretPlotAction, deleteCustomPlotCategory, deletePlotHistoryItem, generateEventCandidate, getPlotHistory, injectEventAndGenerateReply, insertEventIntoComposer, loadPlotHistoryItem, refreshPlotCategorySelection, renderPlotCategoryCards, runSelectedPlotGenerationAction, selectPlotCategory, selectSecretPlotAction, setPlotSecretMode, togglePlotHistoryDrawer, updatePlotGenerationPendingUi, updatePlotHistoryUI } from "../features/plot.js";
 import { applyGenreRecommendation, cancelGenreRecommendation, generateGenreRecommendation } from "../features/recommendation.js";
 import { addCustomGenre, deleteCustomGenre, renderCustomGenreList, renderGenreOptions, syncGenreSelectionFromControls } from "./genre-controls.js";
 import { changeBoosterFeature, changeGlobalAuditInterval, getAuditRecordForScope, renderCharacterBaselineFields, renderCharacterBaselineRevisionProposal, renderCharacterBaselineVersionOptions, safelyUpdateCharacterBoosterPanel, selectAuditDetail, updateGenreAnchorPanel } from "./panels.js";
@@ -503,6 +507,7 @@ function openBoosterPopup() {
         .toString(36)
         .slice(2, 9)}`;
     notifyCharacterCardChangeIfNeeded();
+    const openedChat = getCurrentChatId(), openedCard = getCurrentCharacterIdentity()?.key;
     const html = renderBoosterPopupHtml(popupInstanceId);
     let popupLifecycle = null;
 
@@ -923,11 +928,18 @@ function openBoosterPopup() {
                 updatePlotHistoryUI();
             });
         activatePlotGenerationMode("free");
-        selectPlotCategory(getSelectedPlotCategory().id);
+        refreshPlotCategorySelection();
         updatePlotHistoryUI();
         updatePlotGenerationPendingUi();
         wireBaselineComparison(popupRoot);
         wirePlotShelf(popupRoot);
+        if (openedChat === getCurrentChatId() && openedCard === getCurrentCharacterIdentity()?.key) wireChatPreferences(popupRoot, () => {
+            populateGenreSelectionControls(); safelyUpdateGenrePrompt('이전 설정 가져오기');
+            safelyUpdateCharacterBoosterPanel('이전 설정 가져오기'); updateGenreAnchorPanel();
+            const toggle = popupRoot.querySelector('#rp-automatic-plot-enabled');
+            if (toggle) toggle.checked = ensureAutomaticPlotSettings().enabled;
+            updateAutomaticPlotStatus(); updatePlotSecretModeUi();
+        });
     };
     wirePopupControls();
 }

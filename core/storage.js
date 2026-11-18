@@ -3,7 +3,7 @@ import { normalizeJevDecisionTrace } from './jev-trace.js';
 import { normalizeAuditAnalysis, normalizeAuditComparison, normalizeAuditHistory, markAuditHistoryApplied } from './audit-history.js';
 // StoryBooster: core/storage.js
 import { CHARACTER_BASELINE_CORRECTION_CODES, CHARACTER_BASELINE_FIELDS, CHARACTER_BASELINE_FIELD_ID_SET, CHARACTER_BASELINE_FIELD_MAX_CHARS, CHARACTER_BASELINE_VERSION_LABEL_MAX_CHARS, CHARACTER_BOOST_ANCHOR_MAX_CHARS, CHARACTER_BOOST_CORRECTION_CODES, CHARACTER_CORRECTION_FIELD_FALLBACKS, DEFAULT_AUDIT_INTERVAL, DEFAULT_GENRES, DEFAULT_PLOT_MAX_TOKENS, EVENT_CATEGORIES, GENRE_AUDIT_CODES, GENRE_AUDIT_RESPONSE_LIMIT, MAX_AUDIT_INTERVAL, MAX_CHARACTER_BASELINE_VERSIONS, MAX_PLOT_HISTORY, MAX_PLOT_MAX_TOKENS, MIN_AUDIT_INTERVAL, MIN_PLOT_MAX_TOKENS, MODULE_NAME } from "./constants.js";
-import { getCurrentCharacterIdentity, getCurrentChatId, getLatestAssistantMessageId, resolveRoleMacrosForDisplay, snapshotCurrentChatMessages } from "./context.js";
+import { isUnstartedRoleplay, getCurrentCharacterIdentity, getCurrentChatId, getLatestAssistantMessageId, resolveRoleMacrosForDisplay, snapshotCurrentChatMessages } from "./context.js";
 import { preparedChatStates, preparedGenreAnchors, preparedModuleSettings } from "./runtime.js";
 import { extension_settings, saveSettingsDebounced } from "./sillytavern.js";
 import { normalizeCharacterCorrectionText } from "./text.js";
@@ -522,6 +522,7 @@ function ensureChatState(chatId = getCurrentChatId()) {
 
     if (!chats[chatId]) {
         chats[chatId] = {
+            ...(chatId !== 'no-chat-open' && chatId === getCurrentChatId() && isUnstartedRoleplay() ? { carryEligible: true } : {}),
             genres: DEFAULT_GENRES.map((g) => ({ ...g })),
             genreSelection: {
                 primaryId: null,
@@ -1445,6 +1446,10 @@ function ensureGenreAnchorState(state) {
     ) {
         state.genreAnchor.responseCount = 0;
     }
+    const due = state.genreAnchor.automaticAuditRetry;
+    state.genreAnchor.automaticAuditRetry = due && ['settling', 'next_response'].includes(due.mode) &&
+        typeof due.guard === 'string' && due.guard.length <= 100 && Number.isSafeInteger(due.afterMessageId)
+        ? { mode: due.mode, guard: due.guard, afterMessageId: due.afterMessageId } : null;
     if (!Array.isArray(state.genreAnchor.correctionCodes)) {
         state.genreAnchor.correctionCodes = [];
     }

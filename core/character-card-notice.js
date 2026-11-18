@@ -1,5 +1,6 @@
 // Changes remain visible immediately; notifications are coalesced separately.
-export function createCharacterNoticeController({ status, records, save, notify, delay = 30000, timers = { set: setTimeout, clear: clearTimeout } }) {
+// Keep Window timer receivers intact when invoking the injected timer adapter.
+export function createCharacterNoticeController({ status, records, save, notify, delay = 30000, timers = { set: (callback, ms) => globalThis.setTimeout(callback, ms), clear: id => globalThis.clearTimeout(id) } }) {
     const waiting = new Map();
     function clearTimer(key) { timers.clear(waiting.get(key)?.timer); waiting.delete(key); }
     function acknowledge(key, hash = '') {

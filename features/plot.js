@@ -1,3 +1,4 @@
+import { rememberChatPreferences } from '../core/chat-preferences.js';
 // StoryBooster: features/plot.js
 import { CHARACTER_BOOST_ANCHOR_MAX_CHARS, EVENT_CATEGORIES, EVENT_CATEGORY_DESCRIPTIONS, EVENT_CATEGORY_GUIDANCE, MAX_PLOT_GENERATION_ATTEMPTS, MAX_PLOT_HISTORY, MODULE_NAME, PLOT_CONTEXT_MESSAGE_LIMIT, PLOT_MESSAGE_MAX_CHARS, PLOT_PROMPT_KEY } from "../core/constants.js";
 import { createOperationContextSnapshot, getCurrentChatId, getCurrentRoleDisplayNames, getRoleplayTranscript, isOperationContextCurrentChat, isOperationContextCurrentMessages, snapshotCurrentChatMessages } from "../core/context.js";
@@ -157,6 +158,7 @@ function updatePlotSecretModeUi(chatId = getCurrentChatId()) {
 function setPlotSecretMode(enabled) {
     const state = ensureChatState();
     state.plotSecretMode = Boolean(enabled);
+    rememberChatPreferences();
     if (!state.plotSecretMode) clearSecretPlotAction();
     saveSettingsDebounced();
     updatePlotSecretModeUi();
@@ -387,15 +389,24 @@ function renderPlotCategoryCards() {
 
 // @source-order 298
 function selectPlotCategory(categoryId) {
-    cancelAutomaticPlot();
     const category = getAvailablePlotCategories().find(
         (item) => item.id === categoryId
     );
     if (!category) return;
 
-    ensureModuleSettings().selectedPlotCategoryId = category.id;
-    saveSettingsDebounced();
+    const settings = ensureModuleSettings();
+    if (settings.selectedPlotCategoryId !== category.id) {
+        cancelAutomaticPlot();
+        settings.selectedPlotCategoryId = category.id;
+        saveSettingsDebounced();
+    }
+    refreshPlotCategorySelection();
+}
 
+// Rendering existing settings must not invalidate a prepared plot or audit.
+function refreshPlotCategorySelection() {
+    const category = getSelectedPlotCategory();
+    if (!category) return;
     getBoosterElements(".rp-plot-category-card").forEach((button) => {
         const selected = button.dataset.id === category.id;
         button.classList.toggle("is-selected", selected);
@@ -417,7 +428,7 @@ function refreshPlotCategoryCards() {
     const grid = getBoosterElement("rp-plot-category-grid");
     if (!grid) return;
     grid.innerHTML = renderPlotCategoryCards();
-    selectPlotCategory(getSelectedPlotCategory().id);
+    refreshPlotCategorySelection();
 }
 
 // @source-order 300
@@ -456,6 +467,9 @@ function addCustomPlotCategory() {
         custom: true,
     };
     const settings = ensureModuleSettings();
+    // The category list is used for random candidates, even when a deleted
+    // category is not the one currently selected for manual generation.
+    cancelAutomaticPlot();
     settings.customPlotCategories.push(category);
     settings.selectedPlotCategoryId = category.id;
     emojiInput.value = "";
@@ -477,6 +491,7 @@ function deleteCustomPlotCategory(categoryId) {
         return;
     }
 
+    cancelAutomaticPlot();
     settings.customPlotCategories = settings.customPlotCategories.filter(
         (item) => item.id !== categoryId
     );
@@ -1732,4 +1747,4 @@ async function generateCharacterQuestionReply() {
 }
 
 
-export { requestHeadlessPlotEvent, recordPlotHistory, activatePlotGenerationMode, addCustomPlotCategory, buildCharacterQuestionInstruction, buildEventGenerationPrompt, capturePlotModeDraft, clearGeneratedEventResult, clearPlotHistory, clearPlotPromptIfPending, clearSecretPlotAction, closeBoosterPopup, createEmptyPlotModeDrafts, deleteCustomPlotCategory, deletePlotHistoryItem, extractTaggedPlotEventResult, generateCharacterQuestionReply, generateEventCandidate, getGeneratedEventText, getPlotCandidateFormatIssues, getPlotGenerateButtonLabel, getPlotHistory, getPlotHistoryModeLabel, getPlotModeDrafts, getPlotOutputInstruction, getSelectedSecretPlotAction, injectEventAndGenerateReply, insertEventIntoComposer, isPlotOutputLanguageMismatch, isPlotSecretMode, isRoleplayLikePlotCandidate, launchSecretSurprise, loadPlotHistoryItem, parsePlotEventResult, refreshPlotCategoryCards, registerOneShotRoleplayInstruction, renderPlotCategoryCards, renderPlotHistoryCards, restorePlotModeDraft, runSelectedPlotGenerationAction, selectPlotCategory, selectSecretPlotAction, setPlotSecretMode, shouldRetryPlotEventWithoutSchema, shouldRetryTaggedPlotEvent, showPlotGenerationToast, togglePlotHistoryDrawer, triggerPlotEvent, updatePlotGenerationPendingUi, updatePlotHistoryUI, updatePlotSecretModeUi, waitForBoosterPopupToClose };
+export { requestHeadlessPlotEvent, recordPlotHistory, activatePlotGenerationMode, addCustomPlotCategory, buildCharacterQuestionInstruction, buildEventGenerationPrompt, capturePlotModeDraft, clearGeneratedEventResult, clearPlotHistory, clearPlotPromptIfPending, clearSecretPlotAction, closeBoosterPopup, createEmptyPlotModeDrafts, deleteCustomPlotCategory, deletePlotHistoryItem, extractTaggedPlotEventResult, generateCharacterQuestionReply, generateEventCandidate, getGeneratedEventText, getPlotCandidateFormatIssues, getPlotGenerateButtonLabel, getPlotHistory, getPlotHistoryModeLabel, getPlotModeDrafts, getPlotOutputInstruction, getSelectedSecretPlotAction, injectEventAndGenerateReply, insertEventIntoComposer, isPlotOutputLanguageMismatch, isPlotSecretMode, isRoleplayLikePlotCandidate, launchSecretSurprise, loadPlotHistoryItem, parsePlotEventResult, refreshPlotCategoryCards, refreshPlotCategorySelection, registerOneShotRoleplayInstruction, renderPlotCategoryCards, renderPlotHistoryCards, restorePlotModeDraft, runSelectedPlotGenerationAction, selectPlotCategory, selectSecretPlotAction, setPlotSecretMode, shouldRetryPlotEventWithoutSchema, shouldRetryTaggedPlotEvent, showPlotGenerationToast, togglePlotHistoryDrawer, triggerPlotEvent, updatePlotGenerationPendingUi, updatePlotHistoryUI, updatePlotSecretModeUi, waitForBoosterPopupToClose };

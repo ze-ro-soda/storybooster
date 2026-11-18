@@ -13,6 +13,11 @@ function text(value, max, name, optional = true) {
     if (typeof value !== 'string' || value.length > max) throw new Error(`${name} 형식 또는 길이를 확인해 주세요.`);
     return value;
 }
+// Display metadata only: never truncate a character's identity or actual name.
+// Old exported files with long display names remain readable.
+function displayCharacterName(value) {
+    return Array.from(text(value, BASELINE_BACKUP_MAX_BYTES, '캐릭터 이름')).slice(0, 100).join('');
+}
 function cleanBaseline(raw) {
     if (!object(raw) || !object(raw.fields)) throw new Error('캐릭터 기준 항목을 읽을 수 없습니다.');
     const allowed = new Set(CHARACTER_BASELINE_FIELDS.map(f => f.id));
@@ -27,7 +32,7 @@ function cleanBaseline(raw) {
             updatedAt: Number.isFinite(f.updatedAt) && f.updatedAt > 0 ? f.updatedAt : Date.now() };
     }
     const baseline = normalizeCharacterBaseline({ fields,
-        characterName: text(raw.characterName, 100, '캐릭터 이름'),
+        characterName: displayCharacterName(raw.characterName),
         boostAnchor: text(raw.boostAnchor, CHARACTER_BOOST_ANCHOR_MAX_CHARS, '영문 앵커'),
         boostAnchorDisplay: text(raw.boostAnchorDisplay, CHARACTER_BOOST_ANCHOR_MAX_CHARS, '표시 앵커'),
         boostAnchorDisplayLanguage: ['ko', 'en'].includes(raw.boostAnchorDisplayLanguage) ? raw.boostAnchorDisplayLanguage : '',
@@ -39,7 +44,7 @@ function cleanBaseline(raw) {
     return baseline;
 }
 export function createCharacterBackup(identity = getCurrentCharacterIdentity()) {
-    if (!identity?.key) throw new Error('캐릭터 채팅을 먼저 열어 주세요.');
+    if (!identity?.key || getCurrentChatId() === 'no-chat-open') throw new Error('캐릭터 채팅을 먼저 열어 주세요.');
     if (characterBaselinePendingTasks.has(identity.key) || characterBaselineAutosaveTimers.size) throw new Error('기준 생성·저장이 끝난 뒤 다시 시도해 주세요.');
     const original = getCharacterBaselineVersion(identity.key, '');
     const versions = getCharacterBaselineVersionOptions(identity.key);
@@ -47,7 +52,7 @@ export function createCharacterBackup(identity = getCurrentCharacterIdentity()) 
     // Only explicitly selected baseline data is exported. No settings, chat,
     // API credentials, avatar paths or diagnosis histories are copied.
     return { format: FORMAT, formatVersion: 1, extensionVersion: STORYBOOSTER_VERSION, createdAt: Date.now(),
-        characterName: identity.name || '', original: original ? cleanBaseline(original) : null,
+        characterName: displayCharacterName(identity.name || ''), original: original ? cleanBaseline(original) : null,
         versions: versions.map(v => ({ id: v.id, label: v.label, parentVersionId: v.parentVersionId,
             revisionMode: v.revisionMode, evidenceLevel: v.evidenceLevel, baseline: cleanBaseline(v.baseline) })) };
 }
@@ -74,11 +79,12 @@ export function parseCharacterBackup(source) {
             evidenceLevel: ['strong', 'partial', 'limited'].includes(v.evidenceLevel) ? v.evidenceLevel : '', baseline: cleanBaseline(v.baseline) });
     }
     if (!entries.length) throw new Error('백업 파일에 저장된 기준이 없습니다.');
-    return { characterName: text(raw.characterName, 100, '캐릭터 이름'), entries };
+    return { characterName: displayCharacterName(raw.characterName), entries };
 }
 export function captureBaselineImportTarget() {
     const identity = getCurrentCharacterIdentity();
     if (!identity?.key) throw new Error('캐릭터 채팅을 먼저 열어 주세요.');
+    if (getCurrentChatId() === 'no-chat-open') throw new Error('캐릭터 채팅을 먼저 열어 주세요.');
     // Normalize once before capturing the optimistic-concurrency snapshot;
     // preview getters must not look like an intervening user edit.
     getCharacterBaselineVersionOptions(identity.key);
@@ -128,6 +134,18 @@ export function applyBaselineImport(backup, selectedIds, target) {
     const settings = ensureModuleSettings();
     const versions = { ...plan.existingStore.versions };
     const mapping = new Map();
+    const originalBaseline = getCharacterBaselineVersion(target.identity.key, '');
+    const existing = [
+        ...(originalBaseline ? [{ id: '', baseline: originalBaseline }] : []),
+        ...Object.values(versions),
+    ];
+    // Reuse an already restored parent even when not selected this time.
+    // Source-file IDs are not destination IDs. Never guess an ambiguous match.
+    for (const row of backup.entries) {
+        const signature = baselineContent(cleanBaseline(row.baseline));
+        const matches = existing.filter(v => baselineContent(v.baseline) === signature);
+        if (matches.length === 1) mapping.set(row.sourceId, matches[0].id);
+    }
     let nextNumber = Number.isSafeInteger(plan.existingStore.nextNumber) && plan.existingStore.nextNumber > 0 &&
         plan.existingStore.nextNumber < Number.MAX_SAFE_INTEGER - MAX_CHARACTER_BASELINE_VERSIONS - 1 ? plan.existingStore.nextNumber : 1;
     let original = null;
@@ -147,7 +165,7 @@ export function applyBaselineImport(backup, selectedIds, target) {
         let label = base, suffix = 1;
         while (names.has(label)) { const tail = ` (가져옴 ${suffix++})`; label = base.slice(0, CHARACTER_BASELINE_VERSION_LABEL_MAX_CHARS - tail.length) + tail; }
         names.add(label);
-        versions[id] = { id, label, baseline, parentVersionId: mapping.get(row.parentVersionId) || '',
+        versions[id] = { id, label, baseline, parentVersionId: row.sourceId && row.sourceId !== row.parentVersionId ? mapping.get(row.parentVersionId) || '' : '',
             revisionMode: row.revisionMode || '', evidenceLevel: row.evidenceLevel || '', createdAt: now, updatedAt: now };
     }
     // Commit only after the complete batch has validated. Never evict versions

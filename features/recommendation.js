@@ -1,6 +1,7 @@
+import { applyGenreChoices } from '../core/genre-choices.js';
 // StoryBooster: features/recommendation.js
 import { GENRE_RECOMMENDATION_MESSAGE_LIMIT, GENRE_RECOMMENDATION_MESSAGE_MAX_CHARS, GENRE_RECOMMENDATION_NO_SUPPORT_ID, MODULE_NAME } from "../core/constants.js";
-import { createOperationContextSnapshot, getCurrentCharacterIdentity, getCurrentChatId, getLatestAssistantMessageId, getRoleplayTranscript, isOperationContextCurrentChat, snapshotCurrentChatMessages } from "../core/context.js";
+import { createOperationContextSnapshot, getCurrentCharacterIdentity, getCurrentChatId, getRoleplayTranscript, isOperationContextCurrentChat, snapshotCurrentChatMessages } from "../core/context.js";
 import { createOperationDiagnostic, recordStoryBoosterError, updateOperationDiagnosticConnection } from "../core/diagnostics.js";
 import { getBoosterElement } from "../core/dom.js";
 import { requestStructuredJsonWithCompatibility, resolveBackgroundConnectionSnapshot } from "../core/requests.js";
@@ -9,7 +10,7 @@ import { genreRecommendationPendingChats } from "../core/runtime.js";
 import { saveSettingsDebounced } from "../core/sillytavern.js";
 import { ensureChatState, ensureGenreAnchorState, ensureModuleSettings, getAvailableGenres, getGenrePromptLabel, isBoosterFeatureEnabled } from "../core/storage.js";
 import { populateGenreSelectionControls, updateGenreAnchorPanel } from "../core/ui-hooks.js";
-import { markPendingGenreAuditCancelled, updateGenrePrompt } from "./audit.js";
+import { updateGenrePrompt } from "./audit.js";
 import { getGenreProfile, getGenreProfileSummary } from "./genre-model.js";
 
 export function cancelGenreRecommendation() {
@@ -277,20 +278,7 @@ function applyGenreRecommendation() {
     const recommendation = state.genreAnchor.recommendation;
     if (!recommendation) return;
 
-    state.genreSelection = {
-        primaryId: recommendation.primaryId,
-        supportIds: recommendation.supportId ? [recommendation.supportId] : [],
-    };
-    state.genreAnchor.responseCount = 0;
-    markPendingGenreAuditCancelled(state);
-    state.genreAnchor.correctionCodes = [];
-    state.genreAnchor.correctionText = "";
-    state.genreAnchor.correctionFieldIds = [];
-    state.genreAnchor.correctionRemaining = 0;
-    state.genreAnchor.correctionAppliedMessageId = null;
-    state.genreAnchor.correctionArmedRevision = 0;
-    state.genreAnchor.auditStatus = "waiting";
-    state.genreAnchor.lastCountedMessageId = getLatestAssistantMessageId();
+    applyGenreChoices(state, recommendation.primaryId, recommendation.supportId);
     state.genreAnchor.recommendation = null;
     saveSettingsDebounced();
     populateGenreSelectionControls();

@@ -1,4 +1,6 @@
+import { rememberChatPreferences } from '../core/chat-preferences.js';
 // StoryBooster: features/character.js
+import { createCharacterNoticeController } from '../core/character-card-notice.js';
 import { CHARACTER_BASELINE_AUTOSAVE_DELAY, CHARACTER_BASELINE_FIELDS, CHARACTER_BASELINE_FIELD_MAX_CHARS, CHARACTER_BASELINE_VERSION_LABEL_MAX_CHARS, CHARACTER_BOOST_ANCHOR_MAX_CHARS, CHARACTER_CARD_INPUT_MAX_CHARS, CHARACTER_REVISION_ASSISTANT_REPLIES, CHARACTER_REVISION_NOTE_MAX_CHARS, CHARACTER_REVISION_TRANSCRIPT_MAX_CHARS, MAX_CHARACTER_BASELINE_VERSIONS, MODULE_NAME, PLOT_MESSAGE_MAX_CHARS } from "../core/constants.js";
 import { createOperationContextSnapshot, getCurrentCharacterIdentity, getCurrentChatId, getRoleplayTranscript, isOperationContextCurrentCharacter, isOperationContextCurrentChat, resolveRoleMacrosForDisplay, snapshotCurrentChatMessages } from "../core/context.js";
 import { createOperationDiagnostic, recordStoryBoosterError, updateOperationDiagnosticConnection } from "../core/diagnostics.js";
@@ -12,6 +14,33 @@ import { safelyUpdateCharacterBoosterPanel, safelyUpdateGenreAnchorPanel, update
 import { safelyUpdateGenrePrompt } from "./audit.js";
 import { invalidateCharacterAuditState } from '../core/character-audit-state.js';
 import { blocksFormatRetry } from '../core/response-validation.js';
+
+let noticeSettings = null;
+function characterNoticeRecords() {
+    const settings = ensureModuleSettings();
+    if (noticeSettings !== settings) {
+        const raw = settings.characterCardNotices;
+        const clean = Object.create(null);
+        if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+            for (const [key, item] of Object.entries(raw).slice(-1000)) {
+                if (item && typeof item.savedHash === 'string' && item.savedHash.length <= 100 && typeof item.notified === 'boolean')
+                    clean[key] = { savedHash: item.savedHash, notified: item.notified, resolved: item.resolved === true };
+            }
+        }
+        settings.characterCardNotices = clean; noticeSettings = settings;
+    }
+    return settings.characterCardNotices;
+}
+const characterCardNotice = createCharacterNoticeController({
+    status: () => getCharacterCardChangeStatus(), records: characterNoticeRecords,
+    save: saveSettingsDebounced,
+    notify: status => {
+        status.baseline.notifiedSourceHash = status.currentHash;
+        writeCharacterBaselineVersion(status.identity, status.baseline, status.versionId);
+        saveSettingsDebounced();
+        toastr?.info?.('캐릭터 카드가 변경됐어요. 부스터에서 기준 갱신 여부를 확인해 주세요.');
+    },
+});
 
 // @source-order 137
 function selectCharacterBaselineVersion(versionId = "") {
@@ -149,29 +178,17 @@ function deleteCurrentCharacterBaselineVersion() {
     safelyUpdateGenreAnchorPanel("캐릭터 기준 버전 삭제");
 }
 
+
 // @source-order 142
 function notifyCharacterCardChangeIfNeeded() {
-    const status = getCharacterCardChangeStatus();
-    if (!status.changed || status.alreadyNotified || !status.identity?.key) {
-        return status;
-    }
-    status.baseline.notifiedSourceHash = status.currentHash;
-    writeCharacterBaselineVersion(
-        status.identity,
-        status.baseline,
-        status.versionId
-    );
-    saveSettingsDebounced();
-    toastr?.info?.(
-        "캐릭터 카드의 변경을 감지했어요. 현재는 기존 기준과 앵커로 계속 부스팅하고 있어요."
-    );
-    return { ...status, alreadyNotified: true };
+    return characterCardNotice.observe();
 }
 
 // @source-order 143
 function acknowledgeCharacterCardChange() {
     const status = getCharacterCardChangeStatus();
     if (!status.identity?.key || !status.baseline) return false;
+    characterCardNotice.acknowledge(status.identity.key, status.currentHash);
     status.baseline.sourceHash = status.currentHash;
     status.baseline.notifiedSourceHash = "";
     status.baseline.updatedAt = Date.now();
@@ -223,6 +240,7 @@ function captureCharacterRevisionReview(element) {
 
 // @source-order 219
 function invalidateCharacterAuditAfterBaselineChange(chatId = getCurrentChatId(), { sharedVersionId = '' } = {}) {
+    if (String(chatId) === String(getCurrentChatId())) rememberChatPreferences();
     const affected = new Set([String(chatId)]);
     if (sharedVersionId) {
         for (const [id, state] of Object.entries(ensureModuleSettings().chats || {})) {
@@ -1391,6 +1409,7 @@ async function generateCharacterBaseline(fieldId = null) {
         } else {
             writeCharacterBaselineVersion(identity, completedBaseline, "");
         }
+        if (!requestedField || !baselineState.baseline) characterCardNotice.acknowledge(identity.key, identity.sourceHash);
         invalidateCharacterAuditAfterBaselineChange(taskChatId);
         saveSettingsDebounced();
         if (isOperationContextCurrentCharacter(operationContext)) {

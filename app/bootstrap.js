@@ -1,3 +1,8 @@
+import { acceptReceivedTurn, syncReceivedTurn, markReceivedGeneration } from '../core/received-turn.js';
+import { observeChatPreferences } from '../core/chat-preferences.js';
+import { getCurrentChatId } from '../core/context.js';
+import { clearJsonCompatibility } from '../core/json-compatibility.js';
+import { handleAutomaticAuditActivity } from '../features/audit.js';
 import { initializeAuditDebugTools } from './audit-debug.js';
 import { onJevConnectionChange, getJevKeyRevision, restoreJevKey } from '../core/jev-client.js';
 import { updateJevConnectionBadges } from '../ui/panels.js';
@@ -9,7 +14,7 @@ import { runtime } from "../core/runtime.js";
 import { eventSource, event_types, extension_prompt_types, setExtensionPrompt } from "../core/sillytavern.js";
 import { getBoosterSelection, handleGenreResponseReceived, handleGenreUserMessageSent, resyncLastCountedMessageId, updateGenrePrompt } from "../features/audit.js";
 import { automaticPlotRuntime, cancelAutomaticPlot } from '../core/automatic-plot-state.js';
-import { consumeAutomaticPlot } from '../features/automatic-plot.js';
+import { consumeAutomaticPlot, resyncAutomaticPlotCooldown } from '../features/automatic-plot.js';
 import { ensureChatState } from '../core/storage.js';
 import { closeCharacterEditorsForChatChange, notifyCharacterCardChangeIfNeeded } from "../features/character.js";
 import { clearPlotPromptIfPending, restorePlotModeDraft, updatePlotGenerationPendingUi, updatePlotHistoryUI } from "../features/plot.js";
@@ -47,6 +52,8 @@ jQuery(async () => {
         automaticPlotRuntime.getSelection = () => getBoosterSelection(ensureChatState());
         updateGenrePrompt();
         resyncLastCountedMessageId();
+        syncReceivedTurn(); observeChatPreferences();
+        resyncAutomaticPlotCooldown();
 
         // A received {{char}} response consumes a one-shot plot injection and
         // advances the automatic genre-drift counter. The quiet audit runs only
@@ -54,9 +61,13 @@ jQuery(async () => {
         // while progress and results remain isolated per chat.
         eventSource.on(event_types.MESSAGE_RECEIVED, (messageId) => {
             try {
-                consumeAutomaticPlot(messageId);
+                const resolvedMessageId = acceptReceivedTurn(messageId);
+                if (resolvedMessageId === null) return;
+                consumeAutomaticPlot(resolvedMessageId);
+                resyncAutomaticPlotCooldown();
                 clearPlotPromptIfPending();
-                handleGenreResponseReceived(messageId);
+                handleGenreResponseReceived(resolvedMessageId);
+                handleAutomaticAuditActivity('received');
             } catch (err) {
                 console.error(`[${MODULE_NAME}] error in MESSAGE_RECEIVED handler:`, err);
                 recordStoryBoosterError(err, {
@@ -66,6 +77,14 @@ jQuery(async () => {
             }
         });
 
+        [event_types.MESSAGE_UPDATED, event_types.MESSAGE_EDITED, event_types.MESSAGE_SWIPED].filter(Boolean).forEach(type => {
+            eventSource.on(type, () => handleAutomaticAuditActivity('updated'));
+        });
+        if (event_types.GENERATION_STARTED) eventSource.on(event_types.GENERATION_STARTED, (type, _options, dryRun) => {
+            if (!dryRun && type !== 'quiet') { markReceivedGeneration(type); handleAutomaticAuditActivity('started'); }
+        });
+        if (event_types.GENERATION_ENDED) eventSource.on(event_types.GENERATION_ENDED, () => handleAutomaticAuditActivity('ended'));
+        handleAutomaticAuditActivity('restore');
         if (event_types.MESSAGE_SENT) {
             eventSource.on(
                 event_types.MESSAGE_SENT,
@@ -74,7 +93,14 @@ jQuery(async () => {
         }
         if (event_types.MESSAGE_DELETED) {
             eventSource.on(event_types.MESSAGE_DELETED, () => {
-                setTimeout(resyncLastCountedMessageId, 0);
+                const chatId = getCurrentChatId();
+                resyncAutomaticPlotCooldown();
+                setTimeout(() => {
+                    if (chatId !== getCurrentChatId()) return;
+                    syncReceivedTurn(); resyncLastCountedMessageId();
+                    resyncAutomaticPlotCooldown();
+                    handleAutomaticAuditActivity('deleted');
+                }, 0);
             });
         }
 
@@ -96,13 +122,18 @@ jQuery(async () => {
         ]
             .filter(Boolean)
             .forEach((eventType) => {
-                eventSource.on(eventType, refreshConnectionProfileSelects);
+                eventSource.on(eventType, () => { clearJsonCompatibility(); refreshConnectionProfileSelects(); });
             });
+        [event_types.MAIN_API_CHANGED, event_types.CHATCOMPLETION_MODEL_CHANGED, event_types.CONNECTION_PROFILE_LOADED]
+            .filter(Boolean).forEach(type => eventSource.on(type, clearJsonCompatibility));
 
         // when the user switches chats, reload state for the NEW chat and
         // discard any leftover one-shot plot injection from the previous chat
         eventSource.on(event_types.CHAT_CHANGED, () => {
+            syncReceivedTurn(); observeChatPreferences();
+            getActiveBoosterPopupRoot()?.querySelector('.rp-carry-settings')?.remove();
             cancelAutomaticPlot('chat_changed');
+            handleAutomaticAuditActivity('chat_changed');
             try {
                 setExtensionPrompt(
                     PLOT_PROMPT_KEY,
@@ -125,6 +156,7 @@ jQuery(async () => {
             closeCharacterEditorsForChatChange();
             updateGenrePrompt();
             resyncLastCountedMessageId();
+            resyncAutomaticPlotCooldown();
             notifyCharacterCardChangeIfNeeded();
             updateGenreAnchorPanel();
             const popupRoot = getActiveBoosterPopupRoot();
@@ -137,7 +169,9 @@ jQuery(async () => {
 
         [event_types.GENERATION_STOPPED].filter(Boolean).forEach(type => {
             eventSource.on(type, () => {
-                if (automaticPlotRuntime.armed || automaticPlotRuntime.checking) cancelAutomaticPlot('generation_stopped');
+                markReceivedGeneration(null);
+                handleAutomaticAuditActivity('stopped');
+                cancelAutomaticPlot('generation_stopped');
             });
         });
 

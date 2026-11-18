@@ -1,3 +1,4 @@
+import { applyGenreChoices } from '../core/genre-choices.js';
 // StoryBooster: ui/genre-controls.js
 import { GENRE_BOOST_CORRECTION_CODES, GENRE_GROUPS } from "../core/constants.js";
 import { getCurrentChatId, getLatestAssistantMessageId } from "../core/context.js";
@@ -5,7 +6,7 @@ import { escapeHtml, getBoosterElement } from "../core/dom.js";
 import { saveSettingsDebounced } from "../core/sillytavern.js";
 import { bumpCorrectionRevision, ensureChatState, ensureGenreAnchorState, ensureModuleSettings, getAvailableGenres, isBoosterFeatureEnabled, normalizeGenreSelection, removeLiveCorrectionCodes } from "../core/storage.js";
 import { updateGenreAnchorPanel } from "../core/ui-hooks.js";
-import { markPendingGenreAuditCancelled, resyncLastCountedMessageId, updateGenrePrompt } from "../features/audit.js";
+import { resyncLastCountedMessageId, updateGenrePrompt } from "../features/audit.js";
 
 // @source-order 332
 function renderGenreOptions(selectedId, emptyLabel) {
@@ -91,19 +92,8 @@ function syncGenreSelectionFromControls() {
             : null;
 
     const state = ensureChatState();
-    state.genreSelection = { primaryId, supportIds: supportId ? [supportId] : [] };
-    state.genreAnchor.responseCount = 0;
-    markPendingGenreAuditCancelled(state);
-    state.genreAnchor.correctionCodes = [];
-    state.genreAnchor.correctionText = "";
-    state.genreAnchor.correctionFieldIds = [];
-    state.genreAnchor.correctionRemaining = 0;
-    state.genreAnchor.correctionAppliedMessageId = null;
-    state.genreAnchor.correctionArmedRevision = 0;
-    state.genreAnchor.auditStatus = "waiting";
+    applyGenreChoices(state, primaryId, supportId);
     state.genreAnchor.recommendation = null;
-    state.genreAnchor.lastCountedMessageId = getLatestAssistantMessageId();
-
     populateGenreSelectionControls();
     saveSettingsDebounced();
     updateGenrePrompt();

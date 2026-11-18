@@ -1911,3 +1911,15 @@
     #rp-booster-popup .rp-workspace-actions button { min-height:42px; }
     #rp-booster-popup .rp-compare-text { min-height:160px; }
 }
+
+/* Demo 1.7.6: keep file transfer controls compact on mobile. */
+#rp-booster-popup #rp-shelf-transfer { margin: 10px 0; }
+#rp-booster-popup #rp-shelf-transfer>summary { cursor: pointer; }
+#rp-booster-popup #rp-shelf-export-items { display: grid; gap: 7px; max-height: 220px; overflow-y: auto; margin: 10px 0; }
+#rp-booster-popup #rp-shelf-transfer .rp-backup-select span { min-width: 0; overflow-wrap: anywhere; }
+#rp-booster-popup #rp-shelf-import-preview>details { margin: 8px 0; }
+#rp-booster-popup #rp-shelf-import-preview>button { margin: 6px 6px 0 0; }
+
+#rp-booster-popup .rp-carry-settings { padding: .6em 0; }
+#rp-booster-popup .rp-carry-settings p { margin: .3em 0; }
+#rp-booster-popup .rp-carry-settings button { display: inline-block; margin-inline-end: .4em; }

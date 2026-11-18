@@ -1,4 +1,6 @@
-import { buildFinalPlotAuditInput } from "./audit-context.js";
+import { rememberChatPreferences } from '../core/chat-preferences.js';
+import { PLOT_CONTEXT_MESSAGE_LIMIT, PLOT_MESSAGE_MAX_CHARS } from '../core/constants.js';
+import { buildFinalPlotAuditInput, auditInputFingerprint } from "./audit-context.js";
 import { startAutomaticPlotTrace, recordAutomaticPlotTrace } from "../core/automatic-plot-trace.js";
 import { auditTraceErrorKind } from "../core/audit-run-trace.js";
 import { createOperationDiagnostic } from "../core/diagnostics.js";
@@ -6,7 +8,7 @@ import { throwIfRequestAborted } from "../core/request-lifecycle.js";
 import { plotDecisionReason, plotDecisionBlockReason, plotAuditHoldReason } from './plot-status.js';
 import { getBoosterElement } from '../core/dom.js';
 import { automaticPlotRuntime, cancelAutomaticPlot } from '../core/automatic-plot-state.js';
-import { getCurrentCharacterIdentity, getCurrentChatId, snapshotCurrentChatMessages } from '../core/context.js';
+import { getCurrentCharacterIdentity, getCurrentChatId, resolveReceivedAssistantMessageId, getRoleplayTranscript, snapshotCurrentChatMessages } from '../core/context.js';
 import { getJevKeyRevision, hasJevSessionKey, isJevUsageAllowed, requestJev } from '../core/jev-client.js';
 import { requestStructuredJsonWithCompatibility, resolveBackgroundConnectionSnapshot, withRequestTimeout } from '../core/requests.js';
 import { extractJsonObject } from '../core/responses.js';
@@ -120,10 +122,32 @@ export function automaticPlotEnabled(state = ensureChatState()) {
     return getCurrentChatId() !== 'no-chat-open' && isBoosterFeatureEnabled('plot') && ensureAutomaticPlotSettings(state).enabled && getGlobalAuditInterval() > 0;
 }
 export function assistantCount(messages = getContext()?.chat || []) {
-    return messages.filter(m => m && !m.is_user && !m.is_system).length;
+    return messages.filter(m => m && !m.is_user && !m.is_system && typeof m.mes === 'string' && m.mes.trim()).length;
+}
+
+// Deleting earlier turns must not require catching up to a deleted absolute
+// response count. Only newly completed replies advance the existing interval.
+export function resyncAutomaticPlotCooldown(state = ensureChatState()) {
+    const p = ensureAutomaticPlotSettings(state), count = assistantCount();
+    if (!p.lastAppliedCount) return null; // No countdown to persist before the first application.
+    const previous = p.cooldownObservedCount;
+    if (p.cooldownAppliedCount !== p.lastAppliedCount || !Number.isSafeInteger(previous) || previous < 0 ||
+        !(p.cooldownProgress === null || (Number.isSafeInteger(p.cooldownProgress) && p.cooldownProgress >= 0))) {
+        p.cooldownProgress = p.lastAppliedCount > 0 ? Math.max(0, count - p.lastAppliedCount) : null;
+        p.cooldownAppliedCount = p.lastAppliedCount;
+    } else if (count > previous && p.cooldownProgress !== null) {
+        p.cooldownProgress = Math.min(Number.MAX_SAFE_INTEGER, p.cooldownProgress + count - previous);
+    }
+    if (previous !== count) {
+        p.cooldownObservedCount = count;
+        saveSettingsDebounced();
+    }
+    return p.cooldownProgress;
 }
 export function roleplayFingerprint(messages = getContext()?.chat || []) {
-    return hashStableText(JSON.stringify(messages.map(m => [Boolean(m?.is_user), Boolean(m?.is_system), typeof m?.name === "string" ? m.name : "", typeof m?.mes === "string" ? m.mes : ""])));
+    return hashStableText(JSON.stringify([auditInputFingerprint(messages), getRoleplayTranscript({
+        messageLimit: PLOT_CONTEXT_MESSAGE_LIMIT, perMessageMaxChars: PLOT_MESSAGE_MAX_CHARS,
+        maxChars: 48000, chatSnapshot: messages })]));
 }
 
 export function parsePlotDecision(value, count) {
@@ -256,7 +280,8 @@ export async function prepareAutomaticPlot({ chatId, selection, result, transcri
         prefs.status = 'deferred'; prefs.lastDecision = plotAuditHoldReason(result); updateAutomaticPlotStatus(); saveSettingsDebounced(); return;
     }
     if (automaticPlotRuntime.generating || automaticPlotRuntime.pending || runtime.plotPending || eventGenerationPendingTasks.size) { recordAutomaticPlotTrace(traceId, 'blocked', { reason: 'busy' }); return; }
-    if (prefs.lastAppliedCount && assistantCount() - prefs.lastAppliedCount < getGlobalAuditInterval()) { recordAutomaticPlotTrace(traceId, 'blocked', { reason: 'cooldown' }); prefs.status = 'deferred'; prefs.lastDecision = '랜덤박스가 최근 반영되어 이번에는 자동 랜덤박스를 준비하지 않습니다.'; updateAutomaticPlotStatus(); saveSettingsDebounced(); return; }
+    const cooldownProgress = resyncAutomaticPlotCooldown(state);
+    if (cooldownProgress !== null && cooldownProgress < getGlobalAuditInterval()) { recordAutomaticPlotTrace(traceId, 'blocked', { reason: 'cooldown' }); prefs.status = 'deferred'; prefs.lastDecision = '랜덤박스가 최근 반영되어 이번에는 자동 랜덤박스를 준비하지 않습니다.'; updateAutomaticPlotStatus(); saveSettingsDebounced(); return; }
     const epoch = automaticPlotRuntime.epoch;
     const keyRevision = getJevKeyRevision();
     const current = () => isCurrent() && epoch === automaticPlotRuntime.epoch && keyRevision === getJevKeyRevision() && automaticPlotEnabled(state) && !runtime.plotPending && !eventGenerationPendingTasks.size;
@@ -362,12 +387,14 @@ export async function automaticPlotGenerationInterceptor(_chat, _contextSize, _a
 export function consumeAutomaticPlot(messageId) {
     const armed = automaticPlotRuntime.armed;
     if (!armed || armed.chatId !== getCurrentChatId()) return;
-    const message = getContext()?.chat?.[Number(messageId)];
-    if (!message || message.is_user || message.is_system) return;
+    if (resolveReceivedAssistantMessageId(messageId) === null) return;
     if (!armed.cancelled) {
         recordAutomaticPlotTrace(armed.traceId, 'applied');
         const p = ensureAutomaticPlotSettings();
-        p.lastAppliedCount = assistantCount(); p.status = 'applied'; updateAutomaticPlotStatus();
+        p.lastAppliedCount = assistantCount();
+        p.cooldownProgress = 0; p.cooldownObservedCount = p.lastAppliedCount;
+        p.cooldownAppliedCount = p.lastAppliedCount;
+        p.status = 'applied'; updateAutomaticPlotStatus();
         saveSettingsDebounced();
     }
     automaticPlotRuntime.armed = null;
@@ -375,5 +402,6 @@ export function consumeAutomaticPlot(messageId) {
 
 export function setAutomaticPlotEnabled(value) {
     ensureAutomaticPlotSettings().enabled = Boolean(value);
+    rememberChatPreferences();
     cancelAutomaticPlot(); updateAutomaticPlotStatus(); saveSettingsDebounced();
 }

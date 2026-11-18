@@ -2,6 +2,17 @@
 import { getContext } from "./sillytavern.js";
 import { hashStableText } from "./text.js";
 
+// A greeting and system notices do not turn a new chat into an existing RP.
+export function isUnstartedRoleplay(chat = getContext()?.chat) {
+    if (!Array.isArray(chat)) return false;
+    let replies = 0;
+    for (const m of chat) {
+        if (!m || m.is_system) continue;
+        if (m.is_user || ++replies > 1) return false;
+    }
+    return true;
+}
+
 // @source-order 102
 function getCurrentChatId() {
     const context = getContext();
@@ -47,11 +58,36 @@ function getLatestAssistantMessageId(chat = getContext()?.chat) {
     return null;
 }
 
+// Resolve before any received-message counter or one-shot side effect. An
+// omitted ID can refer to the latest completed reply; an invalid explicit ID
+// must never silently fall back to a different response.
+function resolveReceivedAssistantMessageId(messageId, chat = getContext()?.chat) {
+    if (!Array.isArray(chat)) return null;
+    let id;
+    if (messageId === undefined || messageId === null) {
+        id = chat.length - 1;
+        while (id >= 0 && chat[id]?.is_system) id--;
+    } else {
+        if (typeof messageId !== 'number' &&
+            (typeof messageId !== 'string' || !/^\d+$/.test(messageId))) return null;
+        id = Number(messageId);
+    }
+    if (!Number.isSafeInteger(id) || id < 0) return null;
+    let tail = chat.length - 1;
+    while (tail >= 0 && chat[tail]?.is_system) tail--;
+    if (id !== tail) return null;
+    const message = chat[id];
+    return message && !message.is_user && !message.is_system &&
+        typeof message.mes === 'string' && message.mes.trim() ? id : null;
+}
+
 // @source-order 121
 function getCurrentCharacterRecord() {
     const context = getContext();
     if (!context || context.groupId != null) return null;
-    const characterId = Number(context.characterId);
+    const raw = context.characterId;
+    if (typeof raw !== 'number' && !(typeof raw === 'string' && /^\d+$/.test(raw))) return null;
+    const characterId = Number(raw);
     if (!Number.isSafeInteger(characterId) || !Array.isArray(context.characters)) {
         return null;
     }
@@ -293,4 +329,4 @@ function isOperationContextCurrentCharacter(operationContext) {
     return getCurrentCharacterIdentity()?.key === operationContext.characterKey;
 }
 
-export { buildCharacterCardSource, clipTranscriptMessage, createOperationContextSnapshot, getCharacterField, getCurrentCharacterIdentity, getCurrentCharacterRecord, getCurrentChatId, getCurrentRoleDisplayNames, getLatestAssistantMessageId, getRoleplayTranscript, isOperationContextCurrentCharacter, isOperationContextCurrentChat, isOperationContextCurrentMessages, resolveRoleMacrosForDisplay, snapshotCurrentChatMessages };
+export { buildCharacterCardSource, clipTranscriptMessage, createOperationContextSnapshot, getCharacterField, getCurrentCharacterIdentity, getCurrentCharacterRecord, getCurrentChatId, getCurrentRoleDisplayNames, getLatestAssistantMessageId, resolveReceivedAssistantMessageId, getRoleplayTranscript, isOperationContextCurrentCharacter, isOperationContextCurrentChat, isOperationContextCurrentMessages, resolveRoleMacrosForDisplay, snapshotCurrentChatMessages };
