@@ -5,7 +5,7 @@
 const MODULE_NAME = "rp-genre-plot-booster";
 
 // @source-order 3
-const STORYBOOSTER_VERSION = "1.7.8";
+const STORYBOOSTER_VERSION = "1.7.9";
 
 // @source-order 4
 const GENRE_PROMPT_KEY = "rp_genre_boost";
@@ -80,7 +80,7 @@ const REPETITION_EXACT_EVIDENCE_MINIMUM = 2;
 const CHARACTER_BASELINE_FIELD_MAX_CHARS = 1000;
 
 // @source-order 28
-const CHARACTER_BOOST_ANCHOR_MAX_CHARS = 700;
+const CHARACTER_BOOST_ANCHOR_MAX_CHARS = 2400;
 
 // @source-order 29
 const CHARACTER_CORRECTION_MAX_CHARS = 1800;

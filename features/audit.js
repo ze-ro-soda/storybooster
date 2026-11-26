@@ -62,11 +62,12 @@ const automaticAuditRecovery = createAuditRecoveryController({
         const selection = getBoosterSelection(ensureChatState(chatId));
         const scope = selection && getAutomaticAuditScope(selection);
         const scoped = scope && getScopedAuditSelection(selection, scope);
-        if (scoped) return runGenreDriftAudit(chatId, scoped, { scope, trigger: 'recovery', autoRecoveryAttempt: true });
+        if (scoped) return runGenreDriftAudit(chatId, scoped, { scope, trigger: 'recovery' });
     },
     save: saveSettingsDebounced,
     refresh: () => { try { updateGenreAnchorPanel(); } catch { /* Optional mounted UI. */ } },
 });
+const scheduledAuditChats = new Set();
 let auditSetupRevision = 0;
 let auditSetupCancellation = 'chat_changed';
 export function handleAutomaticAuditActivity(kind) {
@@ -76,6 +77,18 @@ export function handleAutomaticAuditActivity(kind) {
     }
     if (!['chat_changed','stopped','started','ended'].includes(kind) && !getGlobalAuditInterval() &&
         !genreAuditPendingChats.has(getCurrentChatId()) && !ensureModuleSettings().chats[getCurrentChatId()]?.genreAnchor?.automaticAuditRetry) return;
+    if (kind === 'stopped') {
+        const chatId = getCurrentChatId();
+        const anchor = ensureModuleSettings().chats[chatId]?.genreAnchor;
+        const interval = getGlobalAuditInterval();
+        // Stopping generation invalidates the running request and its timer.
+        // Keep the earned turn so the next distinct assistant reply is eligible.
+        if (interval > 0 && anchor?.responseCount >= interval &&
+            (anchor.automaticAuditRetry || scheduledAuditChats.has(chatId))) {
+            anchor.responseCount = interval - 1;
+            saveSettingsDebounced();
+        }
+    }
     automaticAuditRecovery.activity(kind);
 }
 
@@ -1576,7 +1589,7 @@ function createGenreAuditRecord({
 }
 
 // @source-order 211
-async function runGenreDriftAudit(chatId, selection, { manual = false, scope = "combined", trigger = manual ? "manual" : "direct", autoRecoveryAttempt = false } = {}) {
+async function runGenreDriftAudit(chatId, selection, { manual = false, scope = "combined", trigger = manual ? "manual" : "direct" } = {}) {
     const trace = beginAuditRun({ manual, scope, trigger });
     let recoveryStart = automaticAuditSnapshot();
     if (genreAuditPendingChats.has(chatId)) {
@@ -1592,6 +1605,8 @@ async function runGenreDriftAudit(chatId, selection, { manual = false, scope = "
         showGenreAuditToast('info', '최근 AI 답변이 있는 채팅을 열어 주세요.');
         return readAuditRuns().find(row => row.id === trace.id);
     }
+    const scheduled = !manual && ['message_received', 'recovery'].includes(trigger);
+    if (scheduled) scheduledAuditChats.add(chatId);
     genreAuditPendingChats.add(chatId);
     try {
         const setupFingerprint = () => scope === 'combined' && selection.autoPlotEnabled
@@ -1610,7 +1625,6 @@ async function runGenreDriftAudit(chatId, selection, { manual = false, scope = "
             if (!ready && chatId === getCurrentChatId()) showGenreAuditToast('info', 'Jev 키를 사용할 수 없어 이번에는 기존 진단 연결을 사용해요. 전역 설정의 키 상태를 확인해 주세요.');
         }
         const currentSettings = ensureModuleSettings();
-        const scheduled = !manual && ['message_received', 'recovery'].includes(trigger);
         const setupReason = chatId !== getCurrentChatId() ? 'chat_changed'
             : setup.revision !== auditSetupRevision ? auditSetupCancellation
             : setup.profileId !== currentSettings.analysisProfileId ? 'profile_changed'
@@ -1635,11 +1649,12 @@ async function runGenreDriftAudit(chatId, selection, { manual = false, scope = "
         finishAuditRun(trace, 'failed', 'setup_failed', { errorKind: auditTraceErrorKind(error) });
         if (chatId === getCurrentChatId()) showGenreAuditToast('warning', '진단 입력을 준비하지 못했어요. 설정을 확인한 뒤 다시 진단해 주세요.');
     } finally {
+        scheduledAuditChats.delete(chatId);
         genreAuditPendingChats.delete(chatId);
         if (trace.status === 'running') finishAuditRun(trace, 'failed', 'unexpected_exit');
         if (!manual && ['message_received', 'recovery'].includes(trigger) && trace.status === 'cancelled' &&
             trace.reason === 'messages_changed' && trace.metrics.resultSaved !== true && recoveryStart) {
-            automaticAuditRecovery.queue(chatId, recoveryStart, autoRecoveryAttempt);
+            automaticAuditRecovery.queue(chatId, recoveryStart);
         }
         automaticAuditRecovery.wake();
         try {
@@ -2249,10 +2264,9 @@ function handleGenreResponseReceived(messageId) {
     if (state.genreAnchor.automaticAuditRetry) {
         automaticAuditRecovery.activity('received'); updateGenreAnchorPanel(); return;
     }
-    if (
-        state.genreAnchor.responseCount % auditInterval ===
-        0
-    ) {
+    // An earned audit remains due even when the exact interval turn was busy
+    // or could not complete. Only saving a successful scheduled result resets it.
+    if (state.genreAnchor.responseCount >= auditInterval) {
         const automaticScope = getAutomaticAuditScope(selection);
         const automaticSelection = getScopedAuditSelection(
             selection,

@@ -304,7 +304,8 @@ function renderBoosterPopupHtml(popupInstanceId = "") {
                         <button id="rp-character-boost-anchor-regenerate" type="button" class="rp-character-tool-button" title="현재 기준으로 상시 앵커 다시 만들기">↻</button>
                     </div>
                 </div>
-                <textarea id="rp-character-boost-anchor-text" class="rp-character-field-text" data-identity-key="${escapeHtml(characterBaselineState.identity?.key || "")}" data-character-name="${escapeHtml(characterBaselineState.identity?.name || "")}" data-source-hash="${escapeHtml(characterBaselineState.identity?.sourceHash || "")}" data-chat-id="${escapeHtml(getCurrentChatId())}" data-baseline-version-id="${escapeHtml(characterBaselineState.versionId || "")}" rows="4" maxlength="${CHARACTER_BOOST_ANCHOR_MAX_CHARS}" placeholder="전체 요약을 실행하면 캐릭터별 짧은 앵커가 생성됩니다." readonly>${escapeHtml(getCharacterAnchorDisplayValue(characterBaselineState.baseline))}</textarea>
+                <textarea id="rp-character-boost-anchor-text" class="rp-character-field-text" data-identity-key="${escapeHtml(characterBaselineState.identity?.key || "")}" data-character-name="${escapeHtml(characterBaselineState.identity?.name || "")}" data-source-hash="${escapeHtml(characterBaselineState.identity?.sourceHash || "")}" data-chat-id="${escapeHtml(getCurrentChatId())}" data-baseline-version-id="${escapeHtml(characterBaselineState.versionId || "")}" rows="4" placeholder="전체 요약을 실행하면 캐릭터별 짧은 앵커가 생성됩니다." readonly>${escapeHtml(getCharacterAnchorDisplayValue(characterBaselineState.baseline))}</textarea>
+                <small>입력·영문 주입 각각 최대 ${CHARACTER_BOOST_ANCHOR_MAX_CHARS}자</small>
                 <small id="rp-character-boost-anchor-status" class="rp-character-field-save-status">표시 언어와 관계없이 실제 부스팅에는 영문 앵커를 사용합니다.</small>
                 <small id="rp-character-boost-anchor-saved-at" class="rp-character-anchor-saved-at"></small>
             </div>

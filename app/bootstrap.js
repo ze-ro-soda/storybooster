@@ -110,7 +110,7 @@ jQuery(async () => {
         // popup reopen. This is a local hash comparison and makes no AI call.
         if (event_types.CHARACTER_EDITED) {
             eventSource.on(event_types.CHARACTER_EDITED, () => {
-                notifyCharacterCardChangeIfNeeded();
+                notifyCharacterCardChangeIfNeeded({ edited: true });
                 safelyUpdateCharacterBoosterPanel("캐릭터 카드 저장");
             });
         }

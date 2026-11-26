@@ -1,4 +1,4 @@
-import { auditRecoveryText } from '../core/audit-recovery.js';
+import { auditRecoveryText, automaticAuditRemaining } from '../core/audit-recovery.js';
 import { auditAnalysisLabel, auditComparisonText } from '../core/audit-history.js';
 import { getJevProviderId, getJevConnectionBadge, getJevConnectionStatus, hasJevSessionKey } from '../core/jev-client.js';
 import { cancelAutomaticPlot } from '../core/automatic-plot-state.js';
@@ -1072,11 +1072,9 @@ function updateCharacterBoosterPanel() {
         else if (auditInterval === 0) {
             count.textContent = "자동 진단 꺼짐 · 수동 진단은 사용할 수 있어요";
         } else {
-            const progress = state.genreAnchor.responseCount % auditInterval;
-            const remaining = progress === 0
-                ? auditInterval
-                : auditInterval - progress;
-            count.textContent = auditRecoveryText(state.genreAnchor) || `자동 진단까지 ${remaining}회`;
+            const remaining = automaticAuditRemaining(state.genreAnchor, auditInterval);
+            count.textContent = genreAuditPendingChats.has(getCurrentChatId()) ? '진단 진행 중'
+                : auditRecoveryText(state.genreAnchor) || (remaining ? `자동 진단까지 ${remaining}회` : '자동 진단 대기 중');
         }
     }
     renderLastCharacterAudit(state);
@@ -1217,13 +1215,10 @@ function updateGenreAnchorPanel() {
         count.textContent =
             "자동 진단 꺼짐 · 수동 진단은 사용할 수 있어요";
     } else {
-        const progress = state.genreAnchor.responseCount % auditInterval;
-        count.textContent = auditRecoveryText(state.genreAnchor) ||
-            `자동 진단까지 ${
-                progress === 0
-                    ? auditInterval
-                    : auditInterval - progress
-            }회 · 진단 주기 ${auditInterval}회`;
+        const remaining = automaticAuditRemaining(state.genreAnchor, auditInterval);
+        count.textContent = genreAuditPendingChats.has(getCurrentChatId()) ? '진단 진행 중'
+            : auditRecoveryText(state.genreAnchor) ||
+                `${remaining ? `자동 진단까지 ${remaining}회` : '자동 진단 대기 중'} · 진단 주기 ${auditInterval}회`;
     }
     renderGenreRecommendation();
     renderLastGenreAudit(state);

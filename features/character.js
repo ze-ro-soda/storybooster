@@ -24,7 +24,7 @@ function characterNoticeRecords() {
         if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
             for (const [key, item] of Object.entries(raw).slice(-1000)) {
                 if (item && typeof item.savedHash === 'string' && item.savedHash.length <= 100 && typeof item.notified === 'boolean')
-                    clean[key] = { savedHash: item.savedHash, notified: item.notified, resolved: item.resolved === true };
+                    clean[key] = { savedHash: item.savedHash, notified: item.notified, resolved: item.resolved === true, silent: item.silent === true };
             }
         }
         settings.characterCardNotices = clean; noticeSettings = settings;
@@ -180,8 +180,8 @@ function deleteCurrentCharacterBaselineVersion() {
 
 
 // @source-order 142
-function notifyCharacterCardChangeIfNeeded() {
-    return characterCardNotice.observe();
+function notifyCharacterCardChangeIfNeeded(options = {}) {
+    return characterCardNotice.observe(options);
 }
 
 // @source-order 143
@@ -262,7 +262,7 @@ function getCharacterBoostAnchorRequirements(
     outputLanguage = ensureModuleSettings().outputLanguage
 ) {
     return [
-        `Write boost_anchor in grammatical English as a synthesized character-specific reminder, usually 70 to 110 words and never more than ${CHARACTER_BOOST_ANCHOR_MAX_CHARS} characters.`,
+        `Write boost_anchor in grammatical English as a synthesized character-specific reminder, usually 70 to 110 words and never more than ${Math.min(700, CHARACTER_BOOST_ANCHOR_MAX_CHARS)} characters.`,
         "Prioritize only supported distinctions: the character's defining tension, behaviorally relevant values or boundaries, decision logic and action triggers, speech or emotional signature, and relationship-specific response pattern.",
         "Do not list the baseline fields. Exclude appearance, biography, setting lore, and plot summary unless they directly govern recurring behavior.",
         "Avoid absolute claims such as always, never, completely, or zero unless the baseline explicitly establishes them.",
@@ -399,6 +399,7 @@ function getCharacterBaselineGenerationIssues(
     ) {
         issues.push("한국어 표시용 캐릭터 앵커");
     }
+    if (includeBoostAnchor && Math.max(parsed?.boost_anchor?.length || 0, outputLanguage === "ko" ? parsed?.boost_anchor_display?.length || 0 : 0) > CHARACTER_BOOST_ANCHOR_MAX_CHARS) issues.push("캐릭터 앵커 길이 초과");
     return issues;
 }
 
@@ -565,22 +566,20 @@ function parseCharacterBoostAnchorResult(
     requireStructuredTextFields(parsed, requiredFields);
 
     const boostAnchor = String(parsed.boost_anchor || "")
-        .trim()
-        .slice(0, CHARACTER_BOOST_ANCHOR_MAX_CHARS);
+        .trim();
     const boostAnchorDisplay =
         outputLanguage === "ko"
             ? String(parsed.boost_anchor_display || "")
                   .trim()
-                  .slice(0, CHARACTER_BOOST_ANCHOR_MAX_CHARS)
             : boostAnchor;
     const invalidFields = [];
-    if (boostAnchor.length < 30) invalidFields.push("boost_anchor");
-    if (outputLanguage === "ko" && boostAnchorDisplay.length < 15) {
+    if (boostAnchor.length < 30 || boostAnchor.length > CHARACTER_BOOST_ANCHOR_MAX_CHARS) invalidFields.push("boost_anchor");
+    if (outputLanguage === "ko" && (boostAnchorDisplay.length < 15 || boostAnchorDisplay.length > CHARACTER_BOOST_ANCHOR_MAX_CHARS)) {
         invalidFields.push("boost_anchor_display");
     }
     if (invalidFields.length) {
         const error = new Error(
-            `캐릭터 앵커 필드가 지나치게 짧습니다: ${invalidFields.join(", ")}`
+            `캐릭터 앵커 필드 길이가 허용 범위를 벗어났습니다: ${invalidFields.join(", ")}`
         );
         error.code = "STORYBOOSTER_INVALID_FIELDS";
         error.invalidFields = invalidFields;
@@ -1334,8 +1333,7 @@ async function generateCharacterBaseline(fieldId = null) {
         const boostAnchor = requestedField
             ? ""
             : String(parsed.boost_anchor || "")
-                  .trim()
-                  .slice(0, CHARACTER_BOOST_ANCHOR_MAX_CHARS);
+                  .trim();
         if (!requestedField && boostAnchor.length < 30) {
             throw new Error("캐릭터 앵커가 지나치게 짧습니다.");
         }
@@ -1344,7 +1342,6 @@ async function generateCharacterBaseline(fieldId = null) {
             : outputLanguage === "ko"
               ? String(parsed.boost_anchor_display || "")
                     .trim()
-                    .slice(0, CHARACTER_BOOST_ANCHOR_MAX_CHARS)
               : boostAnchor;
         if (
             !requestedField &&
@@ -1710,12 +1707,10 @@ function saveCharacterBoostAnchor(
         : null;
     if (!identity?.key || !baseline) return false;
     const text = String(canonicalText || "")
-        .trim()
-        .slice(0, CHARACTER_BOOST_ANCHOR_MAX_CHARS);
+        .trim();
     const visibleText = String(displayText || text)
-        .trim()
-        .slice(0, CHARACTER_BOOST_ANCHOR_MAX_CHARS);
-    if (!text || !visibleText) return false;
+        .trim();
+    if (!text || !visibleText || Math.max(text.length, visibleText.length) > CHARACTER_BOOST_ANCHOR_MAX_CHARS) return false;
     baseline.boostAnchor = text;
     baseline.boostAnchorDisplay = visibleText;
     baseline.boostAnchorDisplayLanguage = ["ko", "en"].includes(displayLanguage)
@@ -1747,6 +1742,7 @@ function saveCharacterBoostAnchor(
 
 // @source-order 249
 async function convertCharacterAnchorDisplayToEnglish(displayText) {
+    if (displayText.length > CHARACTER_BOOST_ANCHOR_MAX_CHARS) throw new Error("입력 앵커가 글자 수 한도를 넘었습니다.");
     const conversionSettings = ensureModuleSettings();
     const operationContext = createOperationContextSnapshot({
         chatId: getCurrentChatId(),
@@ -1799,8 +1795,8 @@ async function convertCharacterAnchorDisplayToEnglish(displayText) {
                     "Character anchor conversion returned no JSON object."
                 );
                 const text = requireStructuredTextFields(parsed, ["boost_anchor"]).boost_anchor
-                    .trim()
-                    .slice(0, CHARACTER_BOOST_ANCHOR_MAX_CHARS);
+                    .trim();
+                if (text.length > CHARACTER_BOOST_ANCHOR_MAX_CHARS) throw new Error("영문 앵커가 글자 수 한도를 넘어 저장하지 않았습니다.");
                 if (text.length < 15) {
                     const error = new Error(
                         "영문 주입용 앵커가 지나치게 짧습니다."
@@ -1866,7 +1862,10 @@ async function saveEditedCharacterBoostAnchor() {
     const textarea = getBoosterElement("rp-character-boost-anchor-text");
     const baselineState = getCurrentCharacterBaseline();
     if (!textarea || textarea.readOnly || !baselineState.identity) return;
-    if (textarea.value.trim() === String(textarea.dataset.originalValue ?? "").trim()) {
+    const legacyCut = baselineState.baseline?.boostAnchor?.length === 700 &&
+        !/[.!?]["')’”]*$/.test(baselineState.baseline.boostAnchor) &&
+        baselineState.baseline.boostAnchorDisplayLanguage === "ko" && ensureModuleSettings().outputLanguage === "ko";
+    if (!legacyCut && textarea.value.trim() === String(textarea.dataset.originalValue ?? "").trim()) {
         setCharacterBoostAnchorEditMode(false);
         return;
     }
@@ -1888,6 +1887,7 @@ async function saveEditedCharacterBoostAnchor() {
         chatId: getCurrentChatId(),
     };
     const displayText = textarea.value.trim();
+    if (displayText.length > CHARACTER_BOOST_ANCHOR_MAX_CHARS) { toastr?.warning?.(`입력한 앵커는 ${displayText.length}자입니다. ${CHARACTER_BOOST_ANCHOR_MAX_CHARS}자 이내로 줄여 주세요.`); return; }
     if (!displayText) {
         toastr?.warning?.("캐릭터 앵커를 비워 둘 수 없습니다.");
         return;
